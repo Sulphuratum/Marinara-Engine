@@ -13,7 +13,7 @@ import {
   resolveMacros,
   summariesPatchSchema,
 } from "@marinara-engine/shared";
-import type { CharacterData, ChatMemoryChunk, LorebookEntryTimingState } from "@marinara-engine/shared";
+import type { CharacterData, ChatMemoryChunk, GameNpc, LorebookEntryTimingState } from "@marinara-engine/shared";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
@@ -47,9 +47,26 @@ import {
   resolveMemoryRecallEmbeddingSource,
 } from "../services/memory-recall-embedding.js";
 import { applyRegexScriptsToPromptMessages } from "../services/regex/regex-application.js";
+import { sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 
 type TrackerWrapFormat = "xml" | "markdown" | "none";
 type EntryStateOverrides = Record<string, { ephemeral?: number | null; enabled?: boolean }>;
+
+function sanitizeChatGameNpcAvatars<T extends { metadata?: unknown }>(chat: T): T {
+  const metadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
+  if (!metadata || typeof metadata !== "object") return chat;
+  const gameNpcs = Array.isArray((metadata as Record<string, unknown>).gameNpcs)
+    ? ((metadata as Record<string, unknown>).gameNpcs as GameNpc[])
+    : null;
+  if (!gameNpcs) return chat;
+  const sanitizedNpcs = sanitizeGameNpcAvatarUrls(gameNpcs);
+  if (sanitizedNpcs === gameNpcs) return chat;
+  const sanitizedMetadata = { ...(metadata as Record<string, unknown>), gameNpcs: sanitizedNpcs };
+  return {
+    ...chat,
+    metadata: typeof chat.metadata === "string" ? JSON.stringify(sanitizedMetadata) : sanitizedMetadata,
+  };
+}
 
 async function loadLatestChatGameSnapshot(
   app: FastifyInstance,
@@ -266,19 +283,21 @@ export async function chatsRoutes(app: FastifyInstance) {
 
   // List all chats
   app.get("/", async () => {
-    return storage.list();
+    const chats = await storage.list();
+    return chats.map(sanitizeChatGameNpcAvatars);
   });
 
   // List chats by group
   app.get<{ Params: { groupId: string } }>("/group/:groupId", async (req) => {
-    return storage.listByGroup(req.params.groupId);
+    const chats = await storage.listByGroup(req.params.groupId);
+    return chats.map(sanitizeChatGameNpcAvatars);
   });
 
   // Get single chat
   app.get<{ Params: { id: string } }>("/:id", async (req, reply) => {
     const chat = await storage.getById(req.params.id);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    return chat;
+    return sanitizeChatGameNpcAvatars(chat);
   });
 
   // Create chat

@@ -76,6 +76,7 @@ import { DATA_DIR } from "../utils/data-dir.js";
 import { executeAgent, normalizeAgentContextSize, resolveAgentResultType } from "../services/agents/agent-executor.js";
 import { buildSpriteExpressionChoices, listCharacterSprites } from "../services/game/sprite.service.js";
 import { generateChatBackground } from "../services/game/game-asset-generation.js";
+import { sanitizeGameNpcAvatarUrls } from "../services/game/npc-avatar-utils.js";
 import { getLocalSidecarProvider, LOCAL_SIDECAR_MODEL } from "../services/llm/local-sidecar.js";
 import {
   parseCharacterCommands,
@@ -7523,7 +7524,11 @@ export async function generateRoutes(app: FastifyInstance) {
               // 2. Fall back to stored NPC avatars (per-chat generated/uploaded)
               const NPC_AVATAR_DIR = join(DATA_DIR, "avatars", "npc");
               const storedNpcAvatarByName = new Map<string, string>();
-              for (const npc of (chatMeta.gameNpcs as GameNpc[]) ?? []) {
+              const gameNpcs = sanitizeGameNpcAvatarUrls((chatMeta.gameNpcs as GameNpc[]) ?? []);
+              if (gameNpcs !== chatMeta.gameNpcs) {
+                chatMeta.gameNpcs = gameNpcs;
+              }
+              for (const npc of gameNpcs) {
                 const name = typeof npc.name === "string" ? npc.name.trim().toLowerCase() : "";
                 if (name && npc.avatarUrl) storedNpcAvatarByName.set(name, npc.avatarUrl);
               }
