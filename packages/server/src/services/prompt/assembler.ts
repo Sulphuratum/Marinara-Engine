@@ -14,9 +14,10 @@ import type {
   WrapFormat,
   GenerationParameters,
   LorebookEntryTimingState,
+  MacroContext,
+  ResolveMacroOptions,
 } from "@marinara-engine/shared";
 import { resolveMacros } from "@marinara-engine/shared";
-import type { MacroContext } from "@marinara-engine/shared";
 import { wrapContent, wrapGroup } from "./format-engine.js";
 import { expandMarker, type MarkerContext } from "./marker-expander.js";
 import { mergeAdjacentMessages, squashLeadingSystemMessages } from "./merger.js";
@@ -142,6 +143,8 @@ export interface AssemblerInput {
   groupScenarioOverrideText?: string | null;
   /** Per-generation agent data keyed by agent type. Used when an agent section must consume fresh output. */
   runtimeAgentData?: Record<string, string | RuntimeAgentData>;
+  /** Preserve character-scoped macros for a later known-speaker finalization pass. */
+  deferCharacterMacros?: boolean;
 }
 
 /** Output of the assembler. */
@@ -170,6 +173,14 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
   const sectionOrder = JSON.parse(input.preset.sectionOrder) as string[];
   const groupOrder = JSON.parse(input.preset.groupOrder) as string[];
   const variableValues = JSON.parse(input.preset.variableValues) as Record<string, string>;
+  // Preset text can safely delay all character macros until the responder is known.
+  // Lorebook content only delays names so field macros keep the same budgeting behavior.
+  const deferAllMacroOptions: ResolveMacroOptions | undefined = input.deferCharacterMacros
+    ? { deferCharacterMacros: "all" }
+    : undefined;
+  const deferNameMacroOptions: ResolveMacroOptions | undefined = input.deferCharacterMacros
+    ? { deferCharacterMacros: "names" }
+    : undefined;
 
   // Build lookup maps
   const sectionMap = new Map(input.sections.map((s) => [s.id, s]));
@@ -215,7 +226,6 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       }
     }
   }
-
   // Build macro context (character names and primary card fields resolved from IDs)
   const macroCtx = await buildPromptMacroContext({
     db: input.db,
@@ -231,7 +241,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
 
   // Resolve macros inside variable values themselves (e.g. {{user}} in a choice value)
   for (const key of Object.keys(variableValues)) {
-    variableValues[key] = resolveMacros(variableValues[key]!, macroCtx);
+    variableValues[key] = resolveMacros(variableValues[key]!, macroCtx, deferAllMacroOptions);
   }
 
   // Build marker context
@@ -261,7 +271,8 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     gameState: input.gameState ?? null,
     generationTriggers: input.generationTriggers ?? ["chat"],
     previewOnly: input.previewOnly === true,
-    resolveLorebookContent: (value) => resolveMacrosWithVariableSnapshot(value, macroCtx),
+    resolveLorebookContent: (value) =>
+      resolveMacrosWithVariableSnapshot(value, macroCtx, deferNameMacroOptions),
     groupScenarioOverrideText: input.groupScenarioOverrideText ?? null,
   };
 
@@ -297,6 +308,7 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
     const resolved = await resolveSection(section, {
       macroCtx,
       markerCtx,
+      macroOptions: deferAllMacroOptions,
       wrapFormat,
       runtimeAgentData: input.runtimeAgentData ?? {},
       runtimeAgentTypesUsed,
@@ -473,6 +485,7 @@ interface ResolvedSection {
 interface ResolveSectionCtx {
   macroCtx: MacroContext;
   markerCtx: MarkerContext;
+  macroOptions?: ResolveMacroOptions;
   wrapFormat: WrapFormat;
   runtimeAgentData: Record<string, string | RuntimeAgentData>;
   runtimeAgentTypesUsed: Set<string>;
@@ -490,6 +503,7 @@ async function resolveSection(
 
   let content = section.content;
   let contentMacrosResolved = false;
+  let macroOptions = ctx.macroOptions;
   let runtimeAgentText = "";
   let runtimeAgentStartToken: string | undefined;
   let runtimeAgentEndToken: string | undefined;
@@ -548,6 +562,7 @@ async function resolveSection(
     } else {
       // Other markers return content to be wrapped
       content = expanded.content;
+      macroOptions = undefined;
       contentMacrosResolved =
         markerConfig.type === "world_info_before" ||
         markerConfig.type === "world_info_after" ||
@@ -557,7 +572,7 @@ async function resolveSection(
   }
 
   // Resolve macros
-  content = contentMacrosResolved ? content : resolveMacros(content, ctx.macroCtx);
+  content = contentMacrosResolved ? content : resolveMacros(content, ctx.macroCtx, macroOptions);
   if (!content.trim()) return null;
   const shouldWrapRuntimeAgentSection =
     Boolean(

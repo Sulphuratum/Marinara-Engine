@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { resolveMacros, type MacroContext } from "@marinara-engine/shared";
+import {
+  resolveCharacterScopedMacros,
+  resolveDeferredCharacterMacros,
+  resolveMacros,
+  type CharacterMacroProfile,
+  type MacroContext,
+} from "@marinara-engine/shared";
 
 function macroContext(variables: Record<string, string> = {}): MacroContext {
   return {
@@ -99,4 +105,43 @@ test("invalid weight suffixes stay literal", () => {
   const output = withMockedRandom([0], () => resolveMacros("{{random::literal@nope::weighted@2}}", macroContext()));
 
   assert.equal(output, "literal@nope");
+});
+
+test("character-owned field macros resolve nested character macros in the same scope", () => {
+  const profile: CharacterMacroProfile = {
+    name: "Bob",
+    description: "{{char}} is a knight.",
+    personality: "{{char}} is disciplined.",
+    backstory: "",
+    appearance: "",
+    scenario: "",
+    example: "{{char}}: hello from Bob",
+  };
+
+  assert.equal(
+    resolveCharacterScopedMacros("{{description}}\n{{example}}", profile),
+    "Bob is a knight.\nBob: hello from Bob",
+  );
+});
+
+test("deferred character macros can be finalized for the selected responder", () => {
+  const ctx = macroContext({
+    pov: "limited narration from {{char}}'s perspective",
+  });
+  const options = { deferCharacterMacros: "all" as const };
+  ctx.variables.pov = resolveMacros(ctx.variables.pov!, ctx, options);
+
+  const deferred = resolveMacros("Write {{pov}}. {{description}}", ctx, options);
+  const finalized = resolveDeferredCharacterMacros(deferred, {
+    name: "Bob",
+    description: "{{char}} is a knight.",
+    personality: "",
+    backstory: "",
+    appearance: "",
+    scenario: "",
+    example: "",
+  });
+
+  assert.equal(finalized, "Write limited narration from Bob's perspective. Bob is a knight.");
+  assert.doesNotMatch(finalized, /\{\{char\}\}/);
 });

@@ -48,6 +48,11 @@ export interface MacroContext {
 
 export interface ResolveMacroOptions {
   trimResult?: boolean;
+  /**
+   * Preserve character macros as internal tokens for a later known-speaker pass.
+   * "names" delays only {{char}}/{{charName}}; "all" also delays character field macros.
+   */
+  deferCharacterMacros?: "names" | "all";
 }
 
 export interface SupportedMacroDefinition {
@@ -58,6 +63,20 @@ export interface SupportedMacroDefinition {
 
 const CHARACTER_MACRO_PATTERN =
   /\{\{(?:char|charName|description|personality|backstory|appearance|scenario|example)\}\}/i;
+const MAX_CHARACTER_FIELD_RESOLUTION_DEPTH = 4;
+const DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX = "\x1eMARINARA_DEFERRED_CHARACTER_";
+const DEFERRED_CHARACTER_MACRO_TOKENS = {
+  char: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}CHAR\x1f`,
+  description: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}DESCRIPTION\x1f`,
+  personality: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}PERSONALITY\x1f`,
+  backstory: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}BACKSTORY\x1f`,
+  appearance: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}APPEARANCE\x1f`,
+  scenario: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}SCENARIO\x1f`,
+  example: `${DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX}EXAMPLE\x1f`,
+} as const;
+
+export type CharacterMacroProfile = NonNullable<MacroContext["characterProfiles"]>[number];
+type CharacterFieldMacroName = Exclude<keyof typeof DEFERRED_CHARACTER_MACRO_TOKENS, "char">;
 
 export const SUPPORTED_MACROS: readonly SupportedMacroDefinition[] = [
   { category: "Identity", syntax: "{{user}}", description: "Current user or persona name" },
@@ -128,18 +147,54 @@ export const SUPPORTED_MACROS: readonly SupportedMacroDefinition[] = [
   },
 ];
 
-function resolveCharacterScopedMacros(
-  template: string,
-  profile: NonNullable<MacroContext["characterProfiles"]>[number],
+function getCharacterFieldValue(profile: CharacterMacroProfile, field: CharacterFieldMacroName): string {
+  return profile[field] ?? "";
+}
+
+function resolveCharacterFieldValue(
+  profile: CharacterMacroProfile,
+  field: CharacterFieldMacroName,
+  depth: number,
 ): string {
+  const value = getCharacterFieldValue(profile, field);
+  if (!value) return "";
+  if (depth >= MAX_CHARACTER_FIELD_RESOLUTION_DEPTH) return "";
+  return resolveCharacterScopedMacros(value, profile, depth + 1);
+}
+
+export function resolveCharacterScopedMacros(template: string, profile: CharacterMacroProfile, depth = 0): string {
   return template
     .replace(/\{\{char(?:Name)?\}\}/gi, profile.name)
-    .replace(/\{\{description\}\}/gi, profile.description ?? "")
-    .replace(/\{\{personality\}\}/gi, profile.personality ?? "")
-    .replace(/\{\{backstory\}\}/gi, profile.backstory ?? "")
-    .replace(/\{\{appearance\}\}/gi, profile.appearance ?? "")
-    .replace(/\{\{scenario\}\}/gi, profile.scenario ?? "")
-    .replace(/\{\{example\}\}/gi, profile.example ?? "");
+    .replace(/\{\{description\}\}/gi, () => resolveCharacterFieldValue(profile, "description", depth))
+    .replace(/\{\{personality\}\}/gi, () => resolveCharacterFieldValue(profile, "personality", depth))
+    .replace(/\{\{backstory\}\}/gi, () => resolveCharacterFieldValue(profile, "backstory", depth))
+    .replace(/\{\{appearance\}\}/gi, () => resolveCharacterFieldValue(profile, "appearance", depth))
+    .replace(/\{\{scenario\}\}/gi, () => resolveCharacterFieldValue(profile, "scenario", depth))
+    .replace(/\{\{example\}\}/gi, () => resolveCharacterFieldValue(profile, "example", depth));
+}
+
+export function resolveDeferredCharacterMacros(template: string, profile: CharacterMacroProfile): string {
+  if (!template.includes(DEFERRED_CHARACTER_MACRO_TOKEN_PREFIX)) return template;
+  let result = template.split(DEFERRED_CHARACTER_MACRO_TOKENS.char).join(profile.name);
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.description)
+    .join(resolveCharacterFieldValue(profile, "description", 0));
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.personality)
+    .join(resolveCharacterFieldValue(profile, "personality", 0));
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.backstory)
+    .join(resolveCharacterFieldValue(profile, "backstory", 0));
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.appearance)
+    .join(resolveCharacterFieldValue(profile, "appearance", 0));
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.scenario)
+    .join(resolveCharacterFieldValue(profile, "scenario", 0));
+  result = result
+    .split(DEFERRED_CHARACTER_MACRO_TOKENS.example)
+    .join(resolveCharacterFieldValue(profile, "example", 0));
+  return result;
 }
 
 function expandBracketedCharacterBlocks(template: string, ctx: MacroContext): string {
@@ -385,6 +440,14 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   ]
     .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
     .join("\n");
+  const deferCharacterMacros = options.deferCharacterMacros;
+  const characterReplacement = (field: keyof typeof DEFERRED_CHARACTER_MACRO_TOKENS): string => {
+    if (deferCharacterMacros === "all" || (deferCharacterMacros === "names" && field === "char")) {
+      return DEFERRED_CHARACTER_MACRO_TOKENS[field];
+    }
+    if (field === "char") return ctx.char;
+    return ctx.characterFields?.[field] ?? "";
+  };
 
   // ── Comments — strip first so they don't interfere ──
   result = result.replace(/\{\{\/\/[^}]*\}\}/g, "");
@@ -399,14 +462,14 @@ export function resolveMacros(template: string, ctx: MacroContext, options: Reso
   // ── Static substitutions ──
   result = result.replace(/\{\{user(?:Name)?\}\}/gi, ctx.user);
   result = result.replace(/\{\{persona\}\}/gi, personaText);
-  result = result.replace(/\{\{char(?:Name)?\}\}/gi, ctx.char);
+  result = result.replace(/\{\{char(?:Name)?\}\}/gi, characterReplacement("char"));
   result = result.replace(/\{\{characters\}\}/gi, ctx.characters.join(", "));
-  result = result.replace(/\{\{description\}\}/gi, ctx.characterFields?.description ?? "");
-  result = result.replace(/\{\{personality\}\}/gi, ctx.characterFields?.personality ?? "");
-  result = result.replace(/\{\{backstory\}\}/gi, ctx.characterFields?.backstory ?? "");
-  result = result.replace(/\{\{appearance\}\}/gi, ctx.characterFields?.appearance ?? "");
-  result = result.replace(/\{\{scenario\}\}/gi, ctx.characterFields?.scenario ?? "");
-  result = result.replace(/\{\{example\}\}/gi, ctx.characterFields?.example ?? "");
+  result = result.replace(/\{\{description\}\}/gi, characterReplacement("description"));
+  result = result.replace(/\{\{personality\}\}/gi, characterReplacement("personality"));
+  result = result.replace(/\{\{backstory\}\}/gi, characterReplacement("backstory"));
+  result = result.replace(/\{\{appearance\}\}/gi, characterReplacement("appearance"));
+  result = result.replace(/\{\{scenario\}\}/gi, characterReplacement("scenario"));
+  result = result.replace(/\{\{example\}\}/gi, characterReplacement("example"));
   result = result.replace(/\{\{input\}\}/gi, ctx.lastInput ?? "");
   result = result.replace(/\{\{model\}\}/gi, ctx.model ?? "");
   result = result.replace(/\{\{chatId\}\}/gi, ctx.chatId ?? "");

@@ -3,7 +3,9 @@
 // sections into actual content at assembly time.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
+import { resolveCharacterScopedMacros } from "@marinara-engine/shared";
 import type {
+  CharacterMacroProfile,
   MarkerConfig,
   ChatMLMessage,
   CharacterData,
@@ -126,11 +128,13 @@ export async function expandMarker(config: MarkerConfig, ctx: MarkerContext): Pr
 async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
   const charStorage = createCharactersStorage(ctx.db);
   const parts: string[] = [];
+  const resolveCharacterMacros = ctx.characterIds.length > 1;
 
   for (const charId of ctx.characterIds) {
     const row = await charStorage.getById(charId);
     if (!row) continue;
     const data = JSON.parse(row.data) as CharacterData;
+    let profile: CharacterMacroProfile | null = null;
 
     const fields = config.characterFields ?? [
       "description",
@@ -149,7 +153,11 @@ async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promis
       if (field === "scenario" && ctx.groupScenarioOverrideText) continue;
       const value = getCharacterField(data, field);
       if (value) {
-        charParts.push(wrapContent(value, field, ctx.wrapFormat, 2));
+        const resolvedValue =
+          resolveCharacterMacros && value.includes("{{")
+            ? resolveCharacterScopedMacros(value, (profile ??= characterMacroProfileFromData(data)))
+            : value;
+        charParts.push(wrapContent(resolvedValue, field, ctx.wrapFormat, 2));
       }
     }
 
@@ -174,6 +182,18 @@ async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promis
   }
 
   return { content: parts.join("\n") };
+}
+
+function characterMacroProfileFromData(data: CharacterData): CharacterMacroProfile {
+  return {
+    name: data.name ?? "Character",
+    description: getCharacterDescriptionWithExtensions(data),
+    personality: data.personality ?? "",
+    backstory: data.extensions?.backstory ?? "",
+    appearance: data.extensions?.appearance ?? "",
+    scenario: data.scenario ?? "",
+    example: data.mes_example ?? "",
+  };
 }
 
 function getCharacterField(data: CharacterData, field: string): string {
@@ -389,6 +409,7 @@ async function expandChatHistory(config: MarkerConfig, ctx: MarkerContext): Prom
 async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
   const charStorage = createCharactersStorage(ctx.db);
   const parts: string[] = [];
+  const resolveCharacterMacros = ctx.characterIds.length > 1;
 
   for (const charId of ctx.characterIds) {
     const row = await charStorage.getById(charId);
@@ -396,7 +417,11 @@ async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext)
     const data = JSON.parse(row.data) as CharacterData;
 
     if (data.mes_example) {
-      parts.push(data.mes_example);
+      const resolvedExample =
+        resolveCharacterMacros && data.mes_example.includes("{{")
+          ? resolveCharacterScopedMacros(data.mes_example, characterMacroProfileFromData(data))
+          : data.mes_example;
+      parts.push(resolvedExample);
     }
   }
 
