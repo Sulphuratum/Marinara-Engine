@@ -30,8 +30,19 @@ import {
   type SyntheticEntry,
 } from "./jsonl-entries.js";
 
-const HOME = homedir();
 const CWD = resolve(".");
+
+/**
+ * Resolve the Claude config directory. Honors `CLAUDE_CONFIG_DIR` (the SDK's
+ * documented override) so containers that drop privileges without updating
+ * `$HOME`, or installs with read-only/NFS home directories, can point both
+ * the writer (here) and the SDK reader (`resume`) at the same location.
+ * Lazy on purpose: tests and runtime config flips both work without a
+ * module reload.
+ */
+function resolveConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+}
 
 /**
  * Compute the sessions directory for a given cwd. CC maps cwd → project
@@ -39,7 +50,7 @@ const CWD = resolve(".");
  * so `resume` reads from the same location the CLI would write to.
  */
 export function sessionsDirFor(cwd: string = CWD): string {
-  return join(HOME, ".claude", "projects", cwd.replaceAll("/", "-"));
+  return join(resolveConfigDir(), "projects", cwd.replaceAll("/", "-"));
 }
 
 const SESSIONS_DIR = sessionsDirFor();

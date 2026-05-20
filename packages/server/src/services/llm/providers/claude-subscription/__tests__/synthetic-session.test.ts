@@ -30,6 +30,21 @@ const META: CommonSessionMeta = {
 };
 
 describe("sessionsDirFor", () => {
+  // The default-path tests assume CLAUDE_CONFIG_DIR is unset (so the
+  // function falls back to `~/.claude`). Developers running this suite in
+  // a shell with CLAUDE_CONFIG_DIR exported for their own Claude Code
+  // install would otherwise see spurious failures here. Save/clear before
+  // each test and restore after so the env var becomes a per-test opt-in.
+  let priorConfigDir: string | undefined;
+  beforeEach(() => {
+    priorConfigDir = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+  });
+  afterEach(() => {
+    if (priorConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = priorConfigDir;
+  });
+
   it("replaces every '/' with '-' in the cwd to match CC's project-dir convention", () => {
     const dir = sessionsDirFor("/home/user/project");
     assert.ok(dir.endsWith("/.claude/projects/-home-user-project"), `unexpected suffix: ${dir}`);
@@ -38,6 +53,12 @@ describe("sessionsDirFor", () => {
   it("handles a cwd that already starts at root", () => {
     const dir = sessionsDirFor("/");
     assert.ok(dir.endsWith("/.claude/projects/-"));
+  });
+
+  it("honors CLAUDE_CONFIG_DIR, replacing the ~/.claude prefix per SDK contract", () => {
+    process.env.CLAUDE_CONFIG_DIR = "/var/lib/marinara/claude-config";
+    const dir = sessionsDirFor("/home/user/project");
+    assert.strictEqual(dir, "/var/lib/marinara/claude-config/projects/-home-user-project");
   });
 });
 
