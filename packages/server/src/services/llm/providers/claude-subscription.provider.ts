@@ -34,6 +34,17 @@ import {
 import { ResumeSessionStore, resumeScratchCwd } from "./claude-subscription/session-store.js";
 
 /**
+ * Prompt-cache cost multipliers relative to one fresh (uncached) input token.
+ * The Agent SDK uses Claude's default 5-minute cache: writing a token into the
+ * cache is billed at 1.25x, reading one back at 0.1x, an uncached token at 1x.
+ * Used to estimate — in fresh-input-token equivalents — whether caching is a
+ * net saving on a request. Break-even is ~2 uses of a cached prefix:
+ * 1.25x (write) + 0.1x (one read) = 1.35x, vs 2x for two uncached sends.
+ */
+const CACHE_WRITE_COST_MULTIPLIER = 1.25;
+const CACHE_READ_COST_MULTIPLIER = 0.1;
+
+/**
  * Lazy import wrapper. The SDK is heavy and pulls in optional native pieces;
  * keeping the import inside `chat()` avoids loading it for the (common) case
  * where no `claude_subscription` connection has been used yet.
@@ -337,11 +348,24 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
       sdkOptions.thinking = { type: "adaptive" };
     }
 
-    if (this.apiKey) {
-      // Opt-in API fallback — overrides subscription auth when the connection
-      // has an explicit API key set.
-      sdkOptions.env = { ...process.env, ANTHROPIC_API_KEY: this.apiKey };
-    }
+    // Subprocess environment. `ENABLE_CLAUDEAI_MCP_SERVERS=false` opts out of
+    // the signed-in account's claude.ai connectors (Notion / Gmail / Calendar),
+    // which ride the `claudeai` MCP scope that `settingSources: []` does not
+    // gate — and this provider is a text-chat surface that must expose zero
+    // tools. It is a documented opt-out flag (see "Use MCP servers from
+    // Claude.ai": https://code.claude.com/docs/en/mcp). Those docs note the
+    // connectors only load under subscription auth, not when ANTHROPIC_API_KEY
+    // is set — so the flag is harmlessly redundant on the API-key path below,
+    // but set unconditionally so the subscription path is always covered. The
+    // `init`-message guard above warns if a future CLI stops honoring it.
+    //
+    // `ANTHROPIC_API_KEY` is the opt-in API-billing fallback when the
+    // connection sets an explicit key.
+    sdkOptions.env = {
+      ...process.env,
+      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+      ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}),
+    };
 
     this.applyCustomParameters(sdkOptions as Record<string, unknown>, options);
 
@@ -391,6 +415,36 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
               options.onThinking(event.delta.thinking);
             }
           }
+        } else if (message.type === "system" && message.subtype === "init") {
+          // Isolation guard — the SDK's `init` message enumerates every tool,
+          // MCP server, and skill it is exposing to the model. This provider is
+          // a zero-tool, text-only surface, so any non-empty set here means
+          // something slipped past the isolation options (`tools: []`,
+          // `settingSources: []`, `ENABLE_CLAUDEAI_MCP_SERVERS=false`). The
+          // `warn` below fires if that regresses — e.g. a CLI predating the
+          // opt-out flag, or a future change to connector defaults.
+          const mcpServers = message.mcp_servers;
+          const mcpTools = message.tools.filter((t) => t.startsWith("mcp__"));
+          logger.debug(
+            {
+              tools: message.tools,
+              mcpServers,
+              skills: message.skills,
+              slashCommandCount: message.slash_commands.length,
+              claudeCodeVersion: message.claude_code_version,
+              apiKeySource: message.apiKeySource,
+            },
+            "[claude-subscription] SDK init surface",
+          );
+          if (mcpServers.length > 0 || mcpTools.length > 0) {
+            logger.warn(
+              {
+                mcpServers: mcpServers.map((s) => `${s.name} (${s.status})`),
+                mcpTools,
+              },
+              "[claude-subscription] SDK exposed MCP servers/tools to the model despite zero-tool config — likely account-level claude.ai connectors",
+            );
+          }
         } else if (message.type === "assistant" && !(options.stream ?? true)) {
           // Non-streaming path: the SDK still yields the full assistant
           // message at the end; emit the text blocks once.
@@ -412,6 +466,38 @@ export class ClaudeSubscriptionProvider extends BaseLLMProvider {
               outputTokens = usage.output_tokens ?? 0;
               cachedTokens = usage.cache_read_input_tokens ?? 0;
               cacheWriteTokens = usage.cache_creation_input_tokens ?? 0;
+            }
+            // Prompt-cache economics — a per-request breakdown so cache
+            // behavior can be audited and confirmed to be a real saving, not
+            // just token-shuffling. Costs are in fresh-input-token equivalents
+            // (write 1.25x, read 0.1x, uncached 1x). `savingsPct` < 0 means the
+            // cache cost more than it saved this request — expected on the
+            // first turn (pure write) or after the 5-minute TTL lapses; across
+            // a live multi-turn chat it should trend positive.
+            const totalInputTokens = inputTokens + cachedTokens + cacheWriteTokens;
+            if (totalInputTokens > 0) {
+              const effectiveInputCost =
+                inputTokens +
+                cacheWriteTokens * CACHE_WRITE_COST_MULTIPLIER +
+                cachedTokens * CACHE_READ_COST_MULTIPLIER;
+              const savedTokenEquiv = totalInputTokens - effectiveInputCost;
+              logger.debug(
+                {
+                  session: resumeSessionId ?? "fold-path",
+                  model: options.model,
+                  freshInputTokens: inputTokens,
+                  cacheReadTokens: cachedTokens,
+                  cacheWriteTokens,
+                  outputTokens,
+                  cacheHitRatio: Number((cachedTokens / totalInputTokens).toFixed(3)),
+                  effectiveInputCostEquiv: Math.round(effectiveInputCost),
+                  uncachedInputCostEquiv: totalInputTokens,
+                  savedTokenEquiv: Math.round(savedTokenEquiv),
+                  savingsPct: Number(((savedTokenEquiv / totalInputTokens) * 100).toFixed(1)),
+                  verdict: savedTokenEquiv > 0 ? "cache-saving" : "cache-cost",
+                },
+                "[claude-subscription] prompt-cache usage",
+              );
             }
             // The SDK can bill against a different model than the one we
             // asked for (fast mode, post-rate-limit cooldown, account-tier
