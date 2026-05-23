@@ -246,7 +246,9 @@ export class GoogleProvider extends BaseLLMProvider {
         temperature: options.temperature ?? 1,
         maxOutputTokens: maxTokens,
         topP: options.topP ?? 1,
-        ...(options.topK ? { topK: options.topK } : {}),
+        ...(typeof options.topK === "number" && Number.isFinite(options.topK)
+          ? { topK: Math.max(0, Math.trunc(options.topK)) }
+          : {}),
         ...(options.frequencyPenalty ? { frequencyPenalty: options.frequencyPenalty } : {}),
         ...(options.presencePenalty ? { presencePenalty: options.presencePenalty } : {}),
         ...(thinkingConfig ? { thinkingConfig } : {}),

@@ -64,6 +64,7 @@ import { SpriteWandCleanupEditor } from "../ui/SpriteWandCleanupEditor";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
 import { Modal } from "../ui/Modal";
 import type { TrackerCardColorConfig } from "@marinara-engine/shared";
+import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 
 // ── Tabs ──
 const TABS = [
@@ -142,6 +143,26 @@ function appendNewTags(existingTags: string[], rawInput: string) {
   return additions.length > 0 ? [...existingTags, ...additions] : existingTags;
 }
 
+const PERSONA_QUOTE_FIELD_KEYS = new Set<string>(["description", "personality", "scenario", "backstory", "appearance"]);
+
+function formatPersonaFieldValue<K extends keyof PersonaFormData>(
+  key: K,
+  value: PersonaFormData[K],
+  formatQuotes: (value: string) => string,
+): PersonaFormData[K] {
+  if (PERSONA_QUOTE_FIELD_KEYS.has(String(key)) && typeof value === "string") {
+    return formatQuotes(value) as PersonaFormData[K];
+  }
+  if (key === "altDescriptions" && Array.isArray(value)) {
+    return value.map((entry) =>
+      entry && typeof entry === "object" && "content" in entry && typeof entry.content === "string"
+        ? { ...entry, content: formatQuotes(entry.content) }
+        : entry,
+    ) as PersonaFormData[K];
+  }
+  return value;
+}
+
 export function PersonaEditor() {
   const personaId = useUIStore((s) => s.personaDetailId);
   const closeDetail = useUIStore((s) => s.closePersonaDetail);
@@ -159,6 +180,7 @@ export function PersonaEditor() {
   const [avatarGeneratorOpen, setAvatarGeneratorOpen] = useState(false);
   const loadedPersonaIdRef = useRef<string | null>(null);
   const latestAvatarUploadTokenRef = useRef<string | null>(null);
+  const formatQuotes = useQuoteFormatter();
   const setEditorDirty = useUIStore((s) => s.setEditorDirty);
   useEffect(() => {
     setEditorDirty(dirty);
@@ -267,10 +289,14 @@ export function PersonaEditor() {
     setDirty(false);
   }, [rawPersona, dirty]);
 
-  const updateField = useCallback(<K extends keyof PersonaFormData>(key: K, value: PersonaFormData[K]) => {
-    setFormData((prev) => (prev ? { ...prev, [key]: value } : prev));
-    setDirty(true);
-  }, []);
+  const updateField = useCallback(
+    <K extends keyof PersonaFormData>(key: K, value: PersonaFormData[K]) => {
+      const nextValue = formatPersonaFieldValue(key, value, formatQuotes);
+      setFormData((prev) => (prev ? { ...prev, [key]: nextValue } : prev));
+      setDirty(true);
+    },
+    [formatQuotes],
+  );
 
   const handleSave = async () => {
     if (!personaId || !formData) return;
@@ -904,9 +930,7 @@ function PersonaSpritesTab({
             : result.backgroundRemoverProcessed
               ? ` with backgroundremover`
               : ` with built-in cleanup`;
-        toast.success(
-          `Cleaned ${result.processed} saved sprite${result.processed === 1 ? "" : "s"}${engineDetails}.`,
-        );
+        toast.success(`Cleaned ${result.processed} saved sprite${result.processed === 1 ? "" : "s"}${engineDetails}.`);
       }
       if (result.failed.length > 0) {
         toast.warning(`${result.failed.length} sprite${result.failed.length === 1 ? "" : "s"} could not be cleaned.`);
@@ -1062,11 +1086,7 @@ function PersonaSpritesTab({
             <button
               type="button"
               onClick={() => void handleCleanVisibleSprites()}
-              disabled={
-                cleaningSprites ||
-                backgroundCleanupUnavailable ||
-                visibleSprites.length === 0
-              }
+              disabled={cleaningSprites || backgroundCleanupUnavailable || visibleSprites.length === 0}
               className="flex min-w-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-center text-[0.6875rem] font-medium leading-tight text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40 max-md:flex-1 max-md:basis-[calc(50%-0.25rem)] max-md:px-2.5"
               title={
                 backgroundCleanupUnavailable
@@ -1542,7 +1562,6 @@ function PersonaColorsTab({
           <li>&bull; Leave any field empty to use the default theme colors.</li>
         </ul>
       </div>
-
     </div>
   );
 }

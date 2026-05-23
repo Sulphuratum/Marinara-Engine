@@ -242,11 +242,13 @@ function PersonaPicker({
 function SetupGenerationParametersPanel({
   enabled,
   value,
+  showOpenRouterServiceTier,
   onEnabledChange,
   onChange,
 }: {
   enabled: boolean;
   value: EditableGenerationParameters;
+  showOpenRouterServiceTier: boolean;
   onEnabledChange: (enabled: boolean) => void;
   onChange: (next: EditableGenerationParameters) => void;
 }) {
@@ -274,7 +276,11 @@ function SetupGenerationParametersPanel({
       </button>
       {enabled && (
         <div className="mt-3 border-t border-[var(--border)] pt-3">
-          <GenerationParametersFields value={value} onChange={onChange} />
+          <GenerationParametersFields
+            value={value}
+            showOpenRouterServiceTier={showOpenRouterServiceTier}
+            onChange={onChange}
+          />
         </div>
       )}
     </div>
@@ -571,6 +577,7 @@ function ConversationQuickSetup({ chat, onFinish }: ChatSetupWizardProps) {
               <SetupGenerationParametersPanel
                 enabled={customizeParameters}
                 value={generationParameters}
+                showOpenRouterServiceTier={selectedConnection?.provider === "openrouter"}
                 onEnabledChange={setCustomizeParameters}
                 onChange={setGenerationParameters}
               />
@@ -1140,6 +1147,7 @@ function RoleplaySetupWizard({ chat, onFinish }: ChatSetupWizardProps) {
         <SetupGenerationParametersPanel
           enabled={customizeParameters}
           value={generationParameters}
+          showOpenRouterServiceTier={selectedConnection?.provider === "openrouter"}
           onEnabledChange={setCustomizeParameters}
           onChange={setGenerationParameters}
         />

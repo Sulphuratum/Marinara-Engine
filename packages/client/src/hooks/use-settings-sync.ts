@@ -14,6 +14,7 @@
 // edits trigger a push — transient UI state (modal open, detail panels, etc.)
 // is filtered out via `pickSyncedSettings`.
 import { useEffect } from "react";
+import { normalizeQuoteFormat } from "@marinara-engine/shared";
 import { api } from "../lib/api-client";
 import {
   normalizeTrackerPanelSizeProfile,
@@ -193,6 +194,7 @@ export function useSettingsSync() {
               parsed.settings.trackerTemperatureUnit = normalizeTrackerTemperatureUnit(
                 parsed.settings.trackerTemperatureUnit,
               );
+              parsed.settings.quoteFormat = normalizeQuoteFormat(parsed.settings.quoteFormat);
 
               const serverUpdatedAt = parsed.updatedAt;
               const localIsNewer =
@@ -209,7 +211,10 @@ export function useSettingsSync() {
                 if (hadDeviceLocalSettings) {
                   try {
                     await api.put(SETTINGS_PATH, {
-                      value: buildServerSettingsValue(pickSyncedSettings(useUIStore.getState()), serverUpdatedAt ?? Date.now()),
+                      value: buildServerSettingsValue(
+                        pickSyncedSettings(useUIStore.getState()),
+                        serverUpdatedAt ?? Date.now(),
+                      ),
                     });
                   } catch {
                     // Cleanup is best-effort; this browser still ignores

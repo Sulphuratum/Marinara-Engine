@@ -17,12 +17,7 @@ export interface AgentActivationMatch {
 }
 
 export function normalizeAgentActivationKeywords(value: unknown): string[] {
-  const rawKeywords =
-    typeof value === "string"
-      ? value.split(/\r?\n|,/)
-      : Array.isArray(value)
-        ? value
-        : [];
+  const rawKeywords = typeof value === "string" ? value.split(/\r?\n|,/) : Array.isArray(value) ? value : [];
   const seen = new Set<string>();
   const keywords: string[] = [];
 

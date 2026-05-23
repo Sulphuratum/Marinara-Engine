@@ -16,6 +16,7 @@ import {
   nameToXmlTag,
   normalizeChatSummaryEntries,
   resolveMacros,
+  stripMacroComments,
   summariesPatchSchema,
   coerceGameStateTextValue,
 } from "@marinara-engine/shared";
@@ -40,6 +41,7 @@ import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { generateMissingConversationSummaries } from "../services/conversation/auto-summary.service.js";
 import { rebuildMemoryChunks } from "../services/memory-recall.js";
 import { wrapContent } from "../services/prompt/format-engine.js";
+import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
 import { getCharacterDescriptionWithExtensions } from "../services/prompt/index.js";
 import { newId } from "../utils/id-generator.js";
 import { characters, gameStateSnapshots, memoryChunks } from "../db/schema/index.js";
@@ -312,6 +314,10 @@ function formatPeekTrackerContextBlock(args: {
 function resolveLorebookGenerationTriggers(mode: unknown): string[] {
   const modeTrigger = mode === "game" ? "game" : typeof mode === "string" && mode.trim() ? mode.trim() : "roleplay";
   return Array.from(new Set([modeTrigger, "chat"]));
+}
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
 }
 
 async function buildPersonaSnapshotForChat(app: FastifyInstance, chat: { personaId?: string | null } | null) {
@@ -1345,6 +1351,7 @@ export async function chatsRoutes(app: FastifyInstance) {
 
     const chatMessages = await storage.listMessages(req.params.id);
     const chatMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
+    const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
     const visibleGameStateAnchor = resolveVisibleGameStateAnchor(chatMessages);
 
     // ── Primary: return the cached prompt from the last generation ──
@@ -1354,7 +1361,9 @@ export async function chatsRoutes(app: FastifyInstance) {
       const m = chatMessages[i]! as any;
       if (m.role === "assistant") {
         let extra = typeof m.extra === "string" ? JSON.parse(m.extra) : (m.extra ?? {});
-        let cachedPrompt = extra.cachedPrompt as Array<{ role: string; content: string }> | undefined;
+        let cachedPrompt = chatSummaryFingerprintMatches(extra, chatSummaryFingerprint)
+          ? (extra.cachedPrompt as Array<{ role: string; content: string }> | undefined)
+          : undefined;
         let generationInfo = extra.generationInfo as Record<string, unknown> | undefined;
 
         // If message-level extra doesn't have it (swipe overwrite), check swipes
@@ -1364,13 +1373,15 @@ export async function chatsRoutes(app: FastifyInstance) {
           if (activeSwipe) {
             const swExtra =
               typeof activeSwipe.extra === "string" ? JSON.parse(activeSwipe.extra) : (activeSwipe.extra ?? {});
-            cachedPrompt = swExtra.cachedPrompt;
-            if (swExtra.generationInfo) generationInfo = swExtra.generationInfo;
+            if (chatSummaryFingerprintMatches(swExtra, chatSummaryFingerprint)) {
+              cachedPrompt = swExtra.cachedPrompt;
+              if (swExtra.generationInfo) generationInfo = swExtra.generationInfo;
+            }
           }
           if (!cachedPrompt) {
             for (const sw of swipes) {
               const swExtra = typeof sw.extra === "string" ? JSON.parse(sw.extra) : (sw.extra ?? {});
-              if (swExtra.cachedPrompt) {
+              if (chatSummaryFingerprintMatches(swExtra, chatSummaryFingerprint) && swExtra.cachedPrompt) {
                 cachedPrompt = swExtra.cachedPrompt;
                 if (swExtra.generationInfo) generationInfo = swExtra.generationInfo;
                 break;
@@ -1458,7 +1469,7 @@ export async function chatsRoutes(app: FastifyInstance) {
           if (persona) {
             personaId = persona.id as string;
             personaName = persona.name;
-            personaDescription = persona.description;
+            personaDescription = cardPromptText(persona.description);
 
             // Append active alt description extensions
             if (persona.altDescriptions) {
@@ -1469,7 +1480,8 @@ export async function chatsRoutes(app: FastifyInstance) {
                 }>;
                 for (const ext of altDescs) {
                   if (ext.active && ext.content) {
-                    personaDescription += "\n" + ext.content;
+                    const content = cardPromptText(ext.content);
+                    if (content) personaDescription += "\n" + content;
                   }
                 }
               } catch {
@@ -1478,10 +1490,10 @@ export async function chatsRoutes(app: FastifyInstance) {
             }
 
             personaFields = {
-              personality: persona.personality ?? "",
-              scenario: persona.scenario ?? "",
-              backstory: persona.backstory ?? "",
-              appearance: persona.appearance ?? "",
+              personality: cardPromptText(persona.personality),
+              scenario: cardPromptText(persona.scenario),
+              backstory: cardPromptText(persona.backstory),
+              appearance: cardPromptText(persona.appearance),
             };
           }
 
@@ -1525,6 +1537,11 @@ export async function chatsRoutes(app: FastifyInstance) {
           const promptActiveAgentIds = Array.isArray(chatMeta.activeAgentIds)
             ? (chatMeta.activeAgentIds as string[])
             : [];
+          const activePromptAgentIds = filterGameInternalAgentIds(chatMode, promptActiveAgentIds);
+          const activeChatSummary =
+            chatMeta.enableAgents === true && activePromptAgentIds.includes("chat-summary")
+              ? ((chatMeta.summary as string) ?? "").trim() || null
+              : null;
 
           const assembled = await assemblePrompt({
             db: app.db,
@@ -1541,9 +1558,9 @@ export async function chatsRoutes(app: FastifyInstance) {
             personaFields,
             personaStats,
             chatMessages: mappedMessages,
-            chatSummary: (chatMeta.summary as string) ?? null,
+            chatSummary: activeChatSummary,
             enableAgents: chatMeta.enableAgents === true,
-            activeAgentIds: filterGameInternalAgentIds(chatMode, promptActiveAgentIds),
+            activeAgentIds: activePromptAgentIds,
             activeLorebookIds: Array.isArray(chatMeta.activeLorebookIds)
               ? (chatMeta.activeLorebookIds as string[])
               : [],
@@ -1705,7 +1722,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             if (!charRow) continue;
             const charData = JSON.parse(charRow.data as string);
             const charName = charData.name ?? "Unknown";
-            const charDesc = getCharacterDescriptionWithExtensions(charData);
+            const charDesc = cardPromptText(getCharacterDescriptionWithExtensions(charData));
             const xmlTag = nameToXmlTag(charName);
             const hasCharInfo =
               (charDesc && allContent.includes(charDesc.split("\n")[0]!.trim().slice(0, 80))) ||
@@ -1720,40 +1737,76 @@ export async function chatsRoutes(app: FastifyInstance) {
                 char: charName,
                 characterFields: {
                   description: charDesc,
-                  personality: charData.personality ?? "",
-                  scenario: charData.scenario ?? "",
-                  backstory: charData.extensions?.backstory ?? "",
-                  appearance: charData.extensions?.appearance ?? "",
-                  example: charData.mes_example ?? "",
-                  systemPrompt: charData.system_prompt ?? "",
-                  postHistoryInstructions: charData.post_history_instructions ?? "",
+                  personality: cardPromptText(charData.personality),
+                  scenario: cardPromptText(charData.scenario),
+                  backstory: cardPromptText(charData.extensions?.backstory),
+                  appearance: cardPromptText(charData.extensions?.appearance),
+                  example: cardPromptText(charData.mes_example),
+                  systemPrompt: cardPromptText(charData.system_prompt),
+                  postHistoryInstructions: cardPromptText(charData.post_history_instructions),
                 },
               };
               const resolveCharacterMacros = (value: string) => resolveMacros(value, characterMacroContext);
               const parts: string[] = [];
               if (charDesc) parts.push(wrapContent(resolveCharacterMacros(charDesc), "description", wrapFormat, 2));
-              if (charData.personality)
-                parts.push(wrapContent(resolveCharacterMacros(charData.personality), "personality", wrapFormat, 2));
-              if (charData.scenario && !hasGroupOverride)
-                parts.push(wrapContent(resolveCharacterMacros(charData.scenario), "scenario", wrapFormat, 2));
-              if (charData.extensions?.backstory)
-                parts.push(
-                  wrapContent(resolveCharacterMacros(charData.extensions.backstory), "backstory", wrapFormat, 2),
-                );
-              if (charData.extensions?.appearance)
-                parts.push(
-                  wrapContent(resolveCharacterMacros(charData.extensions.appearance), "appearance", wrapFormat, 2),
-                );
-              if (charData.system_prompt)
-                parts.push(wrapContent(resolveCharacterMacros(charData.system_prompt), "system_prompt", wrapFormat, 2));
-              if (charData.mes_example)
-                parts.push(
-                  wrapContent(resolveCharacterMacros(charData.mes_example), "example_dialogue", wrapFormat, 2),
-                );
-              if (charData.post_history_instructions)
+              if (characterMacroContext.characterFields.personality)
                 parts.push(
                   wrapContent(
-                    resolveCharacterMacros(charData.post_history_instructions),
+                    resolveCharacterMacros(characterMacroContext.characterFields.personality),
+                    "personality",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.scenario && !hasGroupOverride)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.scenario),
+                    "scenario",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.backstory)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.backstory),
+                    "backstory",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.appearance)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.appearance),
+                    "appearance",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.systemPrompt)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.systemPrompt),
+                    "system_prompt",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.example)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.example),
+                    "example_dialogue",
+                    wrapFormat,
+                    2,
+                  ),
+                );
+              if (characterMacroContext.characterFields.postHistoryInstructions)
+                parts.push(
+                  wrapContent(
+                    resolveCharacterMacros(characterMacroContext.characterFields.postHistoryInstructions),
                     "post_history_instructions",
                     wrapFormat,
                     2,

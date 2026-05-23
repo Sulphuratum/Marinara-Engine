@@ -90,6 +90,7 @@ import { SpriteWandCleanupEditor } from "../ui/SpriteWandCleanupEditor";
 import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatDialog";
 import type { CharacterCardVersion, CharacterData, RPGStatsConfig } from "@marinara-engine/shared";
 import { parseTrackerCardColorConfig, serializeTrackerCardColorConfig } from "../../lib/tracker-card-colors";
+import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 
 // ── Tabs ──
 const TABS = [
@@ -160,6 +161,49 @@ function appendNewTags(existingTags: string[], rawInput: string) {
   return additions.length > 0 ? [...existingTags, ...additions] : existingTags;
 }
 
+const CHARACTER_QUOTE_FIELD_KEYS = new Set<string>([
+  "description",
+  "personality",
+  "scenario",
+  "first_mes",
+  "mes_example",
+  "system_prompt",
+  "post_history_instructions",
+  "creator_notes",
+]);
+
+const CHARACTER_QUOTE_EXTENSION_KEYS = new Set(["appearance", "backstory"]);
+
+function formatCharacterFieldValue<K extends keyof CharacterData>(
+  key: K,
+  value: CharacterData[K],
+  formatQuotes: (value: string) => string,
+): CharacterData[K] {
+  if (CHARACTER_QUOTE_FIELD_KEYS.has(String(key)) && typeof value === "string") {
+    return formatQuotes(value) as CharacterData[K];
+  }
+  if (key === "alternate_greetings" && Array.isArray(value)) {
+    return value.map((entry) => (typeof entry === "string" ? formatQuotes(entry) : entry)) as CharacterData[K];
+  }
+  return value;
+}
+
+function formatCharacterExtensionValue(key: string, value: unknown, formatQuotes: (value: string) => string): unknown {
+  if (CHARACTER_QUOTE_EXTENSION_KEYS.has(key) && typeof value === "string") return formatQuotes(value);
+  if (key === "altDescriptions" && Array.isArray(value)) {
+    return value.map((entry) =>
+      entry && typeof entry === "object" && "content" in entry && typeof entry.content === "string"
+        ? { ...entry, content: formatQuotes(entry.content) }
+        : entry,
+    );
+  }
+  if (key === "depth_prompt" && value && typeof value === "object" && "prompt" in value) {
+    const depthPrompt = value as { prompt?: unknown };
+    if (typeof depthPrompt.prompt === "string") return { ...value, prompt: formatQuotes(depthPrompt.prompt) };
+  }
+  return value;
+}
+
 export function CharacterEditor() {
   const characterId = useUIStore((s) => s.characterDetailId);
   const closeDetail = useUIStore((s) => s.closeCharacterDetail);
@@ -181,6 +225,7 @@ export function CharacterEditor() {
   const [dirty, setDirty] = useState(false);
   const loadedCharacterIdRef = useRef<string | null>(null);
   const activeCharacterIdRef = useRef<string | null>(characterId);
+  const formatQuotes = useQuoteFormatter();
   const dirtyRef = useRef(false);
   const editRevisionRef = useRef(0);
   const setEditorDirty = useUIStore((s) => s.setEditorDirty);
@@ -245,10 +290,11 @@ export function CharacterEditor() {
 
   const updateField = useCallback(
     <K extends keyof CharacterData>(key: K, value: CharacterData[K]) => {
-      setFormData((prev) => (prev ? { ...prev, [key]: value } : prev));
+      const nextValue = formatCharacterFieldValue(key, value, formatQuotes);
+      setFormData((prev) => (prev ? { ...prev, [key]: nextValue } : prev));
       markDirty();
     },
-    [markDirty],
+    [formatQuotes, markDirty],
   );
 
   const setExtensionValue = useCallback((key: string, value: unknown) => {
@@ -260,10 +306,10 @@ export function CharacterEditor() {
 
   const updateExtension = useCallback(
     (key: string, value: unknown) => {
-      setExtensionValue(key, value);
+      setExtensionValue(key, formatCharacterExtensionValue(key, value, formatQuotes));
       markDirty();
     },
-    [markDirty, setExtensionValue],
+    [formatQuotes, markDirty, setExtensionValue],
   );
 
   const beginAvatarUpload = useCallback(() => {
@@ -2402,9 +2448,7 @@ function SpritesTab({
             : result.backgroundRemoverProcessed
               ? ` with backgroundremover`
               : ` with built-in cleanup`;
-        toast.success(
-          `Cleaned ${result.processed} saved sprite${result.processed === 1 ? "" : "s"}${engineDetails}.`,
-        );
+        toast.success(`Cleaned ${result.processed} saved sprite${result.processed === 1 ? "" : "s"}${engineDetails}.`);
       }
       if (result.failed.length > 0) {
         toast.warning(`${result.failed.length} sprite${result.failed.length === 1 ? "" : "s"} could not be cleaned.`);
@@ -2558,11 +2602,7 @@ function SpritesTab({
             <button
               type="button"
               onClick={() => void handleCleanVisibleSprites()}
-              disabled={
-                cleaningSprites ||
-                backgroundCleanupUnavailable ||
-                visibleSprites.length === 0
-              }
+              disabled={cleaningSprites || backgroundCleanupUnavailable || visibleSprites.length === 0}
               className="flex min-w-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-center text-[0.6875rem] font-medium leading-tight text-[var(--muted-foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:opacity-40 max-md:flex-1 max-md:basis-[calc(50%-0.25rem)] max-md:px-2.5"
               title={
                 backgroundCleanupUnavailable
@@ -3215,7 +3255,6 @@ function ColorsTab({
           <li>&bull; Leave any field empty to use the default theme colors.</li>
         </ul>
       </div>
-
     </div>
   );
 }

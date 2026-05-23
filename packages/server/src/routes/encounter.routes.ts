@@ -11,6 +11,7 @@ import { mapSheetAttributesToRPG } from "../services/game/skill-check.service.js
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import type { ChatMessage } from "../services/llm/base-provider.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
+import { stripMacroComments } from "@marinara-engine/shared";
 import type {
   EncounterInitRequest,
   EncounterActionRequest,
@@ -27,6 +28,10 @@ import type {
 // ──────────────────────────────────────────────
 
 const COMBAT_BLUEPRINT_OUTPUT_TOKENS = 12000;
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
+}
 
 /** Resolve a connection (handles "random" pool + baseUrl fallback). */
 async function resolveConnection(
@@ -139,10 +144,14 @@ async function buildPersonaContext(chars: ReturnType<typeof createCharactersStor
     allPersonas.find((p) => p.isActive === "true");
   if (!persona) return { personaName: "User", personaCtx: "No persona information available." };
   let ctx = `Name: ${persona.name}\n`;
-  if (persona.description) ctx += `${persona.description}\n`;
-  if (persona.personality) ctx += `${persona.personality}\n`;
-  if (persona.backstory) ctx += `${persona.backstory}\n`;
-  if (persona.appearance) ctx += `${persona.appearance}\n`;
+  const description = cardPromptText(persona.description);
+  const personality = cardPromptText(persona.personality);
+  const backstory = cardPromptText(persona.backstory);
+  const appearance = cardPromptText(persona.appearance);
+  if (description) ctx += `${description}\n`;
+  if (personality) ctx += `${personality}\n`;
+  if (backstory) ctx += `${backstory}\n`;
+  if (appearance) ctx += `${appearance}\n`;
   // Surface configured persona stats (status bars + RPG attributes) so the
   // combat-init AI uses the user-defined HP instead of inventing values.
   // `personaStats` is stored as a JSON string of { enabled, bars, rpgStats? }.

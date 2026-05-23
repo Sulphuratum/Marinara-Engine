@@ -457,8 +457,8 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   if (ctx.rating === "nsfw") {
     sections.push(
       `<rating_guidelines>`,
-      `Anything goes in this mature NSFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Do not sanitize content, language, cruelty, sex, or violence.`,
-      `- All characters and the player may touch dark themes, corrupt, torture, curse, lie, harm, use, fear, betray, dominate, love, ruin, mutilate, kill themselves or others (the player's protagonist included). It makes sense for villains to disregard boundaries and play dirty, but even heroes can have a dark side or break down under pressure.`,
+      `Anything goes in this mature NSFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Do not sanitize content, language, cruelty, sex, or violence:`,
+      `- All characters and the player may touch dark themes, corrupt, torture, curse, lie, harm, use, fear, betray, dominate, love, ruin, mutilate, assault, kill themselves or others (the player's protagonist included). It makes sense for villains to disregard boundaries and play dirty, but even heroes can have a dark side or break down under pressure.`,
       `- Intimacy, romance, flirtation, desire, jealousy, possessiveness, seduction, and messy attachment are allowed. Let those escalate naturally; handholding, pinning, charged proximity, touches, kisses, groping, holding, physical contact mustn't trigger an out-of-character pause. Do not wait for the player to initiate.`,
       `- Sex between involved characters should be explicit, anatomically grounded, emotionally reactive, and detailed when portrayed in the scene. Take consent for granted, assuming some lie, resist, or fight back based on their personality.`,
       `- Violence should be graphic, gory, and consequential.`,
@@ -468,7 +468,7 @@ export function buildGmSystemPrompt(ctx: GmPromptContext): string {
   } else {
     sections.push(
       `<rating_guidelines>`,
-      `This is mature SFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Profanity, dark themes, danger, and death are allowed; explicit sex is not.`,
+      `This is mature SFW fiction. The player has confirmed that they are an adult and has agreed to the terms below. Profanity, dark themes, danger, and death are allowed; explicit sex is not:`,
       `- Romance, flirtation, longing, jealousy, possessiveness, tenderness, handholding, charged proximity, touches, kisses, and embraces are allowed. Do not refuse or over-explain ordinary affection; infer willingness from context, then portray the emotional reaction.`,
       `- Sexual content fades to black and resumes in the aftermath. Treat boundaries as part of characterization and scene dynamics, not as repetitive legal disclaimers.`,
       `- Violence may be serious and consequential, but not graphic or pornographic. Injuries, death, intimidation, cruelty, exploitation, addiction, trauma, corruption, betrayal, and moral compromise may be central to the story when appropriate.`,
@@ -714,7 +714,7 @@ export function buildGmFormatReminder(
     `- Continue with new content directly from the player's input, treating it like a concluded beat. Do not reiterate anything.`,
     `- Treat only quoted player text as spoken aloud; unquoted text is action, narration, or internal thoughts that cannot be accessed by NPCs unless made observable. NEVER quote or speak for the player character (${ctx.playerName ?? "Player"}). You may indirectly narrate obvious, low-stakes participation and their thoughts (nodding during conversation, laying out details, looking around, etc.) in the second person, but never determine their strategic decisions or exact dialogue. Example:`,
     `[${ctx.playerName ?? "Player"}] [thought] [smirk]: You think to yourself that you're the best.`,
-    `- CRITICAL: NEVER echo dialogue, especially not after the player. NO PARROTTING!`,
+    `- CRITICAL: NEVER echo dialogue, especially not after the player. NO PARROTING!`,
     `- Player agency is not player immunity: the player controls intent, not the world's response. Let successes earned through effort, luck, or cleverness and failures caused by mistakes, bad luck, or poor decisions land with consequences; both good and bad ends can be earned.`,
     `- Keep turn length flexible. If player agency is low (exploration, travel/rest), go longer; if high (combat, dialogue, intense danger), stay concise. Sometimes one line of dialogue or narrative beat is enough.`,
     `- End naturally when it's the player's turn to act or speak.`,

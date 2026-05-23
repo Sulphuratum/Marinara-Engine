@@ -3,6 +3,7 @@
 // ──────────────────────────────────────────────
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import { normalizeQuoteFormat, type QuoteFormat } from "@marinara-engine/shared";
 
 type Panel =
   | "chat"
@@ -127,7 +128,8 @@ export function normalizeTrackerPanelSizeProfile(value: unknown, legacyWidth?: u
     return value as TrackerPanelSizeProfile;
   }
 
-  const width = typeof legacyWidth === "number" && Number.isFinite(legacyWidth) ? clampTrackerPanelWidth(legacyWidth) : null;
+  const width =
+    typeof legacyWidth === "number" && Number.isFinite(legacyWidth) ? clampTrackerPanelWidth(legacyWidth) : null;
   if (width !== null) {
     if (width <= 300) return "compact";
     if (width >= 380) return "expanded";
@@ -345,6 +347,8 @@ interface UIState {
   messagesPerPage: number;
   /** Bold quoted dialogue in chat messages; color highlighting can still remain when this is off */
   boldDialogue: boolean;
+  /** Preferred quote style applied to AI output and user input. */
+  quoteFormat: QuoteFormat;
   /** When true, model responses are trimmed back to the last complete sentence before saving. */
   trimIncompleteModelOutput: boolean;
   /** When true, chat inputs show a microphone button for browser speech-to-text dictation. */
@@ -565,6 +569,7 @@ interface UIState {
   setConfirmBeforeDelete: (v: boolean) => void;
   setMessagesPerPage: (n: number) => void;
   setBoldDialogue: (v: boolean) => void;
+  setQuoteFormat: (v: QuoteFormat) => void;
   setTrimIncompleteModelOutput: (v: boolean) => void;
   setSpeechToTextEnabled: (v: boolean) => void;
   setChibiProfessorMariEnabled: (v: boolean) => void;
@@ -702,6 +707,7 @@ export function pickSyncedSettings(state: UIState) {
     confirmBeforeDelete: state.confirmBeforeDelete,
     messagesPerPage: state.messagesPerPage,
     boldDialogue: state.boldDialogue,
+    quoteFormat: state.quoteFormat,
     trimIncompleteModelOutput: state.trimIncompleteModelOutput,
     speechToTextEnabled: state.speechToTextEnabled,
     chibiProfessorMariEnabled: state.chibiProfessorMariEnabled,
@@ -824,6 +830,7 @@ export const useUIStore = create<UIState>()(
       confirmBeforeDelete: true,
       messagesPerPage: 20,
       boldDialogue: true,
+      quoteFormat: "straight" as QuoteFormat,
       trimIncompleteModelOutput: false,
       speechToTextEnabled: false,
       chibiProfessorMariEnabled: true,
@@ -913,8 +920,7 @@ export const useUIStore = create<UIState>()(
         set({ trackerPanelDockedThoughtsAlwaysVisible: visible }),
       setTrackerPanelSizeProfile: (profile) =>
         set({ trackerPanelSizeProfile: normalizeTrackerPanelSizeProfile(profile) }),
-      setTrackerTemperatureUnit: (unit) =>
-        set({ trackerTemperatureUnit: normalizeTrackerTemperatureUnit(unit) }),
+      setTrackerTemperatureUnit: (unit) => set({ trackerTemperatureUnit: normalizeTrackerTemperatureUnit(unit) }),
       setTrackerPanelSectionOrder: (order) =>
         set({ trackerPanelSectionOrder: normalizeTrackerPanelSectionOrder(order) }),
       setTrackerPanelSectionCollapsed: (section, collapsed) =>
@@ -1251,6 +1257,7 @@ export const useUIStore = create<UIState>()(
       setConfirmBeforeDelete: (v) => set({ confirmBeforeDelete: v }),
       setMessagesPerPage: (n) => set({ messagesPerPage: n }),
       setBoldDialogue: (v) => set({ boldDialogue: v }),
+      setQuoteFormat: (v) => set({ quoteFormat: normalizeQuoteFormat(v) }),
       setTrimIncompleteModelOutput: (v) => set({ trimIncompleteModelOutput: v }),
       setSpeechToTextEnabled: (v) => set({ speechToTextEnabled: v }),
       setChibiProfessorMariEnabled: (v) => set({ chibiProfessorMariEnabled: v }),
@@ -1373,7 +1380,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 36,
+      version: 37,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1684,6 +1691,11 @@ export const useUIStore = create<UIState>()(
         if (persisted.trackerPanelDockedThoughtsAlwaysVisible === undefined) {
           persisted.trackerPanelDockedThoughtsAlwaysVisible = false;
         }
+        // v36 -> v37: user-selectable straight or typographic quote formatting.
+        if (version <= 36) {
+          persisted.quoteFormat = normalizeQuoteFormat(persisted.quoteFormat);
+        }
+        persisted.quoteFormat = normalizeQuoteFormat(persisted.quoteFormat);
         delete persisted.trackerPanelWidth;
         return persisted;
       },
@@ -1738,6 +1750,7 @@ export const useUIStore = create<UIState>()(
         confirmBeforeDelete: state.confirmBeforeDelete,
         messagesPerPage: state.messagesPerPage,
         boldDialogue: state.boldDialogue,
+        quoteFormat: state.quoteFormat,
         trimIncompleteModelOutput: state.trimIncompleteModelOutput,
         speechToTextEnabled: state.speechToTextEnabled,
         chibiProfessorMariEnabled: state.chibiProfessorMariEnabled,

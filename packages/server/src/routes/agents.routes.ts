@@ -6,6 +6,7 @@ import {
   createAgentConfigSchema,
   updateAgentConfigSchema,
   BUILT_IN_AGENTS,
+  DEFAULT_AGENT_TOOLS,
   getDefaultBuiltInAgentSettings,
 } from "@marinara-engine/shared";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
@@ -93,7 +94,10 @@ export async function agentsRoutes(app: FastifyInstance) {
       enabled: builtIn.enabledByDefault,
       connectionId: null,
       promptTemplate: "",
-      settings: getDefaultBuiltInAgentSettings(builtIn.id),
+      settings: {
+        ...getDefaultBuiltInAgentSettings(builtIn.id),
+        ...(DEFAULT_AGENT_TOOLS[builtIn.id]?.length ? { enabledTools: DEFAULT_AGENT_TOOLS[builtIn.id] } : {}),
+      },
     });
   };
 

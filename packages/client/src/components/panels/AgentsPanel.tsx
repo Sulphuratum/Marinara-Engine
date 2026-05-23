@@ -497,10 +497,7 @@ export function AgentsPanel() {
                   data-agent-card
                   data-agent-name={agent.name}
                   data-agent-enabled={String(agent.enabled !== "false")}
-                  className={cn(
-                    "flex items-start gap-2.5 rounded-lg p-2 transition-colors hover:bg-[var(--sidebar-accent)]",
-                    agent.enabled === "false" && "opacity-55",
-                  )}
+                  className="flex items-start gap-2.5 rounded-lg p-2 transition-colors hover:bg-[var(--sidebar-accent)]"
                 >
                   <Sparkles size="0.875rem" className="mt-0.5 shrink-0 text-[var(--primary)]" />
                   <button className="min-w-0 flex-1 text-left" onClick={() => openAgentDetail(agent.id)}>
@@ -659,10 +656,7 @@ function renderAgentCard({
       data-agent-card
       data-agent-name={name}
       data-agent-enabled={String(enabled)}
-      className={cn(
-        "flex items-start gap-2.5 rounded-lg p-2 transition-colors hover:bg-[var(--sidebar-accent)]",
-        !enabled && "opacity-55",
-      )}
+      className="flex items-start gap-2.5 rounded-lg p-2 transition-colors hover:bg-[var(--sidebar-accent)]"
     >
       <Sparkles size="0.875rem" className="mt-0.5 shrink-0 text-[var(--primary)]" />
       <button className="min-w-0 flex-1 text-left" onClick={() => openAgentDetail(custom ? id : type)}>
@@ -685,11 +679,7 @@ function renderAgentCard({
             onToggleEnabled({ id, type, custom, enabled });
           }}
         >
-          {enabled ? (
-            <ToggleRight size="0.875rem" className="text-amber-400" />
-          ) : (
-            <ToggleLeft size="0.875rem" />
-          )}
+          {enabled ? <ToggleRight size="0.875rem" className="text-amber-400" /> : <ToggleLeft size="0.875rem" />}
         </button>
       )}
       <button

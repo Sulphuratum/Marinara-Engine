@@ -102,6 +102,8 @@ export interface ChatOptions {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
   /** Output verbosity for GPT-5+ models */
   verbosity?: "low" | "medium" | "high";
+  /** OpenRouter-only service tier. */
+  serviceTier?: "flex" | "priority" | null;
   /** Abort signal — when triggered, the in-flight LLM request should be cancelled. */
   signal?: AbortSignal;
   /** Callback to receive the full response parts (for providers that return structured metadata like Gemini thought signatures) */

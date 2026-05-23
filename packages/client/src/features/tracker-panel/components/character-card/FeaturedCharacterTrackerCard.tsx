@@ -55,8 +55,7 @@ const FEATURED_DETAILS_COLUMN_CLASS =
   "relative z-[1] flex min-h-0 min-w-0 flex-col self-start overflow-hidden border-[color-mix(in_srgb,var(--tracker-profile-dialogue-border)_46%,transparent)]";
 const FEATURED_DETAILS_FIELDS_CLASS = "relative min-h-0 flex-1 overflow-hidden";
 const FEATURED_DOCKED_THOUGHT_CLASS = "mx-0 mb-0.5 mt-0 shrink-0";
-const FEATURED_DOCKED_THOUGHT_SURFACE_CLASS =
-  "scrollbar-hide overflow-hidden";
+const FEATURED_DOCKED_THOUGHT_SURFACE_CLASS = "scrollbar-hide overflow-hidden";
 const FEATURED_STAT_BAND_CLASS = "order-3 col-span-full mt-0 rounded-b-[5px]";
 const FEATURED_CUSTOM_FIELD_LIST_CLASS =
   "relative z-[1] mx-1 mb-1 mt-1 grid gap-px border-t border-[var(--tracker-profile-rule)] pt-0.5 text-[0.625rem]";
@@ -127,7 +126,8 @@ export function FeaturedCharacterTrackerCard({
   const featuredDetailsSide = getOppositeTrackerProfileSide(featuredPortraitSide);
 
   const useInlineThoughtBubble = thoughtBubbleDisplay === "inline";
-  const showDockedThoughts = hasThoughtsControl && useInlineThoughtBubble && (dockedThoughtsAlwaysVisible || thoughtsOpen);
+  const showDockedThoughts =
+    hasThoughtsControl && useInlineThoughtBubble && (dockedThoughtsAlwaysVisible || thoughtsOpen);
   const showFloatingThoughts = hasThoughtsControl && !useInlineThoughtBubble && thoughtsOpen;
   const thoughtsVisible = showDockedThoughts || showFloatingThoughts;
   const canToggleThoughts = hasThoughtsControl && !(useInlineThoughtBubble && dockedThoughtsAlwaysVisible);

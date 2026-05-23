@@ -328,10 +328,12 @@ export function CharactersPanel() {
     const list = [...filteredCharacters];
     const hasIncludedTags = includedTags.size > 0;
     const matchCounts = hasIncludedTags
-      ? new Map(list.map((c) => {
-          const tags = new Set(getCharacterTags(c).map((t) => t.toLowerCase()));
-          return [c.id, [...includedTags].filter((tag) => tags.has(tag.toLowerCase())).length];
-        }))
+      ? new Map(
+          list.map((c) => {
+            const tags = new Set(getCharacterTags(c).map((t) => t.toLowerCase()));
+            return [c.id, [...includedTags].filter((tag) => tags.has(tag.toLowerCase())).length];
+          }),
+        )
       : null;
     switch (sort) {
       case "name-asc":

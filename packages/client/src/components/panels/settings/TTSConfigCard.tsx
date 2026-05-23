@@ -294,6 +294,8 @@ export function TTSConfigCard() {
   const [voice, setVoice] = useState("alloy");
   const [voiceMode, setVoiceMode] = useState<TTSVoiceMode>("single");
   const [voiceAssignments, setVoiceAssignments] = useState<TTSVoiceAssignment[]>([]);
+  const [narratorVoiceEnabled, setNarratorVoiceEnabled] = useState(false);
+  const [narratorVoice, setNarratorVoice] = useState("");
   const [npcDefaultVoicesEnabled, setNpcDefaultVoicesEnabled] = useState(false);
   const [npcDefaultMaleVoices, setNpcDefaultMaleVoices] = useState<string[]>([]);
   const [npcDefaultFemaleVoices, setNpcDefaultFemaleVoices] = useState<string[]>([]);
@@ -336,6 +338,8 @@ export function TTSConfigCard() {
     setVoice(savedConfig.voice);
     setVoiceMode(savedConfig.voiceMode ?? "single");
     setVoiceAssignments(savedConfig.voiceAssignments ?? []);
+    setNarratorVoiceEnabled(savedConfig.narratorVoiceEnabled ?? false);
+    setNarratorVoice(savedConfig.narratorVoice ?? "");
     setNpcDefaultVoicesEnabled(savedConfig.npcDefaultVoicesEnabled ?? false);
     setNpcDefaultMaleVoices(savedConfig.npcDefaultMaleVoices ?? []);
     setNpcDefaultFemaleVoices(savedConfig.npcDefaultFemaleVoices ?? []);
@@ -379,6 +383,8 @@ export function TTSConfigCard() {
     voice,
     voiceMode,
     voiceAssignments,
+    narratorVoiceEnabled,
+    narratorVoice,
     npcDefaultVoicesEnabled,
     npcDefaultMaleVoices,
     npcDefaultFemaleVoices,
@@ -432,6 +438,8 @@ export function TTSConfigCard() {
     setVoice(defaults.voice);
     setVoiceMode("single");
     setVoiceAssignments([]);
+    setNarratorVoiceEnabled(false);
+    setNarratorVoice(defaults.voice);
     setNpcDefaultVoicesEnabled(false);
     setNpcDefaultMaleVoices([]);
     setNpcDefaultFemaleVoices([]);
@@ -444,6 +452,8 @@ export function TTSConfigCard() {
       voice: defaults.voice,
       voiceMode: "single",
       voiceAssignments: [],
+      narratorVoiceEnabled: false,
+      narratorVoice: defaults.voice,
       npcDefaultVoicesEnabled: false,
       npcDefaultMaleVoices: [],
       npcDefaultFemaleVoices: [],
@@ -547,6 +557,7 @@ export function TTSConfigCard() {
     voiceMode === "per-character"
       ? `Per character${customVoiceCount > 0 ? ` · ${customVoiceCount} custom` : ""}`
       : voice || (source === "elevenlabs" ? "No voice selected" : selectedSource.voice);
+  const narratorVoiceLabel = narratorVoice || (source === "elevenlabs" ? "No narrator voice selected" : voice);
   const previewVoice =
     voiceMode === "per-character" ? (voiceAssignments.find((assignment) => assignment.voice)?.voice ?? voice) : voice;
   const selectedLanguage =
@@ -603,6 +614,18 @@ export function TTSConfigCard() {
     updateVoiceAssignments(voiceAssignments.filter((_, assignmentIndex) => assignmentIndex !== index));
   };
 
+  const toggleNarratorVoice = (enabled: boolean) => {
+    const nextNarratorVoice = enabled && !narratorVoice ? voice || selectedSource.voice : narratorVoice;
+    setNarratorVoiceEnabled(enabled);
+    setNarratorVoice(nextNarratorVoice);
+    mark({ narratorVoiceEnabled: enabled, narratorVoice: nextNarratorVoice });
+  };
+
+  const handleNarratorVoiceChange = (nextVoice: string) => {
+    setNarratorVoice(nextVoice);
+    mark({ narratorVoice: nextVoice });
+  };
+
   const toggleNpcDefaultVoices = (enabled: boolean) => {
     const poolsAreUnpartitioned = sameStringSet(npcDefaultMaleVoices, npcDefaultFemaleVoices);
     const nextMaleVoices =
@@ -656,7 +679,7 @@ export function TTSConfigCard() {
           <div className="text-sm font-medium">Text to Speech</div>
           <div className="truncate text-[0.6875rem] text-[var(--muted-foreground)]">
             {enabled
-              ? `${selectedSource.label} · ${model || selectedSource.model} · ${selectedVoiceLabel}${voicesFromProvider || source !== "openai" ? "" : " (built-in voices)"}`
+              ? `${selectedSource.label} · ${model || selectedSource.model} · ${selectedVoiceLabel}${narratorVoiceEnabled ? ` · Narrator: ${narratorVoiceLabel}` : ""}${voicesFromProvider || source !== "openai" ? "" : " (built-in voices)"}`
               : selectedSource.idleText}
           </div>
         </div>
@@ -971,24 +994,94 @@ export function TTSConfigCard() {
             </FieldRow>
           )}
 
-          {source !== "elevenlabs" && (
           <FieldRow
-            label="Audio Format"
-            help="Output audio format. WAV are useful for local/self-hosted TTS servers that do not support MP3."
+            label="Narrator Voice"
+            help="Use a separate voice for narrator messages, game narration, and roleplay narration outside speaker-tagged dialogue."
           >
-            <select
-              value={audioFormat}
-              onChange={(e) => {
-                const next = e.target.value as TTSAudioFormat;
-                setAudioFormat(next);
-                mark({ audioFormat: next });
-              }}
-              className={cn(INPUT_CLS, "cursor-pointer appearance-none")}
-            >
-              <option value="mp3">MP3</option>
-              <option value="wav">WAV</option>
-            </select>
+            <div className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/40 p-2">
+              <ToggleRow
+                label="Use separate narrator voice"
+                checked={narratorVoiceEnabled}
+                onChange={toggleNarratorVoice}
+              />
+              {narratorVoiceEnabled && (
+                <div className="flex gap-2 max-sm:flex-col">
+                  {source === "pockettts" ? (
+                    <>
+                      <input
+                        value={narratorVoice}
+                        list="pockettts-narrator-voices"
+                        onChange={(e) => handleNarratorVoiceChange(e.target.value)}
+                        className={cn(INPUT_CLS, "min-w-0 flex-1")}
+                        placeholder="alba or a voice URL/path"
+                      />
+                      <datalist id="pockettts-narrator-voices">
+                        {voiceOptions.map((option) => (
+                          <option key={option.id} value={option.id} />
+                        ))}
+                      </datalist>
+                    </>
+                  ) : (
+                    <select
+                      value={narratorVoice}
+                      onChange={(e) => handleNarratorVoiceChange(e.target.value)}
+                      disabled={fetchingVoices || voiceOptions.length === 0}
+                      className={cn(INPUT_CLS, "min-w-0 flex-1 cursor-pointer appearance-none")}
+                    >
+                      {source === "elevenlabs" && <option value="">Select narrator voice</option>}
+                      {fetchingVoices && <option value="">Loading voices…</option>}
+                      {!fetchingVoices && voiceOptions.length === 0 && !voicesError && (
+                        <option value="">
+                          {source === "elevenlabs"
+                            ? "Enter API key, save, then refresh voices"
+                            : "Save config to load voices"}
+                        </option>
+                      )}
+                      {!fetchingVoices && voicesError && <option value="">Could not load voices</option>}
+                      {voiceOptions.map((option) => (
+                        <option key={option.id} value={option.id}>
+                          {option.name === option.id ? option.id : `${option.name} (${option.id})`}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void refetchVoices()}
+                    disabled={fetchingVoices || !savedConfig?.enabled}
+                    className="flex shrink-0 items-center justify-center gap-1 rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs ring-1 ring-[var(--border)] transition-colors hover:ring-rose-400/60 disabled:opacity-50"
+                    title="Refresh voices from provider"
+                  >
+                    <RefreshCw size="0.75rem" className={cn(fetchingVoices && "animate-spin")} />
+                  </button>
+                </div>
+              )}
+              {narratorVoiceEnabled && source === "elevenlabs" && !narratorVoice && (
+                <p className="text-[0.625rem] leading-relaxed text-amber-300/80">
+                  Select a narrator voice, or narration will fall back only when a global voice is available.
+                </p>
+              )}
+            </div>
           </FieldRow>
+
+          {source !== "elevenlabs" && (
+            <FieldRow
+              label="Audio Format"
+              help="Output audio format. WAV are useful for local/self-hosted TTS servers that do not support MP3."
+            >
+              <select
+                value={audioFormat}
+                onChange={(e) => {
+                  const next = e.target.value as TTSAudioFormat;
+                  setAudioFormat(next);
+                  mark({ audioFormat: next });
+                }}
+                className={cn(INPUT_CLS, "cursor-pointer appearance-none")}
+              >
+                <option value="mp3">MP3</option>
+                <option value="wav">WAV</option>
+              </select>
+            </FieldRow>
           )}
 
           {source === "elevenlabs" && (

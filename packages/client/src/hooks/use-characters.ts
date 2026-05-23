@@ -438,7 +438,10 @@ export function useUpdatePersona() {
 
           if (typeof previewBaseTrackerCardColors === "string" && typeof updatedTrackerCardColors === "string") {
             nextPersona[TRACKER_CARD_COLOR_PREVIEW_BASE_FIELD] = updatedTrackerCardColors;
-            nextPersona.trackerCardColors = mergeTrackerCardPortraitFields(row.trackerCardColors, updatedTrackerCardColors);
+            nextPersona.trackerCardColors = mergeTrackerCardPortraitFields(
+              row.trackerCardColors,
+              updatedTrackerCardColors,
+            );
           }
 
           return nextPersona;

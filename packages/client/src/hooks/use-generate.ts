@@ -724,8 +724,8 @@ export function useGenerate() {
       // Speed is controlled by the user's streamingSpeed setting (1–100).
       const transportStreaming = useUIStore.getState().enableStreaming;
       const streamingEnabled = transportStreaming;
-      const shouldDisplayRawStream =
-        getCachedChatMode(qc, params.chatId) !== "conversation" || !!params.regenerateMessageId;
+      const chatModeForGeneration = getCachedChatMode(qc, params.chatId);
+      const shouldDisplayRawStream = chatModeForGeneration !== "conversation" || !!params.regenerateMessageId;
       let fullBuffer = ""; // What the user sees (or accumulates silently when streaming is off)
       let pendingText = ""; // Tokens waiting to be typed out
       let receivedContent = false; // Whether any actual message content was received
@@ -735,6 +735,22 @@ export function useGenerate() {
       let rafId = 0;
       const persistedMessages = new Map<string, Message>();
       let gameStatePatchAnchor: { messageId: string; swipeIndex: number } | null = null;
+      const normalizeLineBreakSpacing = (text: string) =>
+        chatModeForGeneration === "roleplay" ? text.replace(/[ \t]+(\r?\n)/g, "$1") : text;
+      const appendGeneratedChunk = (chunk: string) => {
+        const normalizedChunk = normalizeLineBreakSpacing(chunk);
+        if (/^\r?\n/.test(normalizedChunk)) {
+          fullBuffer = fullBuffer.replace(/[ \t]+$/, "");
+          pendingText = pendingText.replace(/[ \t]+$/, "");
+        }
+        if (!normalizedChunk) return;
+        if (streamingEnabled && shouldDisplayRawStream) {
+          pendingText += normalizedChunk;
+          startTypewriter();
+        } else {
+          fullBuffer = normalizeLineBreakSpacing(fullBuffer + normalizedChunk);
+        }
+      };
 
       // ── Streaming think-tag filter ──
       // Models may emit <think>...</think>, <thinking>...</thinking>, or
@@ -752,38 +768,71 @@ export function useGenerate() {
       const THINK_OPEN_RE = /^(\s*)(<(think(?:ing)?)>|<\|channel>thought\b)/i;
       const THINK_OPEN_PREFIXES = ["<thinking>", "<think>", "<|channel>thought"];
 
-      // Compute charsPerTick from the user's streamingSpeed setting (1–100).
+      // Compute visible characters per second from the user's streamingSpeed setting (1–100).
       // Read per-tick so changes to the slider take effect immediately.
-      // Uses an exponential curve so each notch on the slider feels perceptibly different.
-      // speed 1   → 1 char/tick  → ~60 chars/sec   (slow typewriter effect)
-      // speed 50  → 22 chars/tick → ~1300 chars/sec (fast but visible)
-      // speed 100 → flush instantly (no typewriter)
-      const EXP_RATE = Math.log(500) / 98;
-      const getCharsPerTick = () => {
+      // speed 1   → slow read-along reveal
+      // speed 30  → deliberate typewriter pace
+      // speed 100 → flush instantly
+      const getCharsPerSecond = () => {
         const speed = useUIStore.getState().streamingSpeed;
-        return speed >= 100 ? Infinity : Math.max(1, Math.round(Math.exp(EXP_RATE * (speed - 1))));
+        if (speed >= 100) return Infinity;
+        const normalized = Math.max(0, Math.min(1, (speed - 1) / 98));
+        return 12 + Math.pow(normalized, 1.65) * 248;
       };
 
-      // Adaptive catch-up: when the queue gets very long, temporarily increase
-      // chars-per-tick to prevent the typewriter lagging far behind real completion.
-      const CATCHUP_THRESHOLD = 300;
-      const CATCHUP_MULTIPLIER = 4;
-      const TYPEWRITER_FRAME_MS = 28;
+      const TYPEWRITER_MAX_FRAME_MS = 120;
       let lastTypewriterPaintAt = 0;
+      let typewriterRemainder = 0;
 
       console.log(
-        "[Typewriter] streaming=%s, speed=%d, charsPerTick=%d",
+        "[Typewriter] streaming=%s, speed=%d, charsPerSecond=%s",
         streamingEnabled,
         useUIStore.getState().streamingSpeed,
-        getCharsPerTick(),
+        getCharsPerSecond(),
       );
 
       const flushTypewriterBuffer = () => {
         cancelAnimationFrame(rafId);
-        fullBuffer += pendingText;
+        fullBuffer = normalizeLineBreakSpacing(fullBuffer + pendingText);
         pendingText = "";
         typingActive = false;
+        typewriterRemainder = 0;
         if (streamingEnabled && shouldDisplayRawStream && fullBuffer) setStreamBuffer(fullBuffer, params.chatId);
+      };
+
+      const commonPrefixLength = (a: string, b: string) => {
+        const max = Math.min(a.length, b.length);
+        let index = 0;
+        while (index < max && a.charCodeAt(index) === b.charCodeAt(index)) index++;
+        return index;
+      };
+
+      const replaceGeneratedContentWithTypewriter = (content: string) => {
+        const nextContent = normalizeLineBreakSpacing(content);
+        cancelAnimationFrame(rafId);
+        typingActive = false;
+        typewriterRemainder = 0;
+
+        if (!streamingEnabled || !shouldDisplayRawStream) {
+          fullBuffer = nextContent;
+          pendingText = "";
+          return;
+        }
+
+        if (nextContent.startsWith(fullBuffer)) {
+          pendingText = nextContent.slice(fullBuffer.length);
+        } else {
+          const prefixLength = commonPrefixLength(fullBuffer, nextContent);
+          fullBuffer = nextContent.slice(0, prefixLength);
+          pendingText = nextContent.slice(prefixLength);
+          setStreamBuffer(fullBuffer, params.chatId);
+        }
+
+        if (pendingText) {
+          startTypewriter();
+        } else {
+          setStreamBuffer(fullBuffer, params.chatId);
+        }
       };
 
       const startTypewriter = () => {
@@ -798,17 +847,26 @@ export function useGenerate() {
             }
             return;
           }
-          if (now - lastTypewriterPaintAt < TYPEWRITER_FRAME_MS) {
+          if (!lastTypewriterPaintAt) lastTypewriterPaintAt = now;
+          const elapsedMs = Math.min(TYPEWRITER_MAX_FRAME_MS, Math.max(0, now - lastTypewriterPaintAt));
+          lastTypewriterPaintAt = now;
+
+          const charsPerSecond = getCharsPerSecond();
+          if (charsPerSecond === Infinity) {
+            fullBuffer += pendingText;
+            pendingText = "";
+            setStreamBuffer(fullBuffer, params.chatId);
             rafId = requestAnimationFrame(tick);
             return;
           }
-          lastTypewriterPaintAt = now;
-          // Read speed per-tick so the slider has immediate effect
-          const charsPerTick = getCharsPerTick();
-          // Catch-up: if the pending queue is very long, increase speed to avoid
-          // the typewriter still running long after the model finished.
-          const effective = pendingText.length > CATCHUP_THRESHOLD ? charsPerTick * CATCHUP_MULTIPLIER : charsPerTick;
-          const n = Math.min(effective, pendingText.length);
+
+          typewriterRemainder += (charsPerSecond * elapsedMs) / 1000;
+          const n = Math.min(Math.floor(typewriterRemainder), pendingText.length);
+          if (n < 1) {
+            rafId = requestAnimationFrame(tick);
+            return;
+          }
+          typewriterRemainder -= n;
           const batch = pendingText.slice(0, n);
           pendingText = pendingText.slice(n);
           fullBuffer += batch;
@@ -833,6 +891,7 @@ export function useGenerate() {
 
       try {
         const { userStatus, userActivity, debugMode, trimIncompleteModelOutput } = useUIStore.getState();
+        const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? "";
 
         // Flush any pending game-state widget edits so the server sees them before committing
         const flushPatch = useGameStateStore.getState().flushPatch;
@@ -840,7 +899,15 @@ export function useGenerate() {
 
         for await (const event of api.streamEvents(
           "/generate",
-          { ...params, userStatus, userActivity, debugMode, trimIncompleteModelOutput, streaming: transportStreaming },
+          {
+            ...params,
+            userStatus,
+            userActivity,
+            userTimeZone,
+            debugMode,
+            trimIncompleteModelOutput,
+            streaming: transportStreaming,
+          },
           abortController.signal,
         )) {
           switch (event.type) {
@@ -919,13 +986,7 @@ export function useGenerate() {
 
               if (!chunk) break;
 
-              if (streamingEnabled && shouldDisplayRawStream) {
-                pendingText += chunk;
-                startTypewriter();
-              } else {
-                // Accumulate silently — don't update the UI until done
-                fullBuffer += chunk;
-              }
+              appendGeneratedChunk(chunk);
               break;
             }
 
@@ -1014,13 +1075,17 @@ export function useGenerate() {
                 error: result.error,
               });
 
-              // Display as thought bubble for informational agents
-              if (result.success && result.data) {
-                const bubble = formatAgentBubble(result.agentType, result.agentName, result.data);
-                if (bubble) {
-                  addThoughtBubble(result.agentType, result.agentName, bubble);
-                }
+              const bubble = formatAgentBubble(
+                result.agentType,
+                result.agentName,
+                result.success ? result.data : { error: result.error ?? "Agent failed" },
+              );
+              if (bubble) {
+                addThoughtBubble(result.agentType, result.agentName, bubble);
+              }
 
+              // Apply successful informational agent data to dedicated stores.
+              if (result.success && result.data) {
                 // Push echo-chamber reactions to the dedicated echo store
                 if (result.agentType === "echo-chamber") {
                   const d = result.data as Record<string, unknown>;
@@ -1243,8 +1308,8 @@ export function useGenerate() {
                     typingActive = false;
                   }
                 }
-                fullBuffer = rw.editedText;
-                if (streamingEnabled && shouldDisplayRawStream) setStreamBuffer(rw.editedText, params.chatId);
+                fullBuffer = normalizeLineBreakSpacing(rw.editedText);
+                if (streamingEnabled && shouldDisplayRawStream) setStreamBuffer(fullBuffer, params.chatId);
               }
               break;
             }
@@ -1252,13 +1317,7 @@ export function useGenerate() {
             case "content_replace": {
               // Server stripped character commands — replace the displayed content
               const cleanContent = event.data as string;
-              if (streamingEnabled) {
-                cancelAnimationFrame(rafId);
-                pendingText = "";
-                typingActive = false;
-              }
-              fullBuffer = cleanContent;
-              if (streamingEnabled && shouldDisplayRawStream) setStreamBuffer(cleanContent, params.chatId);
+              replaceGeneratedContentWithTypewriter(cleanContent);
               break;
             }
 
@@ -1462,6 +1521,15 @@ export function useGenerate() {
               } else if (actionData.action === "chat_created") {
                 toast(`Started ${actionData.mode} chat with ${actionData.characterName}`, { icon: "💬" });
                 qc.invalidateQueries({ queryKey: ["chats"] });
+                if (typeof actionData.chatId === "string") {
+                  qc.invalidateQueries({ queryKey: chatKeys.messages(actionData.chatId) });
+                }
+              } else if (actionData.action === "dm_posted") {
+                if (typeof actionData.chatId === "string") {
+                  qc.invalidateQueries({ queryKey: ["chats"] });
+                  qc.invalidateQueries({ queryKey: chatKeys.messages(actionData.chatId) });
+                  qc.invalidateQueries({ queryKey: lorebookKeys.active(actionData.chatId) });
+                }
               } else if (actionData.action === "data_fetched") {
                 const fetchType = (actionData.fetchType as string) ?? "data";
                 toast(`Fetched ${fetchType}: ${actionData.name}`, { icon: "📋" });
@@ -1564,7 +1632,9 @@ export function useGenerate() {
           });
         }
         // Final flush — ensure full content is set (only for the viewed chat)
-        if (streamingEnabled && shouldDisplayRawStream) setStreamBuffer(fullBuffer + pendingText, params.chatId);
+        if (streamingEnabled && shouldDisplayRawStream) {
+          setStreamBuffer(normalizeLineBreakSpacing(fullBuffer + pendingText), params.chatId);
+        }
       } catch (error) {
         // Flush everything instantly on error so user sees what arrived
         flushTypewriterBuffer();
@@ -1857,9 +1927,14 @@ export function useGenerate() {
                   })
                   .catch((err) => console.warn("[Agent] Failed to build card update entry:", err));
               }
+              const bubble = formatAgentBubble(
+                result.agentType,
+                result.agentName,
+                result.success ? result.data : { error: result.error ?? "Agent failed" },
+              );
+              if (bubble) addThoughtBubble(result.agentType, result.agentName, bubble);
+
               if (result.success && result.data) {
-                const bubble = formatAgentBubble(result.agentType, result.agentName, result.data);
-                if (bubble) addThoughtBubble(result.agentType, result.agentName, bubble);
                 if (result.agentType === "echo-chamber") {
                   const d = result.data as Record<string, unknown>;
                   const reactions = (d.reactions as Array<{ characterName: string; reaction: string }>) ?? [];
@@ -2099,8 +2174,14 @@ function formatAgentBubble(agentType: string, agentName: string, data: unknown):
     }
 
     case "spotify": {
+      const error = typeof d.error === "string" ? d.error.trim() : "";
+      if (error) return `🎵 Spotify DJ could not run: ${error}`;
+      if (d.parseError === true) {
+        return "🎵 Spotify DJ ran, but did not return playable track details";
+      }
       const action = d.action as string;
       const mood = (d.mood as string) ?? "";
+      const display = typeof d.display === "string" ? d.display.trim() : "";
       if (action === "none") return mood ? `🎵 Keeping current track — ${mood}` : "🎵 Keeping current track";
       if (action === "play") {
         // Support both array and singular formats
@@ -2109,7 +2190,12 @@ function formatAgentBubble(agentType: string, agentName: string, data: unknown):
           : d.trackName
             ? [d.trackName as string]
             : [];
-        if (trackNames.length === 0) return mood ? `🎵 ${mood}` : null;
+        if (trackNames.length === 0) {
+          if (display) return display;
+          const queued = typeof d.queued === "number" && Number.isFinite(d.queued) ? d.queued : 0;
+          if (queued > 1) return `🎵 Queued ${queued} Spotify tracks${mood ? `: ${mood}` : ""}`;
+          return mood ? `🎵 Spotify DJ started playback: ${mood}` : "🎵 Spotify DJ started playback";
+        }
         if (trackNames.length === 1) {
           return `🎵 ${trackNames[0]}${mood ? ` — ${mood}` : ""}`;
         }

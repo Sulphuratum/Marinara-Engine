@@ -428,13 +428,7 @@ export function ModelDownloadModal({ open, onClose }: Props) {
   };
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="Local AI Model"
-      width="max-w-2xl"
-      contentRef={modalScrollRef}
-    >
+    <Modal open={open} onClose={onClose} title="Local AI Model" width="max-w-2xl" contentRef={modalScrollRef}>
       <div className="flex flex-col gap-5">
         <div className="flex items-start gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-purple-500/10">

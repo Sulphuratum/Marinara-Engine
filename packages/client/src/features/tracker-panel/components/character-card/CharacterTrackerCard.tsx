@@ -245,7 +245,11 @@ export function CharacterTrackerCard({
             fitMinScale={0.58}
           />
         ) : (
-          <FittedText className={CHARACTER_NAME_PREVIEW_CLASS} title={visibleText(character.name, "Character")} minScale={0.58}>
+          <FittedText
+            className={CHARACTER_NAME_PREVIEW_CLASS}
+            title={visibleText(character.name, "Character")}
+            minScale={0.58}
+          >
             {visibleText(character.name, "Character")}
           </FittedText>
         )}

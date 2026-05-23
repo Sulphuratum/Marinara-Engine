@@ -269,9 +269,7 @@ export function InlineThoughtBubble({
   const reducedMotion = useReducedMotion();
   const previewLineCount = isFeaturedVariant ? (thoughtText.length <= 70 ? 2 : 3) : thoughtTextFit.previewLineCount;
   const thoughtTextStyle: CSSProperties = {
-    fontSize: isFeaturedVariant
-      ? "clamp(0.65625rem, calc(0.56rem + 0.85cqw), 0.75rem)"
-      : thoughtTextFit.fontSize,
+    fontSize: isFeaturedVariant ? "clamp(0.65625rem, calc(0.56rem + 0.85cqw), 0.75rem)" : thoughtTextFit.fontSize,
     lineHeight: isFeaturedVariant ? 1.12 : thoughtTextFit.lineHeight,
   };
   const editMinHeightClassName = isFeaturedVariant
@@ -287,11 +285,7 @@ export function InlineThoughtBubble({
       {...getInlineThoughtBubbleMotion({ tailOnLeft, featured: isFeaturedVariant, reducedMotion })}
       className={cn(
         "relative mx-1 mt-1 min-w-0 text-[var(--foreground)] will-change-transform [container-type:inline-size]",
-        isFeaturedVariant
-          ? "px-0"
-          : tailOnLeft
-            ? "pl-3.5 pr-0.5"
-            : "pl-0.5 pr-3.5",
+        isFeaturedVariant ? "px-0" : tailOnLeft ? "pl-3.5 pr-0.5" : "pl-0.5 pr-3.5",
         className,
       )}
     >
@@ -445,8 +439,7 @@ export function ExternalThoughtBubble({
 
     updatePosition();
     const anchor = anchorRef.current;
-    const resizeObserver =
-      anchor && typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
+    const resizeObserver = anchor && typeof ResizeObserver !== "undefined" ? new ResizeObserver(updatePosition) : null;
     if (anchor) resizeObserver?.observe(anchor);
     window.addEventListener("resize", updatePosition);
     window.addEventListener("scroll", updatePosition, true);

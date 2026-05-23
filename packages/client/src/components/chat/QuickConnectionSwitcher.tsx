@@ -90,7 +90,9 @@ export function QuickConnectionSwitcher({ className }: { className?: string }) {
         title="Quick Connection Switcher"
         className={cn(
           "flex h-8 w-8 items-center justify-center rounded-xl transition-all",
-          open ? "text-foreground bg-foreground/10" : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+          open
+            ? "bg-foreground/10 text-foreground/75"
+            : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
           className,
         )}
       >

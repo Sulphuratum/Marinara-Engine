@@ -3,7 +3,15 @@ import { Pencil } from "lucide-react";
 import { cn } from "../../../../lib/utils";
 import { visibleText } from "../../lib/tracker-display";
 
-export function WorldTileShell({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+export function WorldTileShell({
+  label,
+  children,
+  className,
+}: {
+  label: string;
+  children: ReactNode;
+  className?: string;
+}) {
   return (
     <div
       className={cn(

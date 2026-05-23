@@ -13,10 +13,7 @@ import type {
 import { useFeaturedCharacterCards } from "../hooks/use-featured-character-cards";
 import { useTrackerMutations } from "../hooks/use-tracker-mutations";
 import { useTrackerRerun } from "../hooks/use-tracker-rerun";
-import {
-  TRACKER_SECTION_AGENT_TYPES,
-  TRACKER_SECTION_RERUN_TITLES,
-} from "../lib/tracker-panel.constants";
+import { TRACKER_SECTION_AGENT_TYPES, TRACKER_SECTION_RERUN_TITLES } from "../lib/tracker-panel.constants";
 import type { TrackerPanelSection, TrackerSpriteLookup } from "../tracker-panel.types";
 import { SectionIconButton } from "./controls/SectionControls";
 import { CharacterTrackerPanel } from "./sections/CharacterTrackerPanel";
@@ -81,10 +78,11 @@ export function TrackerSectionList({
   addMode: boolean;
 }) {
   const updateAgent = useUpdateAgent();
-  const { featuredCharacterCards, removeFeaturedCharacterCard, toggleFeaturedCharacterCard } = useFeaturedCharacterCards({
-    activeChatId,
-    featuredCharacterCardKeys,
-  });
+  const { featuredCharacterCards, removeFeaturedCharacterCard, toggleFeaturedCharacterCard } =
+    useFeaturedCharacterCards({
+      activeChatId,
+      featuredCharacterCardKeys,
+    });
   const { rerunTracker, trackerRetryBusy } = useTrackerRerun({
     activeChatId,
     enabledAgentTypes,

@@ -201,10 +201,7 @@ function StatBar({
           />
         ) : nameMode === "truncate" ? (
           <FittedText
-            className={cn(
-              "w-full font-medium text-[color:var(--tracker-profile-text)]",
-              nameTextClass,
-            )}
+            className={cn("w-full font-medium text-[color:var(--tracker-profile-text)]", nameTextClass)}
             title={visibleText(stat.name, "Stat")}
             minScale={0.56}
           >

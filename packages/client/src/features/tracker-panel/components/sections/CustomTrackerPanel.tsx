@@ -77,7 +77,10 @@ function CustomFieldList({
                     index % 2 === 0 &&
                     !(fields.length % 2 === 1 && index === fields.length - 1) &&
                     "@min-[300px]:border-r @min-[300px]:border-r-[var(--border)]/20",
-                  useFieldColumns && fields.length % 2 === 1 && index === fields.length - 1 && "@min-[300px]:col-span-2",
+                  useFieldColumns &&
+                    fields.length % 2 === 1 &&
+                    index === fields.length - 1 &&
+                    "@min-[300px]:col-span-2",
                   deleteMode && "pr-5",
                 )}
               >

@@ -186,7 +186,10 @@ export function createCharactersStorage(db: DB) {
       const existing = await this.getById(id);
       if (!existing) return null;
       if (existing.avatarPath !== avatarPath) {
-        await this.createVersionSnapshot(id, { source: "manual", reason: avatarPath ? "Avatar update" : "Avatar removed" });
+        await this.createVersionSnapshot(id, {
+          source: "manual",
+          reason: avatarPath ? "Avatar update" : "Avatar removed",
+        });
       }
       await db.update(characters).set({ avatarPath, updatedAt: now() }).where(eq(characters.id, id));
       return this.getById(id);

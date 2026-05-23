@@ -116,6 +116,8 @@ export const ttsConfigSchema = z.object({
   elevenLabsLanguageCode: z.string().max(8).default(""),
   voiceMode: ttsVoiceModeSchema.default("single"),
   voiceAssignments: z.array(ttsVoiceAssignmentSchema).default([]),
+  narratorVoiceEnabled: z.boolean().default(false),
+  narratorVoice: z.string().default(""),
   npcDefaultVoicesEnabled: z.boolean().default(false),
   npcDefaultMaleVoices: z.array(z.string()).default([]),
   npcDefaultFemaleVoices: z.array(z.string()).default([]),

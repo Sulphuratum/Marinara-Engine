@@ -135,10 +135,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     return typeof message === "string" ? message : "";
   }
 
-  private static requireChatCompletionsChoices<T>(
-    json: Record<string, unknown>,
-    context: string,
-  ): T[] {
+  private static requireChatCompletionsChoices<T>(json: Record<string, unknown>, context: string): T[] {
     if (Array.isArray(json.choices)) return json.choices as T[];
     const providerMessage = OpenAIProvider.extractProviderErrorMessage(json);
     const detail = providerMessage ? `: ${sanitizeApiError(providerMessage)}` : "";
@@ -508,8 +505,7 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private isOpenRouterEndpoint(): boolean {
     return (
-      this.providerKind === "openrouter" ||
-      (!this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai"))
+      this.providerKind === "openrouter" || (!this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai"))
     );
   }
 
@@ -648,6 +644,17 @@ export class OpenAIProvider extends BaseLLMProvider {
 
   private shouldApplyOpenRouterProviderOverride(openrouterProvider?: string | null): boolean {
     return !!openrouterProvider && !this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai");
+  }
+
+  private resolveOpenRouterServiceTier(serviceTier?: string | null): "flex" | "priority" | null {
+    if (serviceTier !== "flex" && serviceTier !== "priority") return null;
+    if (this.isGenericCustomProvider() || !this.baseUrl.includes("openrouter.ai")) return null;
+    return serviceTier;
+  }
+
+  private applyOpenRouterServiceTier(body: Record<string, unknown>, options: ChatOptions): void {
+    const serviceTier = this.resolveOpenRouterServiceTier(options.serviceTier);
+    if (serviceTier) body.service_tier = serviceTier;
   }
 
   private static extractChatCompletionsUsage(usage: ChatCompletionsUsagePayload | undefined): LLMUsage | undefined {
@@ -791,6 +798,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
 
     this.applyOpenRouterPromptCaching(body, options);
+    this.applyOpenRouterServiceTier(body, options);
 
     // Force response format (e.g. JSON mode)
     const normalizedResponseFormat = this.normalizeChatCompletionsResponseFormat(options.responseFormat);
@@ -1015,6 +1023,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
 
     this.applyOpenRouterPromptCaching(body, options);
+    this.applyOpenRouterServiceTier(body, options);
 
     // Force response format (e.g. JSON mode)
     const normalizedResponseFormat = this.normalizeChatCompletionsResponseFormat(options.responseFormat);
@@ -1408,6 +1417,10 @@ export class OpenAIProvider extends BaseLLMProvider {
     const openrouterProvider = this.resolveOpenrouterProvider(options.openrouterProvider);
     if (!isOpenAIChatGPT && this.shouldApplyOpenRouterProviderOverride(openrouterProvider)) {
       body.provider = { order: [openrouterProvider] };
+    }
+
+    if (!isOpenAIChatGPT) {
+      this.applyOpenRouterServiceTier(body, options);
     }
 
     if (!isOpenAIChatGPT && options.tools?.length && !this.isXAIMultiAgentModel(options.model)) {

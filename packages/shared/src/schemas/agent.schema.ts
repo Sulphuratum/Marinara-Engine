@@ -36,12 +36,7 @@ export const agentResultTypeSchema = z.enum([
 
 export const customAgentActivationSettingsSchema = z.object({
   activationKeywords: z.array(z.string().trim().min(1)).max(100).optional(),
-  activationScanDepth: z
-    .number()
-    .int()
-    .min(1)
-    .max(MAX_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH)
-    .optional(),
+  activationScanDepth: z.number().int().min(1).max(MAX_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH).optional(),
 });
 
 export const createAgentConfigSchema = z.object({

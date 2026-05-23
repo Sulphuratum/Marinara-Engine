@@ -262,6 +262,7 @@ const HOME_FAQ_ITEMS: HomeFaqItem[] = [
     answer: "The workflow template has to expose the placeholders Marinara expects.",
     bullets: [
       "Use %prompt%, %width%, %height%, %negative_prompt%, and %seed% in the workflow or request template.",
+      "Use %reference_image_01% through %reference_image_04% or %reference_image_name_01% through %reference_image_name_04% for multiple ComfyUI reference slots.",
       'If your JSON parser complains, wrap width and height placeholders in quotes, like "%width%".',
       "The default timeout is 120 seconds, which is often too short for slower Flux or Chroma workflows.",
     ],

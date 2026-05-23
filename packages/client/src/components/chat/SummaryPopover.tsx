@@ -652,7 +652,9 @@ export function SummaryPopover({
       <div
         className={cn(
           "relative rounded-xl border border-[var(--border)] bg-[var(--background)] shadow-2xl shadow-black/50 backdrop-blur-xl",
-          isMobile ? "relative w-full max-w-md max-h-[calc(100dvh-4rem)] overflow-y-auto" : "w-[28rem] overflow-visible",
+          isMobile
+            ? "relative w-full max-w-md max-h-[calc(100dvh-4rem)] overflow-y-auto"
+            : "w-[28rem] overflow-visible",
         )}
       >
         {/* Header */}

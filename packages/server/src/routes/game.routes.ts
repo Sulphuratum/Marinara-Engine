@@ -1735,7 +1735,7 @@ export function normalizeGameLorebookKeeperEntries(raw: unknown): GameLorebookKe
           ? source.tag.trim().replace(/\s+/g, "_").toLowerCase()
           : typeof nestedEntry.tag === "string" && nestedEntry.tag.trim()
             ? nestedEntry.tag.trim().replace(/\s+/g, "_").toLowerCase()
-          : "game_lore";
+            : "game_lore";
       const entryName = truncateKeeperName(rawName);
       const keys = normalizeKeeperStringList(source.keys ?? nestedEntry.keys, 10);
       const description =
@@ -1743,7 +1743,7 @@ export function normalizeGameLorebookKeeperEntries(raw: unknown): GameLorebookKe
           ? source.description.trim()
           : typeof nestedEntry.description === "string" && nestedEntry.description.trim()
             ? nestedEntry.description.trim()
-          : `Game Lorebook Keeper entry tagged ${tag}.`;
+            : `Game Lorebook Keeper entry tagged ${tag}.`;
 
       return [
         {

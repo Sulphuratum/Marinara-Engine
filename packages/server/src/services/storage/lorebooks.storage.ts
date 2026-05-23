@@ -51,6 +51,7 @@ function parseLorebookRow(row: Record<string, unknown>) {
     ...row,
     recursiveScanning: row.recursiveScanning === "true",
     maxRecursionDepth: typeof row.maxRecursionDepth === "number" ? row.maxRecursionDepth : 3,
+    excludeFromVectorization: row.excludeFromVectorization === "true",
     isGlobal: row.isGlobal === "true",
     enabled: row.enabled === "true",
     imagePath: row.imagePath || null,
@@ -241,6 +242,7 @@ export function createLorebooksStorage(db: DB) {
           tokenBudget: input.tokenBudget ?? 2048,
           recursiveScanning: String(input.recursiveScanning ?? false),
           maxRecursionDepth: input.maxRecursionDepth ?? 3,
+          excludeFromVectorization: String(input.excludeFromVectorization ?? false),
           characterId: characterIds[0] ?? null,
           personaId: personaIds[0] ?? null,
           chatId: input.chatId ?? null,
@@ -267,6 +269,8 @@ export function createLorebooksStorage(db: DB) {
       if (input.tokenBudget !== undefined) updates.tokenBudget = input.tokenBudget;
       if (input.recursiveScanning !== undefined) updates.recursiveScanning = String(input.recursiveScanning);
       if (input.maxRecursionDepth !== undefined) updates.maxRecursionDepth = input.maxRecursionDepth;
+      if (input.excludeFromVectorization !== undefined)
+        updates.excludeFromVectorization = String(input.excludeFromVectorization);
       const shouldUpdateCharacterLinks = input.characterIds !== undefined || input.characterId !== undefined;
       const shouldUpdatePersonaLinks = input.personaIds !== undefined || input.personaId !== undefined;
       const current = shouldUpdateCharacterLinks || shouldUpdatePersonaLinks ? ((await this.getById(id)) as any) : null;
@@ -359,6 +363,7 @@ export function createLorebooksStorage(db: DB) {
         personaIds?: string[];
         chatId?: string | null;
         sourceAgentId?: string | null;
+        excludeFromVectorization?: boolean;
       }>;
 
       let relevantBooks = enabledBooks;
@@ -386,6 +391,9 @@ export function createLorebooksStorage(db: DB) {
 
       const bookIds = relevantBooks.map((b) => b.id);
       if (bookIds.length === 0) return [];
+      const excludedVectorBookIds = new Set(
+        relevantBooks.filter((book) => book.excludeFromVectorization).map((book) => book.id),
+      );
 
       // Build the disabled-folder ID set for the relevant lorebooks. Done as
       // an in-memory filter (rather than a SQL anti-join) because folder
@@ -401,7 +409,11 @@ export function createLorebooksStorage(db: DB) {
         .from(lorebookEntries)
         .where(and(inArray(lorebookEntries.lorebookId, bookIds), eq(lorebookEntries.enabled, "true")))
         .orderBy(lorebookEntries.order);
-      const parsed = rows.map((r) => parseEntryRow(r as Record<string, unknown>));
+      const parsed = rows.map((r) => {
+        const entry = parseEntryRow(r as Record<string, unknown>);
+        const lorebookId = String((entry as Record<string, unknown>).lorebookId ?? "");
+        return excludedVectorBookIds.has(lorebookId) ? { ...entry, excludeFromVectorization: true } : entry;
+      });
       if (disabledFolderIds.size === 0) return parsed;
       return parsed.filter((e) => !e.folderId || !disabledFolderIds.has(e.folderId as string));
     },

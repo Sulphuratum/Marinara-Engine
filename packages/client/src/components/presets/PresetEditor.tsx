@@ -63,15 +63,21 @@ import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { api } from "../../lib/api-client";
 import { useAgentConfigs, type AgentConfigRow } from "../../hooks/use-agents";
 import { SUPPORTED_MACROS, type WrapFormat, type MarkerType } from "@marinara-engine/shared";
+import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 
 /** Intercept Tab in a textarea to insert 2 spaces instead of changing focus. */
-function handleTextareaTab(e: React.KeyboardEvent<HTMLTextAreaElement>, value: string, setValue: (v: string) => void) {
+function handleTextareaTab(
+  e: React.KeyboardEvent<HTMLTextAreaElement>,
+  value: string,
+  setValue: (v: string) => void,
+  formatValue: (v: string) => string = (v) => v,
+) {
   if (e.key !== "Tab") return;
   e.preventDefault();
   const ta = e.currentTarget;
   const start = ta.selectionStart;
   const end = ta.selectionEnd;
-  const newValue = value.substring(0, start) + "  " + value.substring(end);
+  const newValue = formatValue(value.substring(0, start) + "  " + value.substring(end));
   setValue(newValue);
   // Restore cursor position after React re-renders
   requestAnimationFrame(() => {
@@ -180,6 +186,7 @@ export function PresetEditor() {
   const [localWrapFormat, setLocalWrapFormat] = useState<WrapFormat>("xml");
   const [localAuthor, setLocalAuthor] = useState("");
   const [localParams, setLocalParams] = useState<Record<string, unknown>>({});
+  const formatQuotes = useQuoteFormatter();
 
   // Populate local state when data loads
   useEffect(() => {
@@ -453,7 +460,7 @@ export function PresetEditor() {
                 }}
                 description={localDescription}
                 onDescriptionChange={(v) => {
-                  setLocalDescription(v);
+                  setLocalDescription(formatQuotes(v));
                   markDirty();
                 }}
                 wrapFormat={localWrapFormat}
@@ -463,7 +470,7 @@ export function PresetEditor() {
                 }}
                 author={localAuthor}
                 onAuthorChange={(v) => {
-                  setLocalAuthor(v);
+                  setLocalAuthor(formatQuotes(v));
                   markDirty();
                 }}
                 sectionCount={orderedSections.length}
@@ -1912,6 +1919,7 @@ function OptionFieldInput({
   const [local, setLocal] = useState(value);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
+  const formatQuotes = useQuoteFormatter();
   useEffect(() => {
     if (!focusedRef.current) setLocal(value);
   }, [value]);
@@ -1929,10 +1937,11 @@ function OptionFieldInput({
         e.target.select();
       }}
       onChange={(e) => {
-        setLocal(e.target.value);
+        const nextValue = formatQuotes(e.target.value);
+        setLocal(nextValue);
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
         timeoutRef.current = setTimeout(() => {
-          onCommit(e.target.value);
+          onCommit(nextValue);
         }, 600);
       }}
       onBlur={() => {
@@ -1957,6 +1966,7 @@ function OptionFieldInput({
 // ── Variable Question Input (local state, commits on blur/Enter) ──
 function VariableQuestionInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [local, setLocal] = useState(value);
+  const formatQuotes = useQuoteFormatter();
   useEffect(() => {
     setLocal(value);
   }, [value]);
@@ -1964,7 +1974,7 @@ function VariableQuestionInput({ value, onCommit }: { value: string; onCommit: (
     <input
       value={local}
       onFocus={(e) => e.target.select()}
-      onChange={(e) => setLocal(e.target.value)}
+      onChange={(e) => setLocal(formatQuotes(e.target.value))}
       onBlur={() => {
         if (local !== value) onCommit(local);
       }}
@@ -1994,6 +2004,7 @@ function SectionContentTextarea({
   const [showMacroRef, setShowMacroRef] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
+  const formatQuotes = useQuoteFormatter();
 
   // Only sync from parent when not actively editing
   useEffect(() => {
@@ -2006,11 +2017,11 @@ function SectionContentTextarea({
 
   // Debounced auto-save while typing (800ms)
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setLocal(e.target.value);
+    const nextValue = formatQuotes(e.target.value);
+    setLocal(nextValue);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
-      const val = e.target.value;
-      if (val !== value) onCommit(val);
+      if (nextValue !== value) onCommit(nextValue);
     }, 800);
   };
 
@@ -2045,13 +2056,18 @@ function SectionContentTextarea({
           onBlur={handleBlur}
           onFocus={handleFocus}
           onKeyDown={(e) =>
-            handleTextareaTab(e, local, (v) => {
-              setLocal(v);
-              if (timeoutRef.current) clearTimeout(timeoutRef.current);
-              timeoutRef.current = setTimeout(() => {
-                if (v !== value) onCommit(v);
-              }, 800);
-            })
+            handleTextareaTab(
+              e,
+              local,
+              (v) => {
+                setLocal(v);
+                if (timeoutRef.current) clearTimeout(timeoutRef.current);
+                timeoutRef.current = setTimeout(() => {
+                  if (v !== value) onCommit(v);
+                }, 800);
+              },
+              formatQuotes,
+            )
           }
           className="min-h-[7.5rem] w-full rounded-lg bg-[var(--secondary)] p-2.5 pr-8 font-mono text-xs text-[var(--foreground)] ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
           placeholder="Prompt content… (supports {{user}}, {{char}}, {{// comment}}, {{trim}} macros)"
@@ -2083,10 +2099,11 @@ function SectionContentTextarea({
           title={sectionName ? `Edit: ${sectionName}` : "Edit Prompt"}
           value={local}
           onChange={(v) => {
-            setLocal(v);
+            const nextValue = formatQuotes(v);
+            setLocal(nextValue);
             if (timeoutRef.current) clearTimeout(timeoutRef.current);
             timeoutRef.current = setTimeout(() => {
-              if (v !== value) onCommit(v);
+              if (nextValue !== value) onCommit(nextValue);
             }, 800);
           }}
           onClose={() => {
@@ -2119,6 +2136,7 @@ function ExpandedEditorModal({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [local, setLocal] = useState(value);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const formatQuotes = useQuoteFormatter();
 
   // Sync from parent only on initial mount (not on every re-render)
   useEffect(() => {
@@ -2151,7 +2169,7 @@ function ExpandedEditorModal({
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const v = e.target.value;
+    const v = formatQuotes(e.target.value);
     setLocal(v);
     // Debounced commit so the parent stays in sync without cursor jumps
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -2188,13 +2206,19 @@ function ExpandedEditorModal({
               value={local}
               onChange={handleChange}
               onKeyDown={(e) =>
-                handleTextareaTab(e, local, (v) => {
-                  setLocal(v);
-                  if (timeoutRef.current) clearTimeout(timeoutRef.current);
-                  timeoutRef.current = setTimeout(() => {
-                    onChange(v);
-                  }, 600);
-                })
+                handleTextareaTab(
+                  e,
+                  local,
+                  (v) => {
+                    const nextValue = formatQuotes(v);
+                    setLocal(nextValue);
+                    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+                    timeoutRef.current = setTimeout(() => {
+                      onChange(nextValue);
+                    }, 600);
+                  },
+                  formatQuotes,
+                )
               }
               className="h-full w-full resize-none rounded-lg bg-[var(--secondary)] p-4 font-mono text-sm text-[var(--foreground)] ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
               placeholder="Prompt content… (supports macros like {{user}}, {{char}}, etc.)"
@@ -2261,6 +2285,27 @@ function MacrosReferenceModal({ onClose }: { onClose: () => void }) {
               In group chats, a bracketed block containing character macros like <code>{"{{char}}"}</code> and{" "}
               <code>{"{{description}}"}</code> repeats once per character.
             </p>
+            <div className="space-y-2 border-y border-[var(--border)] py-3">
+              <div>
+                <h4 className="text-[0.6875rem] font-semibold text-purple-400">Conditional blocks</h4>
+                <p className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]">
+                  Use <code>{"{{#if ...}}"}</code>, optional <code>{"{{else}}"}</code>, and <code>{"{{/if}}"}</code> to
+                  switch prompt text by the active speaker, user, or a preset variable.
+                </p>
+              </div>
+              <pre className="overflow-x-auto rounded-lg bg-[var(--secondary)] px-3 py-2 text-[0.625rem] leading-relaxed text-amber-300">
+                <code>{`{{#if character == "Dottore"}}
+Write this for Dottore.
+{{else}}
+Write this for anyone else.
+{{/if}}`}</code>
+              </pre>
+              <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                Supported comparisons: <code>==</code>, <code>!=</code>, and <code>contains</code>. Character checks
+                also work with <code>char</code> or <code>speaker</code>, and group chats evaluate them for the speaking
+                character. Straight and typographic quotes both work.
+              </p>
+            </div>
             {MACRO_REFERENCE.map((cat) => (
               <div key={cat.category}>
                 <h4 className="mb-1.5 text-[0.6875rem] font-semibold text-purple-400">{cat.category}</h4>

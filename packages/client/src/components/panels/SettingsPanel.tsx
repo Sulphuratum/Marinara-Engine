@@ -22,7 +22,7 @@ import { chatBackgroundUrlToMetadata } from "../../lib/backgrounds";
 import { forceRefreshSpa } from "@/lib/browser-runtime";
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import { toast } from "sonner";
-import { APP_VERSION, type Theme } from "@marinara-engine/shared";
+import { APP_VERSION, type QuoteFormat, type Theme } from "@marinara-engine/shared";
 import {
   findDuplicateTheme,
   useCreateTheme,
@@ -248,6 +248,11 @@ const TRACKER_PANEL_CARD_OPTIONS: Record<TrackerDataPanelSection, { label: strin
   },
 };
 
+const QUOTE_FORMAT_OPTIONS: Array<{ id: QuoteFormat; label: string; sample: string }> = [
+  { id: "straight", label: "Straight", sample: '"Hello", it\'s me.' },
+  { id: "typographic", label: "Typographic", sample: "\u201cHello,\u201d it\u2019s me." },
+];
+
 const GAME_ASSET_CATEGORIES = [
   {
     id: "music",
@@ -280,6 +285,8 @@ const GAME_ASSET_CATEGORIES = [
     accept: "image/*",
   },
 ] as const;
+
+const GAME_IMAGE_PROMPT_TEMPLATE_KEYS = ["game.npcPortrait", "game.background", "game.sceneIllustration"] as const;
 
 type GameAssetCategoryId = (typeof GAME_ASSET_CATEGORIES)[number]["id"];
 const GAME_ASSET_CATEGORY_BY_ID = new Map(GAME_ASSET_CATEGORIES.map((category) => [category.id, category]));
@@ -753,6 +760,8 @@ function GeneralSettings() {
   const setMessagesPerPage = useUIStore((s) => s.setMessagesPerPage);
   const boldDialogue = useUIStore((s) => s.boldDialogue);
   const setBoldDialogue = useUIStore((s) => s.setBoldDialogue);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
+  const setQuoteFormat = useUIStore((s) => s.setQuoteFormat);
   const trimIncompleteModelOutput = useUIStore((s) => s.trimIncompleteModelOutput);
   const setTrimIncompleteModelOutput = useUIStore((s) => s.setTrimIncompleteModelOutput);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
@@ -1043,6 +1052,35 @@ function GeneralSettings() {
         }
       />
 
+      <div className="flex flex-col gap-1.5 rounded-lg p-1 transition-colors hover:bg-[var(--secondary)]/50">
+        <div className="flex items-center gap-2">
+          <span className="text-xs">Quote style</span>
+          <HelpTooltip text="Choose how straight and smart quotation marks are unified in chat inputs and displayed AI output." />
+        </div>
+        <div className="grid grid-cols-2 gap-1.5">
+          {QUOTE_FORMAT_OPTIONS.map((option) => {
+            const active = quoteFormat === option.id;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => setQuoteFormat(option.id)}
+                className={cn(
+                  "flex min-w-0 flex-col items-start gap-0.5 rounded-lg px-2.5 py-2 text-left text-xs transition-all ring-1",
+                  active
+                    ? "bg-[var(--primary)]/15 text-[var(--primary)] ring-[var(--primary)]/35"
+                    : "bg-[var(--secondary)] text-[var(--muted-foreground)] ring-[var(--border)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                )}
+              >
+                <span className="font-medium">{option.label}</span>
+                <span className="max-w-full truncate text-[0.625rem] opacity-80">{option.sample}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <ToggleSetting
         label="Trim incomplete model endings"
         checked={trimIncompleteModelOutput}
@@ -1119,6 +1157,14 @@ function GeneralSettings() {
           />
         </div>
       </div>
+
+      <PromptOverridesEditor
+        title="Game Image Prompt Templates"
+        description="Edit the reusable templates Game Mode uses for NPC portraits, backgrounds, and scene illustrations."
+        help="These templates render before Game Mode sends recurring image-generation requests. One-off prompt review edits still only affect the current request."
+        keys={GAME_IMAGE_PROMPT_TEMPLATE_KEYS}
+        preferredKey="game.npcPortrait"
+      />
 
       {/* Game Assets Folders */}
       <div className="rounded-xl bg-[var(--secondary)]/50 p-4 ring-1 ring-[var(--border)]">
@@ -3780,11 +3826,18 @@ function AdvancedSettings() {
     releaseUrl: string;
     releaseNotes: string;
     publishedAt: string;
-    installType: "git" | "standalone";
+    releaseTag?: string;
+    dockerImage?: string;
+    dockerImageTag?: string;
+    dockerLiteImageTag?: string;
+    installType: "git" | "docker" | "standalone";
+    serverPlatform?: "windows" | "macos" | "linux" | "android-termux" | "unknown";
+    clientPlatform?: "ios" | "android" | "desktop" | "unknown";
     applyAvailable?: boolean;
     updatesApplyEnabled?: boolean;
-    applyUnavailableReason?: "disabled" | "unsupported-install" | null;
+    applyUnavailableReason?: "disabled" | "unsupported-install" | "container-install" | null;
     manualUpdateCommand?: string | null;
+    manualUpdateHint?: string | null;
   }>({
     queryKey: ["update-check"],
     queryFn: () => api.get("/updates/check"),
@@ -3828,12 +3881,17 @@ function AdvancedSettings() {
   const currentCommit = health.data?.commit ?? updateCheck.data?.currentCommit ?? null;
   const currentBuildLabel = currentCommit ? `Build: ${currentCommit.slice(0, 7)}` : "Build: unavailable";
   const commitsBehind = updateCheck.data?.commitsBehind ?? 0;
+  const installType = updateCheck.data?.installType ?? "standalone";
+  const isIosClient = updateCheck.data?.clientPlatform === "ios";
   const applyUnavailableReason = updateCheck.data?.applyUnavailableReason ?? null;
   const manualUpdateCommand = updateCheck.data?.manualUpdateCommand ?? null;
+  const manualUpdateHint = updateCheck.data?.manualUpdateHint ?? null;
   const applyUnavailableCopy =
-    applyUnavailableReason === "disabled"
-      ? "This install can check for updates, but applying them from the browser is disabled. Update manually with the command below. Advanced git installs can enable server-side apply with UPDATES_APPLY_ENABLED=true."
-      : "This install can check for updates, but it cannot apply them from the browser. Relaunch the app if you use the launcher, or update manually for your install type.";
+    applyUnavailableReason === "container-install"
+      ? "Container installs cannot replace themselves from inside the browser. Pull the release image tag or latest image on the host, then restart the container."
+      : applyUnavailableReason === "disabled"
+        ? "This install can check for updates, but applying them from the browser is disabled. Update manually with the command below. Advanced git installs can enable server-side apply with UPDATES_APPLY_ENABLED=true."
+        : "This install can check for updates, but it cannot apply them from the browser. Relaunch the app if you use the launcher, or update manually for your install type.";
   const isClearing = clearAllData.isPending || expungeData.isPending;
   const isAllScopesSelected = selectedScopes.length === EXPUNGE_SCOPE_OPTIONS.length;
 
@@ -3879,20 +3937,23 @@ function AdvancedSettings() {
           <Power size="0.75rem" className="text-[var(--muted-foreground)]" />
           <span className="text-xs font-medium">Admin Access</span>
         </div>
-        <div className="flex gap-2 max-sm:flex-col">
+        <div className="flex min-w-0 flex-wrap gap-2">
           <input
             type="password"
             value={adminSecret}
             onChange={(e) => setAdminSecret(e.target.value)}
             placeholder="ADMIN_SECRET"
-            className="flex-1 rounded-lg bg-[var(--background)] px-3 py-2 text-xs outline-none ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:ring-[var(--primary)]"
+            className="min-w-0 flex-[1_1_12rem] rounded-lg bg-[var(--background)] px-3 py-2 text-xs outline-none ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:ring-[var(--primary)]"
           />
           <button
+            type="button"
             onClick={saveAdminSecret}
-            className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-medium text-white transition-all hover:opacity-90 active:scale-95"
+            className="max-w-full shrink-0 whitespace-nowrap rounded-lg bg-[var(--primary)] px-3 py-2 text-xs font-medium text-white transition-all hover:opacity-90 active:scale-95"
           >
-            <Save size="0.75rem" />
-            Save
+            <span className="flex min-w-0 items-center justify-center gap-1.5">
+              <Save size="0.75rem" className="shrink-0" />
+              Save
+            </span>
           </button>
         </div>
       </div>
@@ -3967,6 +4028,12 @@ function AdvancedSettings() {
                 unreleased development commits, not just tagged releases.
               </p>
             )}
+            {isIosClient && (
+              <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                On iPhone or iPad, this updates the Marinara server you are connected to. Reload the Home Screen app
+                after the host finishes updating.
+              </p>
+            )}
             {updateCheck.data.applyAvailable ? (
               <button
                 onClick={() => applyUpdate.mutate()}
@@ -4005,6 +4072,26 @@ function AdvancedSettings() {
                 {updateCheck.data.versionUpdate && (
                   <span className="text-[0.625rem] text-[var(--muted-foreground)]">
                     Android APK assets are WebView shells, not standalone apps. Start Marinara in Termux first.
+                  </span>
+                )}
+                {manualUpdateHint && (
+                  <span className="text-[0.625rem] text-[var(--muted-foreground)]">{manualUpdateHint}</span>
+                )}
+                {installType === "docker" && updateCheck.data.dockerImageTag && (
+                  <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+                    Container tag:{" "}
+                    <code className="break-all rounded bg-[var(--background)] px-1 py-0.5">
+                      {updateCheck.data.dockerImageTag}
+                    </code>
+                    {updateCheck.data.dockerLiteImageTag ? (
+                      <>
+                        {" "}
+                        Lite:{" "}
+                        <code className="break-all rounded bg-[var(--background)] px-1 py-0.5">
+                          {updateCheck.data.dockerLiteImageTag}
+                        </code>
+                      </>
+                    ) : null}
                   </span>
                 )}
                 {manualUpdateCommand && (

@@ -817,13 +817,6 @@ export function ChatSidebar() {
           </span>
         )}
 
-        {/* Mode badge on hover */}
-        {!multiSelectMode && (
-          <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)] opacity-0 transition-opacity group-hover:opacity-100 max-md:opacity-100">
-            {cfg.shortLabel}
-          </span>
-        )}
-
         {/* Move to folder */}
         {!multiSelectMode && modeFolders.length > 0 && (
           <button

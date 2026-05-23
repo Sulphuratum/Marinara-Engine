@@ -4,14 +4,39 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 
 ## [Unreleased]
 
+## [1.6.1]
+
 ### Added
 
 - Added a manual Game Mode combat start control with confirmation so players can trigger encounter setup when a scene should enter combat.
+- Added a General quote-format preference for straight or curly dialogue quotes and apostrophes, with editor/input formatting support across chat, presets, characters, and personas.
+- Added conditional prompt macros, macro comment blocks, and Macro Reference guidance so presets and character/persona cards can keep author-only notes or branch prompt text by speaker/character.
+- Added Roleplay TTS narrator voice support and speaker-tagged dialogue voice routing so grouped character dialogue can queue per-character voice requests.
+- Added Roleplay Expression Avatar controls so Expression Engine selections can replace character avatars for matching messages, with sprite expression blocks hidden when avatar replacement is enabled.
+- Added Roleplay Spotify DJ source controls matching Game Mode so chats can choose playlist, liked-song, artist, or wider Spotify selection behavior.
+- Added an Illustrator run interval setting so scene illustrations are only eligible after a configurable number of assistant messages, and only successful image generations reset the interval.
+- Added Roleplay quick-edit gestures: double-click on desktop or double-tap on mobile opens a message editor.
+- Added a Chat Settings context toggle for excluding stored provider reasoning from future prompt context, enabled by default.
+- Added numbered ComfyUI reference placeholders `%reference_image_01%`-`%reference_image_04%` and `%reference_image_name_01%`-`%reference_image_name_04%`, with the legacy unnumbered placeholders kept as slot 01 aliases.
+- Added OpenRouter service-tier selection to generation parameters so OpenRouter connections and chats can request Flex or Priority routing.
+- Added a lorebook-level No Vector toggle so an entire lorebook can opt out of semantic embeddings without editing every entry.
+- Added a dedicated Game image prompt template editor in General Settings with variables, rendered previews, enable/disable control, and reset support for NPC portrait, background, and scene illustration prompts.
+- Added a copy control to stored guided-generation details so guidance can be reused as a ready-to-paste `/guided` command.
 
 ### Changed
 
 - Improved Game Mode combat setup so encounter generation can run in the background after scene analysis, with debug logging and a wait state only when the player reaches combat before setup is ready.
 - Removed unreliable met/unmet status tracking from Game Mode NPC prompt context.
+- Improved Roleplay group chat Individual mode prompting so only the currently responding character card is included, other characters' prior messages are treated as user-side context, and the turn-owner instruction can be toggled.
+- Improved Roleplay streaming so the Streaming Speed slider uses a real typewriter reveal cadence instead of dumping fast server token bursts onto the screen.
+- Improved Roleplay Spotify DJ execution so it can trigger in Roleplay chats, respect its configured context/source constraints, strip large playlists into song candidates, and recover playable tracks from grouped post-generation agent results.
+- Unified Roleplay Agents & Actions plus Roleplay/Conversation input toolbar icon styling around the neutral grey-white treatment used by the emoji picker.
+- Polished mobile Roleplay/Conversation input toolbar controls with larger touch targets while keeping desktop density compact.
+- Updated the Roleplay input placeholder to invite writing a response without naming the active characters.
+- Limited agent-specific Chat Settings controls to chats where the matching agent has actually been added.
+- Updated Gemini topK handling so a disabled topK value sends `0` instead of falling back to the provider default.
+- Expanded the Roleplay Re-run Trackers action so it also retries active custom agents alongside built-in tracker agents.
+- Improved Settings update checks so git, Docker, and iPhone/iPad PWA clients get platform-specific update guidance, including the Docker release image tags published from `v1.6.1`.
 
 ### Fixed
 
@@ -21,6 +46,18 @@ This file is the release-notes source of truth for Marinara Engine. Reuse these 
 - Fixed mobile Game Mode side dialogue voice playback so voiced dialogue cues can play when the side line first appears.
 - Fixed Game Mode log deletion on mobile so deleting the currently viewed beat returns to the previous beat instead of the start of the turn.
 - Fixed Game Mode combat presentation across desktop and mobile: combatants scale to fit tighter screens, status badges no longer misalign portraits, ally NPC avatars resolve from character/game assets, action pacing is slower, desktop dialogue bubbles avoid overlap, and mobile combat dialogue is shown as tappable cues above the action box.
+- Fixed quote formatting and macro parsing so curly quotes do not break macro conditions, and quote-formatting no longer pushes editor cursors to the end while typing.
+- Fixed macro comments in character and persona card fields so `{{// ...}}` text is stripped before prompt assembly.
+- Fixed Roleplay prompt/debug routing around transformed group-chat messages so `<last_message>` follows the actual latest visible message and generated responses trim leading blank lines/spaces before line breaks.
+- Fixed Roleplay Spotify DJ false failure toasts after successful queueing, malformed-summary handling, and missing playable-track extraction.
+- Fixed Advanced Settings layout issues, including the Admin Access save button escaping its bounds and tooltip/expand icons crowding each other in non-Game chat settings.
+- Fixed gradient character names in Roleplay generated messages so the text uses the gradient instead of rendering as a solid gradient block.
+- Fixed rare Professor Mari toast visits so they can be dismissed.
+- Fixed Roleplay-to-Conversation DM commands so generated DMs mirror the initiating user message, reuse an existing character DM thread, and leave cardless NPC replies visible in Roleplay instead of trying to create an invalid Conversation chat.
+- Fixed Conversation prompt timestamps and current-time context so they use the browser/user timezone instead of falling back to UTC-like server time.
+- Fixed Assistant Prefill so generated messages are seeded with the configured prefill text instead of only sending it as prompt-only assistant context.
+- Fixed stored-guidance modals appearing underneath high-layer Roleplay controls on compact landscape screens.
+- Fixed preset depth-injected sections so short chats clamp them to the chat-history span instead of letting them float above the preset prompt context.
 
 ## [1.6.0]
 

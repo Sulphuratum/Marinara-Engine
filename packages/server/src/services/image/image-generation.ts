@@ -53,10 +53,7 @@ async function resizeBase64ToExactSize(b64: string, width: number, height: numbe
   if (!sharpFn) return b64;
   try {
     const buf = Buffer.from(b64, "base64");
-    const out = await sharpFn(buf)
-      .resize(width, height, { fit: "cover", position: "attention" })
-      .png()
-      .toBuffer();
+    const out = await sharpFn(buf).resize(width, height, { fit: "cover", position: "attention" }).png().toBuffer();
     return out.toString("base64");
   } catch (err) {
     logger.warn(err, "[image-gen] init image resize failed, sending original");
@@ -364,11 +361,19 @@ function imageExtensionFromMimeType(mimeType: string): string {
   return "png";
 }
 
-function imageResultMetadata(filename: string, contentType: string | null, base64: string): Pick<ImageGenResult, "mimeType" | "ext"> {
+function imageResultMetadata(
+  filename: string,
+  contentType: string | null,
+  base64: string,
+): Pick<ImageGenResult, "mimeType" | "ext"> {
   const normalizedContentType = contentType?.toLowerCase() ?? "";
   const normalizedFilename = filename.toLowerCase();
 
-  if (normalizedContentType.includes("jpeg") || normalizedContentType.includes("jpg") || /\.jpe?g(?:$|[?#])/i.test(normalizedFilename)) {
+  if (
+    normalizedContentType.includes("jpeg") ||
+    normalizedContentType.includes("jpg") ||
+    /\.jpe?g(?:$|[?#])/i.test(normalizedFilename)
+  ) {
     return { mimeType: "image/jpeg", ext: "jpg" };
   }
   if (normalizedContentType.includes("webp") || /\.webp(?:$|[?#])/i.test(normalizedFilename)) {
@@ -1547,7 +1552,9 @@ async function generateOpenRouter(baseUrl: string, apiKey: string, request: Imag
         ? ((message as Record<string, string>).content ?? "")
         : "";
     const messageKeys =
-      message && typeof message === "object" ? Object.keys(message as Record<string, unknown>).join(",") : "(no message)";
+      message && typeof message === "object"
+        ? Object.keys(message as Record<string, unknown>).join(",")
+        : "(no message)";
     throw new Error(
       `No image data in OpenRouter response (finish_reason=${choice?.finish_reason ?? "none"}, message keys=[${messageKeys}], content="${content.slice(0, 200)}")`,
     );
@@ -1658,6 +1665,7 @@ const DEFAULT_COMFYUI_WORKFLOW: Record<string, unknown> = {
 const COMFYUI_GEN_TIMEOUT_SECONDS = Number(process.env.COMFYUI_GEN_TIMEOUT ?? 300);
 const COMFYUI_PLACEHOLDER_REFERENCE_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+const COMFYUI_MAX_REFERENCE_IMAGES = 4;
 const COMFYUI_OUTPUT_FILE_KEYS = ["gifs", "images"] as const;
 
 interface ComfyUiOutputFile {
@@ -1763,6 +1771,22 @@ async function uploadComfyReferenceImage(base: string, reference: string): Promi
   return result.name;
 }
 
+function collectComfyReferenceImages(request: ImageGenRequest, defaults: ComfyUiDefaults): string[] {
+  const references = [request.referenceImage, ...(request.referenceImages ?? [])]
+    .filter((reference): reference is string => typeof reference === "string" && reference.trim().length > 0)
+    .filter((reference, index, all) => all.indexOf(reference) === index)
+    .slice(0, COMFYUI_MAX_REFERENCE_IMAGES);
+  if (references.length > 0) return references;
+  return defaults.uploadPlaceholderOnMissingReference ? [COMFYUI_PLACEHOLDER_REFERENCE_BASE64] : [];
+}
+
+function numberedComfyReferencePlaceholder(
+  baseName: "reference_image" | "reference_image_name",
+  index: number,
+): string {
+  return `%${baseName}_${String(index + 1).padStart(2, "0")}%`;
+}
+
 async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promise<ImageGenResult> {
   const base = baseUrl.replace(/\/+$/, "");
   const defaults = resolveComfyUiDefaults(request);
@@ -1801,14 +1825,20 @@ async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promi
   if (request.model) {
     replacements["%model%"] = request.model;
   }
-  const reference =
-    request.referenceImage ??
-    request.referenceImages?.[0] ??
-    (defaults.uploadPlaceholderOnMissingReference ? COMFYUI_PLACEHOLDER_REFERENCE_BASE64 : undefined);
-  if (reference) {
-    replacements["%reference_image%"] = reference;
-    if (JSON.stringify(workflow).includes("%reference_image_name%")) {
-      replacements["%reference_image_name%"] = await uploadComfyReferenceImage(base, reference);
+  const workflowJson = JSON.stringify(workflow);
+  const references = collectComfyReferenceImages(request, defaults);
+  for (let i = 0; i < references.length; i++) {
+    const reference = references[i]!;
+    const imagePlaceholder = numberedComfyReferencePlaceholder("reference_image", i);
+    const namePlaceholder = numberedComfyReferencePlaceholder("reference_image_name", i);
+
+    replacements[imagePlaceholder] = reference;
+    if (i === 0) replacements["%reference_image%"] = reference;
+
+    if (workflowJson.includes(namePlaceholder) || (i === 0 && workflowJson.includes("%reference_image_name%"))) {
+      const uploadedName = await uploadComfyReferenceImage(base, reference);
+      replacements[namePlaceholder] = uploadedName;
+      if (i === 0) replacements["%reference_image_name%"] = uploadedName;
     }
   }
   const resolvedWorkflow = replaceComfyUiPlaceholders(workflow, replacements);
@@ -1951,9 +1981,7 @@ async function generateAutomatic1111(
   const data = (await resp.json()) as { images?: string[] };
   const b64 = data.images?.[0];
   if (!b64) {
-    const hint = isDrawThings
-      ? " (check that a model is selected in Draw Things and the API server port matches)"
-      : "";
+    const hint = isDrawThings ? " (check that a model is selected in Draw Things and the API server port matches)" : "";
     throw new Error(`No image data in ${label} response${hint}`);
   }
 

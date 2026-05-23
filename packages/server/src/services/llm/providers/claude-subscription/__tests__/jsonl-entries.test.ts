@@ -122,7 +122,8 @@ describe("buildUserEntry", () => {
   });
 
   it("omits the trailing text block when content is empty alongside images", () => {
-    const dataUrl = "data:image/jpeg;base64,/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/";
+    const dataUrl =
+      "data:image/jpeg;base64,/9j/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/";
     const m: ChatMessage = { role: "user", content: "", images: [dataUrl] };
     const entry = buildUserEntry({ message: m, parentUuid: null, meta: META });
     const blocks = entry.message.content as unknown as Array<Record<string, unknown>>;
@@ -200,9 +201,7 @@ describe("buildAssistantEntry", () => {
     const m: ChatMessage = {
       role: "assistant",
       content: "",
-      tool_calls: [
-        { id: "t1", type: "function", function: { name: "fn", arguments: "{}" } },
-      ],
+      tool_calls: [{ id: "t1", type: "function", function: { name: "fn", arguments: "{}" } }],
     };
     const entry = buildAssistantEntry({ message: m, parentUuid: null, meta: META, model: "m" });
     assert.equal(entry.message.content.length, 1);
@@ -224,9 +223,7 @@ describe("buildAssistantEntry", () => {
     const m: ChatMessage = {
       role: "assistant",
       content: "",
-      tool_calls: [
-        { id: "t1", type: "function", function: { name: "fn", arguments: "this is not json" } },
-      ],
+      tool_calls: [{ id: "t1", type: "function", function: { name: "fn", arguments: "this is not json" } }],
     };
     const entry = buildAssistantEntry({ message: m, parentUuid: null, meta: META, model: "m" });
     assert.equal(entry.message.content.length, 1, "expected exactly one tool_use block");
@@ -241,9 +238,7 @@ describe("buildAssistantEntry", () => {
     const m: ChatMessage = {
       role: "assistant",
       content: "",
-      tool_calls: [
-        { id: "t1", type: "function", function: { name: "fn", arguments: "[1,2,3]" } },
-      ],
+      tool_calls: [{ id: "t1", type: "function", function: { name: "fn", arguments: "[1,2,3]" } }],
     };
     const entry = buildAssistantEntry({ message: m, parentUuid: null, meta: META, model: "m" });
     assert.equal(entry.message.content.length, 1, "expected exactly one tool_use block");
@@ -255,9 +250,7 @@ describe("buildAssistantEntry", () => {
     const m: ChatMessage = {
       role: "assistant",
       content: "",
-      tool_calls: [
-        { id: "t1", type: "function", function: { name: "fn", arguments: "null" } },
-      ],
+      tool_calls: [{ id: "t1", type: "function", function: { name: "fn", arguments: "null" } }],
     };
     const entry = buildAssistantEntry({ message: m, parentUuid: null, meta: META, model: "m" });
     assert.equal(entry.message.content.length, 1, "expected exactly one tool_use block");

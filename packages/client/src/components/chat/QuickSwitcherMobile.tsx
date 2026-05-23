@@ -242,8 +242,10 @@ export function QuickSwitcherMobile() {
         onClick={() => setOpen((v) => !v)}
         title="Quick Switcher"
         className={cn(
-          "flex h-8 w-8 items-center justify-center rounded-xl transition-all",
-          open ? "text-foreground bg-foreground/10" : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+          "flex h-11 w-11 items-center justify-center rounded-xl transition-all",
+          open
+            ? "bg-foreground/10 text-foreground/75"
+            : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
         )}
       >
         <ChevronUp size="1rem" className={cn("transition-transform", open && "rotate-180")} />

@@ -561,14 +561,7 @@ export function SpriteWandCleanupEditor({
       setStatus(`${result.removed.toLocaleString()} px removed with ${modeLabel} from ${formatRgba(result.target)}`);
       setError(null);
     },
-    [
-      pushHistory,
-      putCurrentImage,
-      wandTolerance,
-      wandFeather,
-      wandSoftness,
-      wandStrong,
-    ],
+    [pushHistory, putCurrentImage, wandTolerance, wandFeather, wandSoftness, wandStrong],
   );
 
   const commitBrushGesture = useCallback(
@@ -669,13 +662,7 @@ export function SpriteWandCleanupEditor({
         brushColor,
       });
       const before = cloneImageData(current);
-      const changedPixels = applyBrushStamp(
-        current,
-        originalImageRef.current,
-        point.x,
-        point.y,
-        brushOptions,
-      );
+      const changedPixels = applyBrushStamp(current, originalImageRef.current, point.x, point.y, brushOptions);
       putCurrentImage();
 
       brushGestureRef.current = {
@@ -759,15 +746,21 @@ export function SpriteWandCleanupEditor({
     [putCurrentImage, updateHoverPoint],
   );
 
-  const handleCanvasPointerUp = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    commitBrushGesture(event.currentTarget, event.pointerId);
-    commitPanGesture(event.currentTarget, event.pointerId);
-  }, [commitBrushGesture, commitPanGesture]);
+  const handleCanvasPointerUp = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      commitBrushGesture(event.currentTarget, event.pointerId);
+      commitPanGesture(event.currentTarget, event.pointerId);
+    },
+    [commitBrushGesture, commitPanGesture],
+  );
 
-  const handleCanvasPointerCancel = useCallback((event: PointerEvent<HTMLCanvasElement>) => {
-    commitBrushGesture(event.currentTarget, event.pointerId);
-    commitPanGesture(event.currentTarget, event.pointerId);
-  }, [commitBrushGesture, commitPanGesture]);
+  const handleCanvasPointerCancel = useCallback(
+    (event: PointerEvent<HTMLCanvasElement>) => {
+      commitBrushGesture(event.currentTarget, event.pointerId);
+      commitPanGesture(event.currentTarget, event.pointerId);
+    },
+    [commitBrushGesture, commitPanGesture],
+  );
 
   const handleUndo = useCallback(() => {
     setHistory((prev) => {
@@ -858,8 +851,7 @@ export function SpriteWandCleanupEditor({
 
   const reticleStyle = useMemo<CSSProperties | null>(() => {
     if (!hoverPoint) return null;
-    const diameter =
-      activeBrushMode && !pickingBrushColor ? Math.max(8, brushSize * zoom) : Math.max(12, 12 * zoom);
+    const diameter = activeBrushMode && !pickingBrushColor ? Math.max(8, brushSize * zoom) : Math.max(12, 12 * zoom);
     return {
       width: `${diameter}px`,
       height: `${diameter}px`,
@@ -1232,12 +1224,13 @@ export function SpriteWandCleanupEditor({
               )}
             </div>
           </div>
-
         </div>
 
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <div className="min-w-0 flex-1 space-y-0.5 text-xs text-[var(--muted-foreground)]">
-            <div>{error ? <span className="text-[var(--destructive)]">{error}</span> : (status ?? "Cleanup ready")}</div>
+            <div>
+              {error ? <span className="text-[var(--destructive)]">{error}</span> : (status ?? "Cleanup ready")}
+            </div>
             <div className="font-mono text-[0.6875rem] text-[var(--muted-foreground)]/85">{hoverReadout}</div>
           </div>
           <button

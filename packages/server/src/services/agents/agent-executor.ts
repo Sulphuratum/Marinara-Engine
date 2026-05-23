@@ -124,8 +124,8 @@ export async function executeAgent(
         ? buildExpressionAgentMessages(template, context)
         : config.type === "knowledge-retrieval"
           ? buildKnowledgeRetrievalAgentMessages(config, template, context)
-          : config.type === "spotify" && context.chatMode === "game"
-            ? buildGameSpotifyAgentMessages(template, context)
+          : config.type === "spotify"
+            ? buildSpotifyAgentMessages(config, template, context)
             : buildStandardAgentMessages(config, template, context);
 
     // Agents use lower temperature for reliability
@@ -616,7 +616,7 @@ function makeError(config: AgentExecConfig, error: string, startTime: number): A
 function shouldRunAgentIndividually(config: Pick<AgentExecConfig, "type">): boolean {
   // These agents either need compact prompts or carry large private extras that
   // must not be merged into unrelated batched agent requests.
-  return config.type === "expression" || config.type === "lorebook-keeper";
+  return config.type === "expression" || config.type === "lorebook-keeper" || config.type === "spotify";
 }
 
 function buildStandardAgentMessages(config: AgentExecConfig, template: string, context: AgentContext): ChatMessage[] {
@@ -744,10 +744,12 @@ function findLatestUserMessage(context: AgentContext): { index: number; content:
   return null;
 }
 
-function buildGameSpotifyAgentMessages(template: string, context: AgentContext): ChatMessage[] {
+function buildSpotifyAgentMessages(config: AgentExecConfig, template: string, context: AgentContext): ChatMessage[] {
+  const isGame = context.chatMode === "game";
+  const turnLabel = isGame ? "game" : "roleplay";
   const systemParts: string[] = [];
   systemParts.push(`<role>`);
-  systemParts.push(`You are a specialized Spotify DJ agent for the current game turn.`);
+  systemParts.push(`You are a specialized Spotify DJ agent for the current ${turnLabel} turn.`);
   systemParts.push(`</role>`);
   systemParts.push(``);
   systemParts.push(buildLoreBlock(context));
@@ -765,7 +767,19 @@ function buildGameSpotifyAgentMessages(template: string, context: AgentContext):
 
   const latestUser = findLatestUserMessage(context);
   const latestGameTurn = context.mainResponse?.trim() || findLatestAssistantMessage(context)?.content || "";
+  const agentContextSize = normalizeAgentContextSize(config.settings.contextSize);
+  const recentContext = context.recentMessages.slice(-agentContextSize).filter((message) => message.content.trim());
   const userParts: string[] = [];
+
+  if (recentContext.length > 0) {
+    userParts.push(`<recent_context>`);
+    for (const message of recentContext) {
+      const speaker = knowledgeRetrievalSpeakerLabel(message, context);
+      userParts.push(`${speaker}: ${truncateAgentText(message.content, 1200)}`);
+    }
+    userParts.push(`</recent_context>`);
+    userParts.push(``);
+  }
 
   if (latestUser?.content) {
     userParts.push(`<last_user_input>`);
@@ -775,14 +789,16 @@ function buildGameSpotifyAgentMessages(template: string, context: AgentContext):
   }
 
   if (latestGameTurn) {
-    userParts.push(`<last_game_turn>`);
+    userParts.push(isGame ? `<last_game_turn>` : `<last_roleplay_turn>`);
     userParts.push(truncateAgentText(latestGameTurn, 5000));
-    userParts.push(`</last_game_turn>`);
+    userParts.push(isGame ? `</last_game_turn>` : `</last_roleplay_turn>`);
     userParts.push(``);
   }
 
   userParts.push(
-    `Pick music for this game turn only. Use tools to inspect playback and fetch/search candidate tracks.`,
+    isGame
+      ? `Pick music for this game turn only. Use tools to inspect playback and fetch/search candidate tracks.`
+      : `Pick music for this roleplay turn. Use tools to inspect playback and fetch/search candidate tracks; if nothing is active or the current track does not fit, call spotify_play with a fitting queue.`,
   );
   userParts.push(`Now return the requested format.`);
 
@@ -1098,7 +1114,9 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
     parts.push(
       `Carry this visual style into both the JSON "style" field and the generated "prompt". Do not replace it with a generic art style.`,
     );
-    parts.push(`Prefer a landscape/16:9 scene composition unless the latest assistant message clearly calls for another framing.`);
+    parts.push(
+      `Prefer a landscape/16:9 scene composition unless the latest assistant message clearly calls for another framing.`,
+    );
     parts.push(`</game_image_instructions>`);
   }
 

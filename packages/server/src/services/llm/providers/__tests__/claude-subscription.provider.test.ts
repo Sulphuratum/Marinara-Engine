@@ -256,10 +256,7 @@ describe("ClaudeSubscriptionProvider — resume path wiring", () => {
     // The provider's real store won — load() returned the real history, not
     // the forged single entry.
     assert.ok(call.resumeEntries, "the provider's own sessionStore should have served load()");
-    assert.ok(
-      !call.resumeEntries!.some((e) => e["uuid"] === "FORGED"),
-      "forged sessionStore must not reach the SDK",
-    );
+    assert.ok(!call.resumeEntries!.some((e) => e["uuid"] === "FORGED"), "forged sessionStore must not reach the SDK");
   });
 
   it("scrubs forged reserved keys on the single-turn path (resume never engages)", async () => {
@@ -272,21 +269,25 @@ describe("ClaudeSubscriptionProvider — resume path wiring", () => {
     const captured = installFakeSdk();
 
     const provider = new ClaudeSubscriptionProvider("", "");
-    await drainProviderChat(
-      provider,
-      [{ role: "user", content: "single turn message" }],
-      {
-        model: "claude-test-model",
-        stream: false,
-        customParameters: FORGED_RESERVED_PARAMS,
-      },
-    );
+    await drainProviderChat(provider, [{ role: "user", content: "single turn message" }], {
+      model: "claude-test-model",
+      stream: false,
+      customParameters: FORGED_RESERVED_PARAMS,
+    });
 
     const call = captured[0]!;
     assert.equal(call.options["resume"], undefined, "forged resume must be scrubbed when resume doesn't engage");
     assert.equal(call.options["cwd"], undefined, "forged cwd must be scrubbed when resume doesn't engage");
-    assert.equal(call.options["sessionStore"], undefined, "forged sessionStore must be scrubbed when resume doesn't engage");
-    assert.equal(call.resumeEntries, null, "no transcript should be materialized — the forged store never reached the SDK");
+    assert.equal(
+      call.options["sessionStore"],
+      undefined,
+      "forged sessionStore must be scrubbed when resume doesn't engage",
+    );
+    assert.equal(
+      call.resumeEntries,
+      null,
+      "no transcript should be materialized — the forged store never reached the SDK",
+    );
   });
 
   it("skips the resume path entirely for single-turn requests (empty history)", async () => {
@@ -296,11 +297,10 @@ describe("ClaudeSubscriptionProvider — resume path wiring", () => {
     const captured = installFakeSdk();
 
     const provider = new ClaudeSubscriptionProvider("", "");
-    await drainProviderChat(
-      provider,
-      [{ role: "user", content: "single turn message" }],
-      { model: "claude-test-model", stream: false },
-    );
+    await drainProviderChat(provider, [{ role: "user", content: "single turn message" }], {
+      model: "claude-test-model",
+      stream: false,
+    });
 
     const call = captured[0]!;
     assert.equal(call.options["resume"], undefined, "resume must NOT be set for single-turn requests");
@@ -328,16 +328,14 @@ describe("ClaudeSubscriptionProvider — resume path wiring", () => {
       { role: "assistant" as const, content: "prior reply" },
     ];
     await Promise.all([
-      drainProviderChat(
-        provider,
-        [...baseHistory, { role: "user", content: "concurrent A" }],
-        { model: "claude-test-model", stream: false },
-      ),
-      drainProviderChat(
-        provider,
-        [...baseHistory, { role: "user", content: "concurrent B" }],
-        { model: "claude-test-model", stream: false },
-      ),
+      drainProviderChat(provider, [...baseHistory, { role: "user", content: "concurrent A" }], {
+        model: "claude-test-model",
+        stream: false,
+      }),
+      drainProviderChat(provider, [...baseHistory, { role: "user", content: "concurrent B" }], {
+        model: "claude-test-model",
+        stream: false,
+      }),
     ]);
 
     assert.equal(captured.length, 2, "both calls should have invoked the SDK");
@@ -413,7 +411,11 @@ describe("ClaudeSubscriptionProvider — resume path wiring", () => {
     const opts = captured[0]!.options;
     assert.equal(typeof opts["systemPrompt"], "string", "systemPrompt must be a plain string, not a preset object");
     assert.deepEqual(opts["skills"], [], "skills must be explicitly empty");
-    assert.deepEqual(opts["settingSources"], [], "settingSources must be explicitly empty so CLAUDE.md doesn't auto-load");
+    assert.deepEqual(
+      opts["settingSources"],
+      [],
+      "settingSources must be explicitly empty so CLAUDE.md doesn't auto-load",
+    );
     assert.equal(opts["maxTurns"], 1, "maxTurns must be 1 — Marinara drives multi-turn at the route layer");
     assert.equal(opts["allowDangerouslySkipPermissions"], true, "explicit bypass to skip permission framing");
     assert.equal(opts["permissionMode"], "bypassPermissions");
@@ -456,6 +458,10 @@ describe("ClaudeSubscriptionProvider — resume path is platform-agnostic", () =
     const call = captured[0]!;
     assert.match(call.options["resume"] as string, /^[0-9a-f-]{36}$/, "resume must engage on win32 too");
     assert.equal(typeof call.options["sessionStore"], "object", "sessionStore must be wired on win32 too");
-    assert.notEqual(typeof call.prompt, "string", "win32 must use the AsyncIterable resume prompt, not a folded string");
+    assert.notEqual(
+      typeof call.prompt,
+      "string",
+      "win32 must use the AsyncIterable resume prompt, not a folded string",
+    );
   });
 });

@@ -6,6 +6,7 @@ import {
   DEFAULT_AGENT_TOOLS,
   applyQuestUpdatesToPlayerStats,
   getDefaultBuiltInAgentSettings,
+  stripMacroComments,
   type AgentContext,
   type AgentResult,
   type GameMap,
@@ -19,7 +20,9 @@ import type { LLMToolDefinition } from "../../services/llm/base-provider.js";
 import { getLocalSidecarProvider, LOCAL_SIDECAR_MODEL } from "../../services/llm/local-sidecar.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
 import { sidecarModelService } from "../../services/sidecar/sidecar-model.service.js";
+import { buildSpotifyDjConstraints } from "../../services/spotify/spotify-dj-constraints.js";
 import { resolveSpotifyCredentials } from "../../services/spotify/spotify.service.js";
+import { fingerprintChatSummary } from "../../services/prompt/chat-summary-fingerprint.js";
 import { getAssetManifest } from "../../services/game/asset-manifest.service.js";
 import { createAgentsStorage } from "../../services/storage/agents.storage.js";
 import { createCharactersStorage } from "../../services/storage/characters.storage.js";
@@ -77,6 +80,10 @@ type PersonaContext = {
   personaStats: any;
   rpgStats: any;
 };
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
+}
 
 type ResolvedRetryAgent = {
   cfg: any;
@@ -160,12 +167,12 @@ async function resolvePersonaContext(
 
   personaId = persona.id as string;
   personaName = persona.name;
-  personaDescription = persona.description;
+  personaDescription = cardPromptText(persona.description);
   personaFields = {
-    personality: persona.personality ?? "",
-    scenario: persona.scenario ?? "",
-    backstory: persona.backstory ?? "",
-    appearance: persona.appearance ?? "",
+    personality: cardPromptText(persona.personality),
+    scenario: cardPromptText(persona.scenario),
+    backstory: cardPromptText(persona.backstory),
+    appearance: cardPromptText(persona.appearance),
   };
 
   if (persona.altDescriptions) {
@@ -173,7 +180,8 @@ async function resolvePersonaContext(
       const altDescs = parseJsonIfString<Array<{ active: boolean; content: string }>>(persona.altDescriptions);
       for (const ext of altDescs) {
         if (ext.active && ext.content) {
-          personaDescription += "\n" + ext.content;
+          const content = cardPromptText(ext.content);
+          if (content) personaDescription += "\n" + content;
         }
       }
     } catch {
@@ -249,7 +257,7 @@ async function buildRetryAgentContext(args: {
     charInfo.push({
       id: cid,
       name: (charData.name as string | undefined) ?? "Unknown",
-      description: (charData.description as string | undefined) ?? "",
+      description: cardPromptText(charData.description),
     });
   }
 
@@ -463,21 +471,20 @@ async function buildRetryAgentContext(args: {
     }
   }
 
-  if (resolvedAgentTypes.has("spotify") && ((chat as any).mode ?? "conversation") === "game") {
-    const sourceType = typeof chatMeta.gameSpotifySourceType === "string" ? chatMeta.gameSpotifySourceType : "liked";
-    if (chatMeta.gameUseSpotifyMusic === true) {
-      agentContext.memory._spotifyDjConstraints = {
-        mode: "game",
-        replaceBuiltInMusic: true,
+  if (resolvedAgentTypes.has("spotify")) {
+    const mode = ((chat as any).mode ?? "conversation") as string;
+    agentContext.memory._spotifyDjConstraints = {
+      ...buildSpotifyDjConstraints({
+        chatMode: mode,
+        chatMeta,
         manualRetry: true,
         forceFreshPick: true,
-        sourceType,
-        playlistId: typeof chatMeta.gameSpotifyPlaylistId === "string" ? chatMeta.gameSpotifyPlaylistId : null,
-        playlistName: typeof chatMeta.gameSpotifyPlaylistName === "string" ? chatMeta.gameSpotifyPlaylistName : null,
-        artist: typeof chatMeta.gameSpotifyArtist === "string" ? chatMeta.gameSpotifyArtist : null,
-        note: "This is a manual Spotify DJ retry from game mode. Pick a fresh fitting track now and call spotify_play unless Spotify playback is unavailable; do not keep the current track merely because it still fits.",
-      };
-    }
+      }),
+      retryNote:
+        mode === "game"
+          ? "This is a manual Spotify DJ retry from game mode. Pick a fresh fitting track now and call spotify_play unless Spotify playback is unavailable; do not keep the current track merely because it still fits."
+          : "This is a manual Spotify DJ retry from roleplay. Pick a fresh fitting queue now and call spotify_play unless Spotify playback is unavailable.",
+    };
   }
 
   return agentContext;
@@ -1051,7 +1058,7 @@ async function validateSpotifyRetryPlayback(
       ? (context.memory._spotifyDjConstraints as Record<string, unknown>)
       : {};
   const forceFreshPick = constraints.manualRetry === true || constraints.forceFreshPick === true;
-  if (!forceFreshPick) return result;
+  if (!forceFreshPick || constraints.mode !== "game") return result;
 
   const toolCalls = (entry.resolved as any).__spotifyToolCalls;
   const spotifyPlayCalled = toolCalls instanceof Set && toolCalls.has("spotify_play");
@@ -1241,6 +1248,7 @@ async function persistRetryResults(
   results: AgentResult[],
 ) {
   for (const result of results) {
+    if (result.agentType === "illustrator" || result.type === "image_prompt") continue;
     try {
       await agentsStore.saveRun({
         agentConfigId: result.agentId,
@@ -1469,8 +1477,12 @@ async function applyRetryResultEffects(args: {
           } else {
             list = list.filter((e) => e.agentType !== result.agentType);
           }
-          await chats.updateMessageExtra(retryMessageId, { contextInjections: list });
-          await chats.updateSwipeExtra(retryMessageId, retrySwipeIndex, { contextInjections: list });
+          const chatSummaryFingerprint = fingerprintChatSummary(chatMeta.summary);
+          await chats.updateMessageExtra(retryMessageId, { contextInjections: list, chatSummaryFingerprint });
+          await chats.updateSwipeExtra(retryMessageId, retrySwipeIndex, {
+            contextInjections: list,
+            chatSummaryFingerprint,
+          });
         }
       } catch {
         /* non-critical */
@@ -1910,6 +1922,18 @@ async function applyRetryResultEffects(args: {
                 "[retry-agents] Illustrator generated: %s...",
                 (illData.reason as string | undefined)?.slice(0, 80) ?? imagePrompt.slice(0, 80),
               );
+              if (retryMessageId) {
+                try {
+                  await agentsStore.saveRun({
+                    agentConfigId: result.agentId,
+                    chatId,
+                    messageId: retryMessageId,
+                    result,
+                  });
+                } catch (err) {
+                  logger.warn(err, "[retry-agents] Failed to persist successful Illustrator run");
+                }
+              }
             }
           } else {
             logger.warn(

@@ -41,6 +41,19 @@ export function shouldAbortOnPassiveGenerationDisconnect(args: { chatMode: strin
   return args.chatMode !== "conversation" || args.impersonate === true;
 }
 
+export function resolveProviderTopK(provider: unknown, topK: number): number | undefined {
+  const normalized = Number.isFinite(topK) ? Math.max(0, Math.trunc(topK)) : 0;
+  const providerId = typeof provider === "string" ? provider.toLowerCase() : "";
+  if (providerId === "google" || providerId === "google_vertex") {
+    return normalized;
+  }
+  return normalized > 0 ? normalized : undefined;
+}
+
+export function normalizeServiceTier(value: unknown): "flex" | "priority" | null {
+  return value === "flex" || value === "priority" ? value : null;
+}
+
 export function mergeCustomParameters(
   base: Record<string, unknown> | null | undefined,
   next: Record<string, unknown> | null | undefined,
@@ -490,6 +503,9 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   }
   if (source.verbosity === null || ["low", "medium", "high"].includes(String(source.verbosity))) {
     out.verbosity = source.verbosity as StoredGenerationParameters["verbosity"];
+  }
+  if (source.serviceTier === null || source.serviceTier === "flex" || source.serviceTier === "priority") {
+    out.serviceTier = source.serviceTier as StoredGenerationParameters["serviceTier"];
   }
   if (typeof source.assistantPrefill === "string") out.assistantPrefill = source.assistantPrefill;
   if (isPlainRecord(source.customParameters)) {

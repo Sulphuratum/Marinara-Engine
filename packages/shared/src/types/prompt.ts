@@ -174,6 +174,8 @@ export interface GenerationParameters {
   reasoningEffort: "low" | "medium" | "high" | "maximum" | null;
   /** Output verbosity for models that support it (GPT-5+) */
   verbosity: "low" | "medium" | "high" | null;
+  /** OpenRouter-only service tier. Null uses the provider/default tier. */
+  serviceTier: "flex" | "priority" | null;
   /** Optional assistant-role prefill appended after the final user message. */
   assistantPrefill: string;
   /** Raw provider request parameters merged into the outgoing request body. */
@@ -216,6 +218,8 @@ export interface ChatMLMessage {
   contextKind?: "prompt" | "history" | "injection";
   /** Optional: name of the speaker for multi-character */
   name?: string;
+  /** Internal speaker identity for group chat history role scoping. */
+  characterId?: string | null;
   /** Base64 data URLs for multimodal image inputs */
   images?: string[];
   /** Provider-specific metadata (e.g. Gemini parts with thought signatures) */

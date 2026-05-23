@@ -181,16 +181,16 @@ const HIDDEN_ROLEPLAY_AGENTS = new Set([
   "autonomous-messenger",
 ]);
 
-type GameSpotifySourceType = "liked" | "playlist" | "artist" | "any";
+type SpotifySourceType = "liked" | "playlist" | "artist" | "any";
 
-const GAME_SPOTIFY_SOURCE_OPTIONS: Array<{ id: GameSpotifySourceType; label: string; description: string }> = [
+const SPOTIFY_SOURCE_OPTIONS: Array<{ id: SpotifySourceType; label: string; description: string }> = [
   { id: "liked", label: "Liked Songs", description: "Pick from the user's saved tracks first." },
   { id: "playlist", label: "Playlist", description: "Keep choices inside one Spotify playlist." },
   { id: "artist", label: "Artist", description: "Search only around a named artist, like HOYO-MiX." },
   { id: "any", label: "Any Spotify", description: "Let the DJ use Spotify search when it fits." },
 ];
 
-function normalizeGameSpotifySourceType(value: unknown): GameSpotifySourceType {
+function normalizeSpotifySourceType(value: unknown): SpotifySourceType {
   return value === "playlist" || value === "artist" || value === "any" ? value : "liked";
 }
 
@@ -278,10 +278,6 @@ function normalizeSpriteDisplayValue(value: unknown, fallback: number, min: numb
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric)) return fallback;
   return Math.max(min, Math.min(max, numeric));
-}
-
-function isEnabledFlag(value: unknown): boolean {
-  return value === true || value === "true" || value === "1";
 }
 
 function normalizeNonNegativeInteger(value: unknown, fallback: number, max: number): number {
@@ -443,13 +439,17 @@ export function ChatSettingsDrawer({
       : LIMITS.DEFAULT_LOREBOOK_TOKEN_BUDGET;
   const activeAgentIds = useMemo<string[]>(() => metadata.activeAgentIds ?? [], [metadata.activeAgentIds]);
   const activeToolIds: string[] = metadata.activeToolIds ?? [];
+  const spotifyActive = activeAgentIds.includes("spotify");
   const gameLorebookKeeperLorebook = gameLorebookKeeperLorebookId
     ? ((lorebooks ?? []) as Array<{ id: string; name: string }>).find(
         (book) => book.id === gameLorebookKeeperLorebookId,
       )
     : null;
+  const spotifySourceType = normalizeSpotifySourceType(metadata.spotifySourceType);
+  const spotifyPlaylistId = typeof metadata.spotifyPlaylistId === "string" ? metadata.spotifyPlaylistId : "";
+  const spotifyArtist = typeof metadata.spotifyArtist === "string" ? metadata.spotifyArtist : "";
   const gameUseSpotifyMusic = metadata.gameUseSpotifyMusic === true;
-  const gameSpotifySourceType = normalizeGameSpotifySourceType(metadata.gameSpotifySourceType);
+  const gameSpotifySourceType = normalizeSpotifySourceType(metadata.gameSpotifySourceType);
   const gameSpotifyPlaylistId =
     typeof metadata.gameSpotifyPlaylistId === "string" ? metadata.gameSpotifyPlaylistId : "";
   const gameSpotifyArtist = typeof metadata.gameSpotifyArtist === "string" ? metadata.gameSpotifyArtist : "";
@@ -460,6 +460,7 @@ export function ChatSettingsDrawer({
   const spritePosition: "left" | "right" = metadata.spritePosition === "right" ? "right" : "left";
   const spriteScale = normalizeSpriteDisplayValue(metadata.spriteScale, roleplaySpriteScale, 0.5, 1.75);
   const spriteOpacity = normalizeSpriteDisplayValue(metadata.spriteOpacity, 1, 0.15, 1);
+  const expressionAvatarsEnabled = metadata.expressionAvatarsEnabled === true;
   const [spriteScalePercent, setSpriteScalePercent] = useState(() => Math.round(spriteScale * 100));
   const [spriteOpacityPercent, setSpriteOpacityPercent] = useState(() => Math.round(spriteOpacity * 100));
   const hasCustomSpritePlacements = Object.keys(normalizeSpritePlacements(metadata.spritePlacements)).length > 0;
@@ -475,7 +476,10 @@ export function ChatSettingsDrawer({
           owned: boolean | null;
         }>;
       }>("/spotify/playlists?limit=50"),
-    enabled: open && isGame && gameUseSpotifyMusic && gameSpotifySourceType === "playlist",
+    enabled:
+      open &&
+      ((isGame && gameUseSpotifyMusic && gameSpotifySourceType === "playlist") ||
+        (isRoleplayMode && metadata.enableAgents && spotifyActive && spotifySourceType === "playlist")),
     staleTime: 60_000,
     retry: false,
   });
@@ -506,7 +510,7 @@ export function ChatSettingsDrawer({
       const existing = agentConfigsByType.get(a.id);
       agents.push({
         id: a.id,
-        name: existing?.name ?? a.name,
+        name: a.name,
         description: existing?.description ?? a.description,
         category: a.category,
         phase: a.phase,
@@ -558,14 +562,9 @@ export function ChatSettingsDrawer({
     };
   }, [activeAgentIds, availableAgents, agentConfigsByType, chat.connectionId]);
 
-  const lorebookKeeperConfig = agentConfigsByType.get("lorebook-keeper") ?? null;
-  const lorebookKeeperEnabledByDefault = isEnabledFlag(lorebookKeeperConfig?.enabled);
-  const lorebookKeeperActive =
-    activeAgentIds.includes("lorebook-keeper") || (activeAgentIds.length === 0 && lorebookKeeperEnabledByDefault);
-  const expressionConfig = agentConfigsByType.get("expression") ?? null;
-  const expressionEnabledByDefault = isEnabledFlag(expressionConfig?.enabled);
-  const expressionActive =
-    activeAgentIds.includes("expression") || (activeAgentIds.length === 0 && expressionEnabledByDefault);
+  const lorebookKeeperActive = activeAgentIds.includes("lorebook-keeper");
+  const expressionActive = activeAgentIds.includes("expression");
+  const hapticActive = activeAgentIds.includes("haptic");
   const lorebookKeeperTargetLorebookId =
     typeof metadata.lorebookKeeperTargetLorebookId === "string" ? metadata.lorebookKeeperTargetLorebookId : "";
   const lorebookKeeperReadBehindMessages = normalizeNonNegativeInteger(
@@ -1194,6 +1193,7 @@ export function ChatSettingsDrawer({
   const [gameImagePromptInstructionsDraft, setGameImagePromptInstructionsDraft] = useState(
     (metadata.gameImagePromptInstructions as string) ?? "",
   );
+  const [spotifyArtistDraft, setSpotifyArtistDraft] = useState(spotifyArtist);
   const [gameSpotifyArtistDraft, setGameSpotifyArtistDraft] = useState(gameSpotifyArtist);
 
   // ── Chat Settings Presets ──
@@ -1234,6 +1234,10 @@ export function ChatSettingsDrawer({
     setGameSpotifyArtistDraft(gameSpotifyArtist);
   }, [chat.id, gameSpotifyArtist]);
 
+  useEffect(() => {
+    setSpotifyArtistDraft(spotifyArtist);
+  }, [chat.id, spotifyArtist]);
+
   const openAgentAddModal = (agent: AvailableAgent) => {
     setAgentAddCadenceInputFocused(false);
     const config = agentConfigsByType.get(agent.id) ?? null;
@@ -1269,7 +1273,11 @@ export function ChatSettingsDrawer({
     if (intervalMeta && runInterval != null) {
       nextSettings.runInterval = runInterval;
     }
-    if (builtInMeta && !Array.isArray(nextSettings.enabledTools)) {
+    const nextEnabledTools = nextSettings.enabledTools;
+    if (
+      builtInMeta &&
+      (!Array.isArray(nextEnabledTools) || (agent.id === "spotify" && nextEnabledTools.length === 0))
+    ) {
       nextSettings.enabledTools = DEFAULT_AGENT_TOOLS[agent.id] ?? [];
     }
 
@@ -2808,6 +2816,44 @@ export function ChatSettingsDrawer({
                         ? "An AI agent decides which characters should respond based on the scene context."
                         : "Characters respond one by one in their listed order."}
                   </p>
+                  <button
+                    onClick={() =>
+                      updateMeta.mutate({
+                        id: chat.id,
+                        groupTurnPromptEnabled: metadata.groupTurnPromptEnabled === false,
+                      })
+                    }
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-all",
+                      metadata.groupTurnPromptEnabled !== false
+                        ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                        : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                    )}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="text-[0.6875rem] font-medium">Add Turn To Prompt</span>
+                      <p className="mt-0.5 text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
+                        {metadata.groupTurnPromptEnabled !== false
+                          ? "Each individual turn includes a short responding-character instruction."
+                          : "Individual turns rely on context without adding a turn instruction."}
+                      </p>
+                    </div>
+                    <div
+                      className={cn(
+                        "ml-3 h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+                        metadata.groupTurnPromptEnabled !== false
+                          ? "bg-[var(--primary)]"
+                          : "bg-[var(--muted-foreground)]/50",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                          metadata.groupTurnPromptEnabled !== false && "translate-x-3.5",
+                        )}
+                      />
+                    </div>
+                  </button>
                 </div>
               )}
 
@@ -3773,7 +3819,7 @@ export function ChatSettingsDrawer({
                           <select
                             value={gameSpotifySourceType}
                             onChange={(event) => {
-                              const next = normalizeGameSpotifySourceType(event.target.value);
+                              const next = normalizeSpotifySourceType(event.target.value);
                               updateMeta.mutate({
                                 id: chat.id,
                                 gameSpotifySourceType: next,
@@ -3785,14 +3831,14 @@ export function ChatSettingsDrawer({
                             }}
                             className="w-full rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2.5 py-1.5 text-xs text-[var(--foreground)]"
                           >
-                            {GAME_SPOTIFY_SOURCE_OPTIONS.map((option) => (
+                            {SPOTIFY_SOURCE_OPTIONS.map((option) => (
                               <option key={option.id} value={option.id}>
                                 {option.label}
                               </option>
                             ))}
                           </select>
                           <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                            {GAME_SPOTIFY_SOURCE_OPTIONS.find((option) => option.id === gameSpotifySourceType)
+                            {SPOTIFY_SOURCE_OPTIONS.find((option) => option.id === gameSpotifySourceType)
                               ?.description ?? ""}
                           </span>
                         </label>
@@ -3878,7 +3924,7 @@ export function ChatSettingsDrawer({
                   </div>
                 )}
 
-                {metadata.enableAgents && !isGame && (
+                {metadata.enableAgents && !isGame && lorebookKeeperActive && (
                   <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-3">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
                       <div className="min-w-0">
@@ -3893,10 +3939,10 @@ export function ChatSettingsDrawer({
                       </div>
                       <button
                         onClick={handleLorebookKeeperBackfill}
-                        disabled={agentProcessing || !lorebookKeeperActive}
+                        disabled={agentProcessing}
                         className={cn(
                           "inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[0.6875rem] font-medium transition-colors",
-                          agentProcessing || !lorebookKeeperActive
+                          agentProcessing
                             ? "cursor-not-allowed bg-[var(--muted)] text-[var(--muted-foreground)]"
                             : "bg-[var(--primary)]/10 text-[var(--primary)] hover:bg-[var(--primary)]/15",
                         )}
@@ -3951,16 +3997,13 @@ export function ChatSettingsDrawer({
                     </div>
 
                     <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                      {lorebookKeeperActive
-                        ? "Read-behind uses assistant messages: 0 means the newest eligible reply, 1 waits one reply, and backfill only processes messages Lorebook Keeper has not already saved."
-                        : activeAgentIds.length === 0
-                          ? "Lorebook Keeper is not currently enabled in this chat. These chat settings will apply once it is enabled."
-                          : "Lorebook Keeper is not in this chat's active agent list. Add it below to make these settings take effect."}
+                      Read-behind uses assistant messages: 0 means the newest eligible reply, 1 waits one reply, and
+                      backfill only processes messages Lorebook Keeper has not already saved.
                     </p>
                   </div>
                 )}
 
-                {metadata.enableAgents && !isGame && (
+                {metadata.enableAgents && !isGame && expressionActive && (
                   <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-3">
                     <div className="flex items-start gap-2">
                       <Image size="0.75rem" className="mt-0.5 text-[var(--primary)]" />
@@ -3981,6 +4024,40 @@ export function ChatSettingsDrawer({
                     </div>
 
                     <SpriteDisplayModeToggle modes={spriteDisplayModes} onToggle={toggleSpriteDisplayMode} />
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updateMeta.mutate({ id: chat.id, expressionAvatarsEnabled: !expressionAvatarsEnabled })
+                      }
+                      className={cn(
+                        "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-all",
+                        expressionAvatarsEnabled
+                          ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                          : "bg-[var(--background)]/75 ring-1 ring-[var(--border)] hover:bg-[var(--accent)]",
+                      )}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="text-[0.6875rem] font-medium">Expression Avatars</span>
+                        <p className="mt-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
+                          Replace message avatars with the selected expression sprite and hide duplicate portrait
+                          sprites.
+                        </p>
+                      </div>
+                      <div
+                        className={cn(
+                          "h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
+                          expressionAvatarsEnabled ? "bg-[var(--primary)]" : "bg-[var(--muted-foreground)]/50",
+                        )}
+                      >
+                        <div
+                          className={cn(
+                            "h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                            expressionAvatarsEnabled && "translate-x-3.5",
+                          )}
+                        />
+                      </div>
+                    </button>
 
                     {chatSpriteSubjects.length === 0 ? (
                       <p className="text-[0.625rem] text-[var(--muted-foreground)]">
@@ -4063,11 +4140,8 @@ export function ChatSettingsDrawer({
                     )}
 
                     <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                      {expressionActive
-                        ? "Only added characters and the active persona with uploaded sprites appear here. You can enable up to 3 at a time."
-                        : activeAgentIds.length === 0
-                          ? "Expression Engine is not currently enabled in this chat. These sprite choices will apply once it is enabled."
-                          : "Expression Engine is not in this chat's active agent list. Add it below to show sprites during roleplay."}
+                      Only added characters and the active persona with uploaded sprites appear here. You can enable up
+                      to 3 at a time.
                     </p>
 
                     {spriteCharacterIds.length > 0 && (
@@ -4160,6 +4234,130 @@ export function ChatSettingsDrawer({
                   </div>
                 )}
 
+                {metadata.enableAgents && isRoleplayMode && spotifyActive && (
+                  <div className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/70 p-3">
+                    <div className="flex items-start gap-2">
+                      <Music2 size="0.75rem" className="mt-0.5 text-[var(--primary)]" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[0.6875rem] font-medium">Spotify DJ</div>
+                        <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                          Choose where the DJ should look for roleplay music when it reacts to the scene.
+                        </p>
+                      </div>
+                    </div>
+
+                    <label className="flex flex-col gap-1">
+                      <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">Music source</span>
+                      <select
+                        value={spotifySourceType}
+                        onChange={(event) => {
+                          const next = normalizeSpotifySourceType(event.target.value);
+                          updateMeta.mutate({
+                            id: chat.id,
+                            spotifySourceType: next,
+                            spotifyPlaylistId: next === "playlist" ? spotifyPlaylistId || null : null,
+                            spotifyPlaylistName:
+                              next === "playlist" ? (metadata.spotifyPlaylistName as string) || null : null,
+                            spotifyArtist: next === "artist" ? spotifyArtistDraft.trim() || null : null,
+                          });
+                        }}
+                        className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)]"
+                      >
+                        {SPOTIFY_SOURCE_OPTIONS.map((option) => (
+                          <option key={option.id} value={option.id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                        {SPOTIFY_SOURCE_OPTIONS.find((option) => option.id === spotifySourceType)?.description ?? ""}
+                      </span>
+                    </label>
+
+                    {spotifySourceType === "playlist" && (
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">Playlist</span>
+                        {spotifyPlaylistsQuery.data?.playlists.length ? (
+                          <select
+                            value={spotifyPlaylistId}
+                            onChange={(event) => {
+                              const playlist = spotifyPlaylistsQuery.data?.playlists.find(
+                                (entry) => entry.id === event.target.value,
+                              );
+                              updateMeta.mutate({
+                                id: chat.id,
+                                spotifyPlaylistId: event.target.value || null,
+                                spotifyPlaylistName: playlist?.name ?? null,
+                              });
+                            }}
+                            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)]"
+                          >
+                            <option value="">Choose playlist...</option>
+                            {spotifyPlaylistsQuery.data.playlists.map((playlist) => {
+                              const suffix =
+                                typeof playlist.trackCount === "number"
+                                  ? ` (${playlist.trackCount})`
+                                  : playlist.owned === false
+                                    ? " (followed, unavailable)"
+                                    : "";
+                              return (
+                                <option key={playlist.id} value={playlist.id}>
+                                  {playlist.name}
+                                  {suffix}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        ) : (
+                          <input
+                            key={`${chat.id}-${spotifyPlaylistId}`}
+                            defaultValue={spotifyPlaylistId}
+                            onBlur={(event) =>
+                              updateMeta.mutate({
+                                id: chat.id,
+                                spotifyPlaylistId: event.target.value.trim() || null,
+                                spotifyPlaylistName: null,
+                              })
+                            }
+                            placeholder={
+                              spotifyPlaylistsQuery.isFetching ? "Loading playlists..." : "Paste playlist ID"
+                            }
+                            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]/50"
+                          />
+                        )}
+                        {spotifyPlaylistsQuery.isError && (
+                          <span className="text-[0.5625rem] text-amber-400/90">
+                            Connect Spotify in the Spotify DJ agent to load playlist names.
+                          </span>
+                        )}
+                      </label>
+                    )}
+
+                    {spotifySourceType === "artist" && (
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">Artist</span>
+                        <input
+                          value={spotifyArtistDraft}
+                          onChange={(event) => setSpotifyArtistDraft(event.target.value)}
+                          onBlur={() =>
+                            updateMeta.mutate({
+                              id: chat.id,
+                              spotifyArtist: spotifyArtistDraft.trim() || null,
+                            })
+                          }
+                          placeholder="HOYO-MiX"
+                          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]/50"
+                        />
+                      </label>
+                    )}
+
+                    <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                      Roleplay DJ queues several fitting tracks when it changes music. Spotify Premium, a connected
+                      account, and an active Spotify device are still required.
+                    </p>
+                  </div>
+                )}
+
                 {/* Manual trackers toggle — not for game mode */}
                 {metadata.enableAgents && !isGame && (
                   <button
@@ -4196,7 +4394,7 @@ export function ChatSettingsDrawer({
                 )}
 
                 {/* Love Toys Control — not for game mode */}
-                {metadata.enableAgents && !isGame && (
+                {metadata.enableAgents && !isGame && hapticActive && (
                   <div className="space-y-1.5">
                     <button
                       onClick={() => {
@@ -5296,6 +5494,38 @@ export function ChatSettingsDrawer({
                   <span className="text-[0.625rem] text-[var(--muted-foreground)]">messages</span>
                 </div>
               )}
+              <button
+                onClick={() => {
+                  const enabled = metadata.excludePastReasoning !== false;
+                  updateMeta.mutate({ id: chat.id, excludePastReasoning: !enabled });
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-all",
+                  metadata.excludePastReasoning !== false
+                    ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
+                    : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
+                )}
+              >
+                <div>
+                  <span className="text-xs font-medium">Exclude Past Reasoning</span>
+                  <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+                    Keep stored thinking/reasoning metadata out of future prompts.
+                  </p>
+                </div>
+                <div
+                  className={cn(
+                    "h-5 w-9 overflow-hidden rounded-full p-0.5 transition-colors",
+                    metadata.excludePastReasoning !== false ? "bg-[var(--primary)]" : "bg-[var(--muted-foreground)]/50",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
+                      metadata.excludePastReasoning !== false && "translate-x-3.5",
+                    )}
+                  />
+                </div>
+              </button>
             </div>
           </Section>
 
@@ -5904,28 +6134,46 @@ function AdvancedParametersSection({
   const setParameters = (next: EditableGenerationParameters) => {
     updateMeta.mutate({ id: chat.id, chatParameters: { ...params, ...next } });
   };
+  const toggleExpanded = () => setExpanded((open) => !open);
+  const handleHeaderKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    toggleExpanded();
+  };
 
   return (
     <div className="border-b border-[var(--border)]">
-      <div className="flex items-center px-4 py-3 transition-colors hover:bg-[var(--accent)]/50">
-        <button onClick={() => setExpanded((o) => !o)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
-          <span className="text-[var(--muted-foreground)]">
-            <Settings2 size="0.875rem" />
-          </span>
-          <span className="flex-1 text-xs font-semibold">Advanced Parameters</span>
-          <ChevronDown
-            size="0.75rem"
-            className={cn("text-[var(--muted-foreground)] transition-transform", expanded && "rotate-180")}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        onClick={toggleExpanded}
+        onKeyDown={handleHeaderKeyDown}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-[var(--accent)]/50"
+      >
+        <span className="shrink-0 text-[var(--muted-foreground)]">
+          <Settings2 size="0.875rem" />
+        </span>
+        <span className="min-w-0 flex-1 text-xs font-semibold">Advanced Parameters</span>
+        <span className="flex shrink-0 items-center" onClick={(event) => event.stopPropagation()}>
+          <HelpTooltip
+            text="Override generation parameters for this chat. Only change these if you know what you're doing."
+            side="left"
           />
-        </button>
-        <HelpTooltip
-          text="Override generation parameters for this chat. Only change these if you know what you're doing."
-          side="left"
+        </span>
+        <ChevronDown
+          size="0.75rem"
+          className={cn("shrink-0 text-[var(--muted-foreground)] transition-transform", expanded && "rotate-180")}
         />
       </div>
       {expanded && (
         <div className="px-4 pb-3 space-y-3">
-          <GenerationParametersFields value={effectiveParams} onChange={setParameters} />
+          <GenerationParametersFields
+            value={effectiveParams}
+            showOpenRouterServiceTier={conn?.provider === "openrouter"}
+            onChange={setParameters}
+          />
           {/* Save as Default for Connection */}
           {connectionId && connectionId !== "random" && (
             <button

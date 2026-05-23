@@ -455,9 +455,11 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
 
   const combinedDepthEntries = allDepthEntries.flat();
   if (combinedDepthEntries.length > 0) {
+    const historyBounds = findHistoryBounds(finalMessages);
     finalMessages = injectAtDepth(
       finalMessages,
       combinedDepthEntries as Array<{ content: string; role: "system" | "user" | "assistant"; depth: number }>,
+      historyBounds ? { minIndex: historyBounds.start, anchorIndex: historyBounds.end } : undefined,
     );
     lorebookDepthEntriesCount = combinedDepthEntries.length;
   }
@@ -700,13 +702,26 @@ function buildGroupMessages(
  * 3. Ensures alternating user/assistant after the system block.
  *    Adjacent same-role messages are merged.
  */
+function findHistoryBounds(messages: ChatMLMessage[]): { start: number; end: number } | null {
+  let start = -1;
+  let end = -1;
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]!.contextKind === "history") {
+      if (start === -1) start = i;
+      end = i + 1;
+    }
+  }
+  return start >= 0 ? { start, end } : null;
+}
+
 function enforceStrictRoles(messages: ChatMLMessage[], chatHistoryEndIdx: number): ChatMLMessage[] {
   if (messages.length === 0) return messages;
+  const resolvedChatHistoryEndIdx = findHistoryBounds(messages)?.end ?? chatHistoryEndIdx;
 
   // Step 1: Force post-chat-history non-user/assistant messages to user
-  if (chatHistoryEndIdx > 0) {
+  if (resolvedChatHistoryEndIdx > 0) {
     messages = messages.map((m, i) => {
-      if (i >= chatHistoryEndIdx && m.role === "system") {
+      if (i >= resolvedChatHistoryEndIdx && m.role === "system") {
         return { ...m, role: "user" as const };
       }
       return m;
@@ -739,7 +754,8 @@ function enforceStrictRoles(messages: ChatMLMessage[], chatHistoryEndIdx: number
       // Wrong role — merge into the previous message of the same role, or
       // if this would break alternation, force it to the expected role.
       const prev = result[result.length - 1];
-      if (prev && prev.role === effectiveRole) {
+      const sameCharacter = (prev?.characterId ?? null) === (msg.characterId ?? null);
+      if (prev && prev.role === effectiveRole && sameCharacter) {
         // Merge into previous (same role back-to-back)
         prev.content += "\n\n" + msg.content;
         if (prev.contextKind !== msg.contextKind) {

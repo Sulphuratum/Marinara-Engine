@@ -10,8 +10,7 @@ import { QuestObjectiveRow } from "./QuestObjectiveRow";
 const QUEST_CARD_CLASS =
   "group/quest relative mx-1 overflow-hidden rounded-sm border border-[var(--border)]/30 bg-[color-mix(in_srgb,var(--background)_22%,transparent)] shadow-[inset_0_1px_0_color-mix(in_srgb,var(--foreground)_5%,transparent)]";
 const QUEST_CARD_TOP_RULE_CLASS = "pointer-events-none absolute inset-x-0 top-0 h-px bg-[var(--primary)]/16";
-const QUEST_HEADER_CLASS =
-  "relative grid min-h-5 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-1 px-1 py-0.5";
+const QUEST_HEADER_CLASS = "relative grid min-h-5 grid-cols-[1rem_minmax(0,1fr)_auto] items-center gap-1 px-1 py-0.5";
 const QUEST_HEADER_DELETE_CLASS = "grid-cols-[1rem_minmax(0,1fr)_auto_1rem]";
 const QUEST_TOGGLE_BUTTON_CLASS =
   "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--primary)]/10 hover:text-emerald-300";
@@ -82,20 +81,12 @@ export function QuestRow({
   return (
     <article className={cn(QUEST_CARD_CLASS, quest.completed && "opacity-75")}>
       <div className={QUEST_CARD_TOP_RULE_CLASS} />
-      <div
-        className={cn(
-          QUEST_HEADER_CLASS,
-          deleteMode && QUEST_HEADER_DELETE_CLASS,
-        )}
-      >
+      <div className={cn(QUEST_HEADER_CLASS, deleteMode && QUEST_HEADER_DELETE_CLASS)}>
         {onUpdate && (
           <button
             type="button"
             onClick={() => onUpdate({ ...quest, completed: !quest.completed })}
-            className={cn(
-              QUEST_TOGGLE_BUTTON_CLASS,
-              quest.completed && "text-emerald-300",
-            )}
+            className={cn(QUEST_TOGGLE_BUTTON_CLASS, quest.completed && "text-emerald-300")}
             title={quest.completed ? "Mark incomplete" : "Mark complete"}
             aria-label={quest.completed ? "Mark quest incomplete" : "Mark quest complete"}
           >
@@ -150,22 +141,14 @@ export function QuestRow({
 
       <div className={QUEST_PROGRESS_TRACK_CLASS}>
         <div
-          className={cn(
-            QUEST_PROGRESS_FILL_CLASS,
-            quest.completed ? "bg-emerald-300/85" : "bg-[var(--primary)]/85",
-          )}
+          className={cn(QUEST_PROGRESS_FILL_CLASS, quest.completed ? "bg-emerald-300/85" : "bg-[var(--primary)]/85")}
           style={{ width: `${completionPercent}%` }}
         />
       </div>
 
       {(quest.objectives.length > 0 || (onUpdate && addMode)) && (
         <div className={OBJECTIVE_LIST_CLASS}>
-          <span
-            className={cn(
-              OBJECTIVE_RAIL_CLASS,
-              addMode ? "bottom-4" : "bottom-1",
-            )}
-          />
+          <span className={cn(OBJECTIVE_RAIL_CLASS, addMode ? "bottom-4" : "bottom-1")} />
           {quest.objectives.map((objective, index) => (
             <QuestObjectiveRow
               key={`${objective.text}-${index}`}

@@ -77,7 +77,7 @@ export function Modal({ open, onClose, title, children, width = "max-w-md", cont
       aria-modal="true"
       aria-label={title}
       data-component="Modal"
-      className="mari-modal fixed inset-0 z-50 flex items-center justify-center p-3 max-md:pt-[max(0.75rem,env(safe-area-inset-top))] max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4"
+      className="mari-modal fixed inset-0 z-[10000] flex items-center justify-center p-3 max-md:pt-[max(0.75rem,env(safe-area-inset-top))] max-md:pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:p-4"
       style={{
         opacity: isEntering ? 1 : 0,
         transition: "opacity 150ms ease-out",

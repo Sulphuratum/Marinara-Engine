@@ -52,6 +52,7 @@ import { ActiveWorldInfoButton } from "./ActiveWorldInfoButton";
 import type { SpriteDisplayMode } from "./sprite-display-modes";
 import type {
   CharacterMap,
+  ExpressionAvatarResolver,
   MessageSelectionToggle,
   MessageWithSwipes,
   PeekPromptData,
@@ -207,6 +208,7 @@ function StreamingIndicator({
   personaInfo,
   chatMode,
   groupChatMode,
+  expressionAvatarResolver,
 }: {
   activeChatId: string;
   chatCharIds: string[];
@@ -214,6 +216,7 @@ function StreamingIndicator({
   personaInfo?: PersonaInfo;
   chatMode: string;
   groupChatMode?: string;
+  expressionAvatarResolver?: ExpressionAvatarResolver;
 }) {
   const streamBuffer = useChatStore((s) => s.streamBuffer);
   const thinkingBuffer = useChatStore((s) => s.thinkingBuffer);
@@ -244,6 +247,7 @@ function StreamingIndicator({
         chatMode={chatMode}
         groupChatMode={groupChatMode}
         chatCharacterIds={chatCharIds}
+        expressionAvatarResolver={expressionAvatarResolver}
       />
     </div>
   );
@@ -363,7 +367,9 @@ function ToolbarMenu({ children }: { children: ReactNode }) {
 }
 
 function readStringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
 }
 
 function ActiveContextLinksButton({
@@ -457,9 +463,17 @@ function ActiveContextLinksButton({
           <div className="px-2 pb-1 text-[0.625rem] font-semibold uppercase text-foreground/45">Active Context</div>
           <div className="space-y-1">
             {characterIds.map((id, index) => (
-              <button key={id} type="button" role="menuitem" className={itemClassName} onClick={() => openCharacter(id)}>
+              <button
+                key={id}
+                type="button"
+                role="menuitem"
+                className={itemClassName}
+                onClick={() => openCharacter(id)}
+              >
                 <User size="0.8125rem" className={iconClassName} />
-                <span className="min-w-0 flex-1 truncate">{characterMap.get(id)?.name ?? `Character ${index + 1}`}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {characterMap.get(id)?.name ?? `Character ${index + 1}`}
+                </span>
                 <span className="shrink-0 text-[0.625rem] text-foreground/45">Card</span>
               </button>
             ))}
@@ -661,6 +675,8 @@ type RoleplaySurfaceProps = {
   spriteCharacterIds: string[];
   spriteDisplayModes: SpriteDisplayMode[];
   spriteExpressions: Record<string, string>;
+  expressionAvatarsEnabled: boolean;
+  expressionAvatarResolver?: ExpressionAvatarResolver;
   spritePlacements: Record<string, SpritePlacement>;
   spriteScale: number;
   spriteOpacity: number;
@@ -760,6 +776,8 @@ export function ChatRoleplaySurface({
   spriteCharacterIds,
   spriteDisplayModes,
   spriteExpressions,
+  expressionAvatarsEnabled,
+  expressionAvatarResolver,
   spritePlacements,
   spriteScale,
   spriteOpacity,
@@ -852,6 +870,11 @@ export function ChatRoleplaySurface({
   const seenMessageKeysRef = useRef(roleplayNotificationSeenKeys);
   const hideEchoChamberOnMobile =
     sidebarOpen || rightPanelOpen || settingsOpen || filesOpen || galleryOpen || wizardOpen;
+  const overlaySpriteDisplayModes = expressionAvatarsEnabled
+    ? spriteDisplayModes.filter((mode) => mode !== "expressions")
+    : spriteDisplayModes;
+  const showSpriteOverlay =
+    expressionAgentEnabled && spriteCharacterIds.length > 0 && overlaySpriteDisplayModes.length > 0;
 
   useEffect(() => {
     initialLoadSettledRef.current = false;
@@ -903,13 +926,13 @@ export function ChatRoleplaySurface({
         <div className="rpg-overlay absolute inset-0" />
         <div className="rpg-vignette pointer-events-none absolute inset-0" />
         {weatherEffects && <WeatherEffectsConnected />}
-        {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
+        {showSpriteOverlay && (
           <Suspense fallback={null}>
             <SpriteOverlay
               characterIds={spriteCharacterIds}
               messages={msgPayload}
               side={spritePosition}
-              spriteDisplayModes={spriteDisplayModes}
+              spriteDisplayModes={overlaySpriteDisplayModes}
               spriteExpressions={spriteExpressions}
               spritePlacements={spritePlacements}
               editing={spriteArrangeMode}
@@ -991,14 +1014,14 @@ export function ChatRoleplaySurface({
                       title="Manage Chat Files"
                       onClick={onOpenFiles}
                     />
-                    {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
+                    {showSpriteOverlay && (
                       <RpToolbarButton
                         icon={<Move size="0.875rem" />}
                         title={spriteArrangeMode ? "Finish arranging sprites" : "Arrange sprites"}
                         onClick={onToggleSpriteArrange}
                       />
                     )}
-                    {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
+                    {showSpriteOverlay && (
                       <RpToolbarButton
                         icon={<FlipHorizontal2 size="0.875rem" />}
                         title={
@@ -1096,14 +1119,14 @@ export function ChatRoleplaySurface({
                           title="Manage Chat Files"
                           onClick={onOpenFiles}
                         />
-                        {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
+                        {showSpriteOverlay && (
                           <RpToolbarButton
                             icon={<Move size="0.875rem" />}
                             title={spriteArrangeMode ? "Finish arranging sprites" : "Arrange sprites"}
                             onClick={onToggleSpriteArrange}
                           />
                         )}
-                        {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
+                        {showSpriteOverlay && (
                           <RpToolbarButton
                             icon={<FlipHorizontal2 size="0.875rem" />}
                             title={
@@ -1264,6 +1287,7 @@ export function ChatRoleplaySurface({
                           isGrouped={isGrouped(i)}
                           groupChatMode={groupChatMode}
                           chatCharacterIds={chatCharIds}
+                          expressionAvatarResolver={expressionAvatarResolver}
                           multiSelectMode={multiSelectMode}
                           isSelected={selectedMessageIds.has(msg.id)}
                           onToggleSelect={onToggleSelectMessage}
@@ -1292,6 +1316,7 @@ export function ChatRoleplaySurface({
                           isGrouped={isGrouped(i)}
                           groupChatMode={groupChatMode}
                           chatCharacterIds={chatCharIds}
+                          expressionAvatarResolver={expressionAvatarResolver}
                           multiSelectMode={multiSelectMode}
                           isSelected={selectedMessageIds.has(msg.id)}
                           onToggleSelect={onToggleSelectMessage}
@@ -1311,6 +1336,7 @@ export function ChatRoleplaySurface({
                     personaInfo={personaInfo}
                     chatMode={chatMode}
                     groupChatMode={groupChatMode}
+                    expressionAvatarResolver={expressionAvatarResolver}
                   />
                 )}
 

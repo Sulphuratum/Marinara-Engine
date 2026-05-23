@@ -12,8 +12,7 @@ const OBJECTIVE_ROW_WRAPPED_CLASS = "items-start py-0.5 leading-[1.15]";
 const OBJECTIVE_ROW_SINGLE_LINE_CLASS = "items-center leading-4";
 const OBJECTIVE_TOGGLE_BUTTON_CLASS =
   "flex h-4 w-4 shrink-0 items-center justify-center rounded-sm text-[var(--muted-foreground)] transition-colors hover:bg-[var(--primary)]/10 hover:text-emerald-300";
-const OBJECTIVE_EDIT_CLASS =
-  "w-full min-w-0 overflow-hidden px-0.5 py-0 text-[0.6875rem] hover:bg-[var(--accent)]/20";
+const OBJECTIVE_EDIT_CLASS = "w-full min-w-0 overflow-hidden px-0.5 py-0 text-[0.6875rem] hover:bg-[var(--accent)]/20";
 const OBJECTIVE_EDIT_WRAPPED_CLASS = "min-h-4 py-0.5 leading-[1.15]";
 const OBJECTIVE_EDIT_SINGLE_LINE_CLASS = "h-4 leading-4";
 const OBJECTIVE_REMOVE_BUTTON_CLASS =
@@ -52,11 +51,7 @@ export function QuestObjectiveRow({
         <button
           type="button"
           onClick={onToggle}
-          className={cn(
-            OBJECTIVE_TOGGLE_BUTTON_CLASS,
-            wrapsText && "mt-px",
-            objective.completed && "text-emerald-300",
-          )}
+          className={cn(OBJECTIVE_TOGGLE_BUTTON_CLASS, wrapsText && "mt-px", objective.completed && "text-emerald-300")}
           title={objective.completed ? "Mark incomplete" : "Mark complete"}
           aria-label={objective.completed ? "Mark objective incomplete" : "Mark objective complete"}
         >

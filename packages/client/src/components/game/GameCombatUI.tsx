@@ -540,6 +540,8 @@ function buildCombatVoiceConfigSignature(config?: TTSConfig | null): string {
     config.baseUrl,
     config.model,
     config.voice,
+    config.narratorVoiceEnabled ? "narrator-voice" : "narrator-global",
+    config.narratorVoice,
     config.voiceMode,
     JSON.stringify(config.voiceAssignments ?? []),
     config.npcDefaultVoicesEnabled ? "npc-defaults" : "npc-global",

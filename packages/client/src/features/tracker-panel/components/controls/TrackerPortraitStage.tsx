@@ -65,7 +65,8 @@ const PORTRAIT_TONE_OVERLAY_CLASS =
   "pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_42%_16%,color-mix(in_srgb,var(--tracker-profile-display-solid)_15%,transparent)_0%,transparent_42%),linear-gradient(180deg,color-mix(in_srgb,var(--tracker-portrait-frame-accent)_8%,transparent)_0%,transparent_42%,color-mix(in_srgb,var(--background)_55%,transparent)_100%)]";
 const PORTRAIT_MEDIA_DRAG_SURFACE_CLASS =
   "absolute inset-0 z-[1] flex h-full w-full touch-none items-center justify-center overflow-hidden";
-const PORTRAIT_MEDIA_OFFSET_CLASS = "relative flex h-full w-full min-w-0 items-center justify-center will-change-transform";
+const PORTRAIT_MEDIA_OFFSET_CLASS =
+  "relative flex h-full w-full min-w-0 items-center justify-center will-change-transform";
 const SPRITE_IMAGE_CLASS =
   "relative h-full w-full object-contain drop-shadow-[0_8px_14px_rgba(0,0,0,0.38)] will-change-transform";
 const ART_IMAGE_CLASS = "absolute inset-0 h-full w-full max-h-none object-cover will-change-transform";

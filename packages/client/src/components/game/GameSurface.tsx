@@ -89,7 +89,7 @@ import type {
   SceneSpotifyTrackSelection,
 } from "@marinara-engine/shared";
 import type { SceneSegmentEffect } from "@marinara-engine/shared";
-import { scoreMusic, scoreAmbient } from "@marinara-engine/shared";
+import { formatTextQuotes, scoreMusic, scoreAmbient } from "@marinara-engine/shared";
 import { GameNarration, formatNarration } from "./GameNarration";
 import { GameInput } from "./GameInput";
 import { GameMapPanel, MobileMapButton } from "./GameMap";
@@ -1828,6 +1828,7 @@ export function GameSurface({
   const gameMiddleMouseNav = useUIStore((s) => s.gameMiddleMouseNav);
   const messagesPerPage = useUIStore((s) => s.messagesPerPage);
   const openGameAssetsBrowser = useUIStore((s) => s.openGameAssetsBrowser);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
   const gameSnapshot = useGameStateStore((s) => (s.current?.chatId === activeChatId ? s.current : null));
   const chatCharacterIds = useMemo(() => getChatCharacterIds(chat.characterIds), [chat.characterIds]);
   const useSpotifyGameMusic = chatMeta.gameUseSpotifyMusic === true;
@@ -4748,11 +4749,11 @@ export function GameSurface({
       generate({
         chatId: activeChatId,
         connectionId: null,
-        userMessage: message,
+        userMessage: formatTextQuotes(message, quoteFormat),
         ...(attachments?.length ? { attachments } : {}),
       });
     },
-    [activeChatId, chatMeta.gameSessionStatus, generate],
+    [activeChatId, chatMeta.gameSessionStatus, generate, quoteFormat],
   );
 
   // Game mutations

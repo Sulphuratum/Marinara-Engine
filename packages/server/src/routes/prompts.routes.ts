@@ -11,6 +11,7 @@ import {
   updatePromptGroupSchema,
   createChoiceBlockSchema,
   updateChoiceBlockSchema,
+  stripMacroComments,
   type LorebookEntryTimingState,
 } from "@marinara-engine/shared";
 import type { ExportEnvelope } from "@marinara-engine/shared";
@@ -28,6 +29,10 @@ function toSafeExportName(name: string, fallback: string) {
     .replace(/\s+/g, " ")
     .trim();
   return sanitized || fallback;
+}
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
 }
 
 export async function promptsRoutes(app: FastifyInstance) {
@@ -311,12 +316,12 @@ export async function promptsRoutes(app: FastifyInstance) {
     if (activePersona) {
       personaId = activePersona.id as string;
       personaName = activePersona.name;
-      personaDescription = activePersona.description;
+      personaDescription = cardPromptText(activePersona.description);
       personaFields = {
-        personality: activePersona.personality ?? "",
-        scenario: activePersona.scenario ?? "",
-        backstory: activePersona.backstory ?? "",
-        appearance: activePersona.appearance ?? "",
+        personality: cardPromptText(activePersona.personality),
+        scenario: cardPromptText(activePersona.scenario),
+        backstory: cardPromptText(activePersona.backstory),
+        appearance: cardPromptText(activePersona.appearance),
       };
     }
 

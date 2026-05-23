@@ -1,10 +1,6 @@
 import type { TrackerPanelSizeProfile, TrackerTemperatureUnit } from "../../../../stores/ui.store";
 import { cn } from "../../../../lib/utils";
-import {
-  getTemperatureColor,
-  getTemperatureGaugeDisplay,
-  getWeatherEmoji,
-} from "../../lib/world-state-display";
+import { getTemperatureColor, getTemperatureGaugeDisplay, getWeatherEmoji } from "../../lib/world-state-display";
 import { visibleText } from "../../lib/tracker-display";
 import { FittedText } from "../controls/InlineControls";
 import { WorldRenderedEdit, WorldTileShell } from "./WorldEditableTile";
@@ -153,20 +149,26 @@ function getBalancedWeatherLines(text: string, lineCount: 2 | 3) {
     }
   }
 
-  return candidates.reduce((best, candidate) => {
-    const scoreLines = (lines: string[]) => {
-      const lengths = lines.map((line) => line.length);
-      const longest = Math.max(...lengths);
-      const shortest = Math.min(...lengths);
-      const isolatedTinyWordPenalty = lines.some((line) => line.length <= 3 && !line.includes(" ")) ? 8 : 0;
-      return longest * 2 + (longest - shortest) + isolatedTinyWordPenalty;
-    };
+  return candidates.reduce(
+    (best, candidate) => {
+      const scoreLines = (lines: string[]) => {
+        const lengths = lines.map((line) => line.length);
+        const longest = Math.max(...lengths);
+        const shortest = Math.min(...lengths);
+        const isolatedTinyWordPenalty = lines.some((line) => line.length <= 3 && !line.includes(" ")) ? 8 : 0;
+        return longest * 2 + (longest - shortest) + isolatedTinyWordPenalty;
+      };
 
-    return scoreLines(candidate) < scoreLines(best) ? candidate : best;
-  }, candidates[0] ?? [text]);
+      return scoreLines(candidate) < scoreLines(best) ? candidate : best;
+    },
+    candidates[0] ?? [text],
+  );
 }
 
-function getWorldWeatherLabelPlan(text: string, trackerPanelSizeProfile: TrackerPanelSizeProfile): WorldWeatherLabelPlan {
+function getWorldWeatherLabelPlan(
+  text: string,
+  trackerPanelSizeProfile: TrackerPanelSizeProfile,
+): WorldWeatherLabelPlan {
   const normalized = text.replace(/\s+/g, " ").trim();
   const words = normalized ? normalized.split(" ") : [];
   const wordCount = words.length;
@@ -176,8 +178,7 @@ function getWorldWeatherLabelPlan(text: string, trackerPanelSizeProfile: Tracker
   const headlineLimit = isExpanded ? 13 : isCompact ? 16 : 18;
   const longestHeadlineWordLimit = isExpanded ? 12 : 16;
   const canUseHeadline =
-    wordCount <= 1 ||
-    (wordCount <= 2 && normalized.length <= headlineLimit && longestWord <= longestHeadlineWordLimit);
+    wordCount <= 1 || (wordCount <= 2 && normalized.length <= headlineLimit && longestWord <= longestHeadlineWordLimit);
 
   if (canUseHeadline) {
     return {
@@ -187,8 +188,7 @@ function getWorldWeatherLabelPlan(text: string, trackerPanelSizeProfile: Tracker
   }
 
   const useThreeLines =
-    !isExpanded &&
-    (wordCount > (isCompact ? 4 : 5) || normalized.length > (isCompact ? 34 : 42) || longestWord > 18);
+    !isExpanded && (wordCount > (isCompact ? 4 : 5) || normalized.length > (isCompact ? 34 : 42) || longestWord > 18);
   const lines = getBalancedWeatherLines(normalized, useThreeLines ? 3 : 2);
 
   return {
@@ -308,11 +308,16 @@ function WorldThermometerGauge({
           expanded ? "h-[0.92rem] w-[0.92rem]" : "h-[0.72rem] w-[0.72rem]",
         )}
       >
-        <span className={cn("absolute rounded-full", expanded ? "inset-[0.19rem]" : "inset-[0.15rem]")} style={fillStyle} />
+        <span
+          className={cn("absolute rounded-full", expanded ? "inset-[0.19rem]" : "inset-[0.15rem]")}
+          style={fillStyle}
+        />
         <span
           className={cn(
             "absolute rounded-full bg-[var(--foreground)]/24",
-            expanded ? "left-[0.3rem] top-[0.26rem] h-[0.28rem] w-[0.2rem]" : "left-[0.23rem] top-[0.2rem] h-[0.22rem] w-[0.16rem]",
+            expanded
+              ? "left-[0.3rem] top-[0.26rem] h-[0.28rem] w-[0.2rem]"
+              : "left-[0.23rem] top-[0.2rem] h-[0.22rem] w-[0.16rem]",
           )}
         />
       </div>

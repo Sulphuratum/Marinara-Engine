@@ -176,10 +176,7 @@ function selectPromptPath(messages: ChatMessage[], model: string): PromptSelecti
       // The only realistic failure is creating the scratch working directory
       // on a read-only / permission-locked data dir. Degrade to the fold path
       // for this request rather than failing the chat outright.
-      logger.warn(
-        err,
-        "[claude-subscription] resume path setup failed; using transcript fold for this request",
-      );
+      logger.warn(err, "[claude-subscription] resume path setup failed; using transcript fold for this request");
     }
   }
   return buildFoldSelection(messages);
@@ -196,10 +193,7 @@ function buildResumeSelection(messages: ChatMessage[], model: string): PromptSel
     // has nothing to resume from (single-turn requests, connection pings,
     // system-only context), skip resume entirely and send the current turn
     // straight through the AsyncIterable prompt.
-    logger.debug(
-      "[claude-subscription] resume path: shape=%s history=empty (direct prompt, no resume)",
-      split.shape,
-    );
+    logger.debug("[claude-subscription] resume path: shape=%s history=empty (direct prompt, no resume)", split.shape);
     return {
       promptArg: singleMessageIterable(currentToSdkUserMessage(split.current)),
       systemPrompt,

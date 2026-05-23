@@ -35,9 +35,7 @@ export function getCurrentGameGroupRepresentative<T extends GameSessionChat>(
   const sessions = chats.filter((candidate) => candidate.mode === "game" && candidate.groupId === chat.groupId);
   if (sessions.length === 0) return chat;
 
-  return sessions.reduce((latest, candidate) =>
-    compareGameSessions(candidate, latest) > 0 ? candidate : latest,
-  );
+  return sessions.reduce((latest, candidate) => (compareGameSessions(candidate, latest) > 0 ? candidate : latest));
 }
 
 export function resolveCurrentGameSessionChatId(

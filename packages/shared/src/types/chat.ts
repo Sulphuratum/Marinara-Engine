@@ -13,6 +13,9 @@ export type GroupChatMode = "merged" | "individual";
 /** How individual-mode group chats decide response order. */
 export type GroupResponseOrder = "sequential" | "smart" | "manual";
 
+/** Spotify source constraints used by Spotify DJ. */
+export type SpotifySourceType = "liked" | "playlist" | "artist" | "any";
+
 /** Role of a message in the conversation. */
 export type MessageRole = "user" | "assistant" | "system" | "narrator";
 
@@ -163,6 +166,8 @@ export interface ChatMetadata {
   groupSpeakerColors?: boolean;
   /** Group individual mode response order: "sequential" or "smart" (agent-decided) */
   groupResponseOrder?: GroupResponseOrder;
+  /** When true/omitted, individual group turns append a responding-character instruction to the prompt. */
+  groupTurnPromptEnabled?: boolean;
   /** Chat members that are temporarily excluded from group prompt/generation participation. */
   inactiveCharacterIds?: string[];
   /** Characters with visible roleplay sprites enabled for this chat. */
@@ -177,6 +182,8 @@ export interface ChatMetadata {
   spriteOpacity?: number;
   /** Saved freeform positions for enabled roleplay sprites. */
   spritePlacements?: Record<string, SpritePlacement>;
+  /** When true, roleplay message avatars use the per-message Expression Engine sprite when one is available. */
+  expressionAvatarsEnabled?: boolean;
   /** When true, a shared group scenario replaces individual character card scenarios */
   groupScenarioOverride?: boolean;
   /** The shared scenario text used when groupScenarioOverride is enabled */
@@ -208,6 +215,14 @@ export interface ChatMetadata {
   roleplayDmCommandsEnabled?: boolean;
   /** Chat-scoped Intiface Central WebSocket URL for haptic manual and auto-connect. */
   hapticIntifaceUrl?: string | null;
+  /** Music source constraint for Spotify DJ in roleplay and visual novel chats. */
+  spotifySourceType?: SpotifySourceType;
+  /** Spotify playlist ID used when spotifySourceType is "playlist". */
+  spotifyPlaylistId?: string | null;
+  /** Human-readable playlist name cached for prompts/display. */
+  spotifyPlaylistName?: string | null;
+  /** Spotify artist name used when spotifySourceType is "artist". */
+  spotifyArtist?: string | null;
   /** Durable count of autonomous messages the user has not viewed yet. */
   autonomousUnreadCount?: number;
   /** Character IDs that contributed to the current autonomous unread state. */
@@ -287,7 +302,7 @@ export interface ChatMetadata {
   /** When true, Game Mode uses Spotify DJ for music instead of local music assets. */
   gameUseSpotifyMusic?: boolean;
   /** Music source constraint for Spotify DJ in Game Mode. */
-  gameSpotifySourceType?: "liked" | "playlist" | "artist" | "any";
+  gameSpotifySourceType?: SpotifySourceType;
   /** Spotify playlist ID used when gameSpotifySourceType is "playlist". */
   gameSpotifyPlaylistId?: string | null;
   /** Human-readable playlist name cached for prompts/display. */
@@ -326,6 +341,8 @@ export interface ChatMetadata {
    * Valid range: 0-50. Default: 10.
    */
   summaryTailMessages?: number;
+  /** When true or omitted, prior provider reasoning metadata is not replayed into future prompts. */
+  excludePastReasoning?: boolean;
 
   /** Any extra key-value data */
   [key: string]: unknown;
@@ -388,6 +405,8 @@ export interface MessageExtra {
    * saved with this assistant message — reused when regenerating that swipe unless refreshed.
    */
   contextInjections?: Array<{ agentType: string; agentName?: string; text: string }> | null;
+  /** Fingerprint of the compiled chat summary used when prompt caches/reasoning were stored. */
+  chatSummaryFingerprint?: string | null;
   /**
    * Hidden command-generation options needed to make swipes/regenerations replay
    * the same slash-command or guided-regenerate prompt behavior.

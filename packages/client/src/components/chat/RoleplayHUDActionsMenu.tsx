@@ -97,6 +97,10 @@ export function RoleplayHUDActionsMenu({
     () => hasActiveInjectableCustomAgent(agentConfigs ?? [], enabledAgentTypes),
     [agentConfigs, enabledAgentTypes],
   );
+  const hasActiveCustomAgent = useMemo(
+    () => hasActiveCustomAgentType(agentConfigs ?? [], enabledAgentTypes),
+    [agentConfigs, enabledAgentTypes],
+  );
   const hasAnyActivity = isAgentProcessing || thoughtBubbles.length > 0 || hasCustomRuns || customAgentRunsLoading;
   const tabs = [
     { id: "activity" as const, label: "Activity" },
@@ -163,8 +167,8 @@ export function RoleplayHUDActionsMenu({
         <>
           {isAgentProcessing && (
             <div className="flex items-center gap-2 border-b border-white/5 px-3 py-2">
-              <Sparkles size="0.75rem" className="text-purple-400 animate-pulse" />
-              <span className="text-[0.625rem] text-purple-300/80">Agents thinking...</span>
+              <Sparkles size="0.75rem" className="animate-pulse text-foreground/65" />
+              <span className="text-[0.625rem] text-foreground/65">Agents thinking...</span>
             </div>
           )}
           {!hasAnyActivity && (
@@ -196,7 +200,7 @@ export function RoleplayHUDActionsMenu({
                       <X size="0.625rem" />
                     </button>
                     <div className="pr-4">
-                      <span className="font-semibold text-purple-300">{bubble.agentName}</span>
+                      <span className="font-semibold text-foreground/75">{bubble.agentName}</span>
                       {bubble.agentId === "continuity" ? (
                         <ContinuityIssueChecklist content={bubble.content} compact />
                       ) : (
@@ -285,12 +289,12 @@ export function RoleplayHUDActionsMenu({
               onClick={toggleEchoChamber}
               className="flex w-full items-center gap-2 px-3 py-2 text-[0.625rem] transition-colors hover:bg-white/5"
             >
-              <MessageCircle size="0.75rem" className={echoChamberOpen ? "text-purple-400" : "text-purple-400/60"} />
-              <span className={echoChamberOpen ? "text-purple-300 font-medium" : "text-white/60"}>
+              <MessageCircle size="0.75rem" className={echoChamberOpen ? "text-foreground/75" : "text-foreground/50"} />
+              <span className={echoChamberOpen ? "font-medium text-foreground/75" : "text-foreground/55"}>
                 Echo Chamber {echoChamberOpen ? "On" : "Off"}
               </span>
               {echoMessageCount > 0 && (
-                <span className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-500/80 px-1 text-[0.5rem] font-bold text-white">
+                <span className="ml-auto flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-foreground/15 px-1 text-[0.5rem] font-bold text-foreground/80 ring-1 ring-foreground/10">
                   {echoMessageCount}
                 </span>
               )}
@@ -304,7 +308,7 @@ export function RoleplayHUDActionsMenu({
               }}
               className="flex w-full items-center gap-2 px-3 py-2 text-[0.625rem] text-white/60 transition-colors hover:bg-red-500/10 hover:text-red-300"
             >
-              <Trash2 size="0.75rem" className="text-purple-400/60" />
+              <Trash2 size="0.75rem" className="text-current" />
               <span>Clear Trackers</span>
             </button>
           )}
@@ -315,10 +319,14 @@ export function RoleplayHUDActionsMenu({
                 onClose();
               }}
               disabled={isGenerationBusy}
-              className="flex w-full items-center gap-2 px-3 py-2 text-[0.625rem] font-medium text-purple-300 transition-colors hover:bg-purple-500/10 disabled:opacity-50"
+              className="flex w-full items-center gap-2 px-3 py-2 text-[0.625rem] font-medium text-foreground/60 transition-colors hover:bg-white/5 hover:text-foreground/75 disabled:opacity-50"
             >
               <RefreshCw size="0.6875rem" className={isGenerationBusy ? "animate-spin" : ""} />
-              {isGenerationBusy ? "Running..." : "Re-run Trackers"}
+              {isGenerationBusy
+                ? "Running..."
+                : hasActiveCustomAgent
+                  ? "Re-run Trackers & Custom Agents"
+                  : "Re-run Trackers"}
             </button>
           )}
           {showRetryFailedAction && (
@@ -360,7 +368,7 @@ function CustomAgentRunsSection({
   const heading = (
     <>
       <span className="flex items-center gap-1 text-[0.625rem] text-[var(--muted-foreground)]">
-        <Code2 size="0.6875rem" className="text-[var(--primary)]" />
+        <Code2 size="0.6875rem" className="text-foreground/55" />
         {title}
       </span>
       <span className="ml-auto text-[0.5625rem] text-[var(--muted-foreground)]/70">{countLabel}</span>
@@ -417,6 +425,14 @@ function hasActiveInjectableCustomAgent(configs: AgentConfigRow[], enabledAgentT
     if (enabledAgentTypes ? !enabledAgentTypes.has(config.type) : config.enabled !== "true") return false;
     const settings = parseAgentSettings(config.settings);
     return settings.injectAsSection === true;
+  });
+}
+
+function hasActiveCustomAgentType(configs: AgentConfigRow[], enabledAgentTypes?: Set<string>): boolean {
+  const builtInTypes = new Set(BUILT_IN_AGENTS.map((agent) => agent.id));
+  return configs.some((config) => {
+    if (builtInTypes.has(config.type)) return false;
+    return enabledAgentTypes ? enabledAgentTypes.has(config.type) : config.enabled === "true";
   });
 }
 
@@ -537,7 +553,7 @@ function CustomAgentRunItem({ run }: { run: AgentRunRow }) {
       <div className="flex items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-            <span className="font-semibold text-[var(--primary)]">{run.agentName}</span>
+            <span className="font-semibold text-foreground/75">{run.agentName}</span>
             <span className="rounded bg-[var(--secondary)]/55 px-1 py-0.5 text-[0.5rem] uppercase tracking-wide text-[var(--muted-foreground)]">
               {run.resultType.replace(/_/g, " ")}
             </span>
@@ -582,7 +598,7 @@ function CustomAgentRunItem({ run }: { run: AgentRunRow }) {
               type="button"
               onClick={save}
               disabled={updateRun.isPending}
-              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-[var(--primary)]/25 bg-[var(--primary)]/10 px-2 py-1 text-[0.5625rem] font-medium text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:opacity-50"
+              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-foreground/15 bg-foreground/10 px-2 py-1 text-[0.5625rem] font-medium text-foreground/70 transition-colors hover:bg-foreground/15 hover:text-foreground/85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:opacity-50"
             >
               <Check size="0.625rem" />
               {updateRun.isPending ? "Saving..." : "Save"}

@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { Pencil, Plus } from "lucide-react";
 import { cn } from "../../../../lib/utils";
 import { TRACKER_TEXT_MICRO } from "../../lib/tracker-panel.constants";

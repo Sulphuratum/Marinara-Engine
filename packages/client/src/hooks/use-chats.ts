@@ -801,6 +801,7 @@ export function usePeekPrompt() {
           showThoughts?: boolean | null;
           reasoningEffort?: string | null;
           verbosity?: string | null;
+          serviceTier?: string | null;
           assistantPrefill?: string | null;
           tokensPrompt?: number | null;
           tokensCompletion?: number | null;

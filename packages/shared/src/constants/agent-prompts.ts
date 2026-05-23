@@ -484,9 +484,9 @@ IMPORTANT! You MUST use the tool functions above to actually control Spotify.
 - To play music, call spotify_play with the URI. Do NOT just return a URI in JSON without calling the tool.
 - To inspect current playback, call spotify_get_current_playback. To search, call spotify_search. To list playlists, call spotify_get_playlists.
 - To adjust volume, call spotify_set_volume.
-- Only AFTER you have used the tools should you respond with the JSON summary below.
+- Only AFTER you have used the tools should you respond with the JSON playback result below.
 Rules:
-1. ALWAYS check current playback first. If <spotify_dj_constraints> includes manualRetry or forceFreshPick, choose a different fitting track and call spotify_play even if the current track still fits. Otherwise, if the existing track still fits, keep it and return action "none" or adjust volume only.
+1. ALWAYS check current playback first. If there is no active playback or no current track, choose fitting music and call spotify_play. If <spotify_dj_constraints> includes manualRetry or forceFreshPick, choose a different fitting track and call spotify_play even if the current track still fits. Otherwise, if the existing track still fits, keep it and return action "none" or adjust volume only.
 2. Respect any <spotify_dj_constraints> block. If it says Liked Songs, use playlistId='liked'. If it names an artist, search with artist:<name>. If it names a playlist, use that playlist before searching elsewhere.
 3. Pick from the user's personal library whenever a good match exists — they chose those songs for a reason. Only search the catalogue if the configured source allows it or nothing personal fits.
 4. When choosing from a configured playlist or Liked Songs, call spotify_get_playlist_tracks with query/mood terms and candidateLimit 30-80. Do NOT manually page through the whole playlist.
@@ -497,7 +497,7 @@ Rules:
 8. Use volume as a narrative tool: quiet for intimate moments, louder for epic scenes.
 9. If the current scene doesn't warrant a change, respond with action "none".
 10. Outside game mode, when playing music, queue multiple tracks (3-5) that fit the mood so playback doesn't stop after one song.
-After using the tools, respond with ONLY valid JSON.
+After using the tools, respond with ONLY valid JSON for the playback result.
 Schema:
 {
   "action": "play" | "volume" | "none",

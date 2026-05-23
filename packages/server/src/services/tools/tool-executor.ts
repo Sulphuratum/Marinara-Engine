@@ -77,6 +77,14 @@ type SpotifyPlaybackSnapshot = {
   deviceName: string | null;
 };
 
+type SpotifyPlaybackDevice = {
+  id?: string | null;
+  name?: string | null;
+  type?: string | null;
+  is_active?: boolean;
+  is_restricted?: boolean;
+};
+
 const spotifyTrackIndexCache = new Map<string, SpotifyTrackIndexCacheEntry>();
 
 const SPOTIFY_STOP_WORDS = new Set([
@@ -564,7 +572,23 @@ async function spotifyGetCurrentPlayback(
       signal: AbortSignal.timeout(10_000),
     });
     if (res.status === 204) {
-      return { active: false, isPlaying: false, track: null, note: "No active Spotify playback device." };
+      const fallbackDevice = await findAvailableSpotifyPlaybackDevice(creds.accessToken);
+      return {
+        active: false,
+        isPlaying: false,
+        track: null,
+        device: fallbackDevice
+          ? {
+              id: fallbackDevice.deviceId,
+              name: fallbackDevice.deviceName,
+              type: fallbackDevice.deviceType,
+              available: true,
+            }
+          : null,
+        note: fallbackDevice
+          ? "No active Spotify playback, but an available Spotify device can be targeted by spotify_play."
+          : "No active Spotify playback device.",
+      };
     }
     if (!res.ok) {
       const body = await res.text();
@@ -691,6 +715,38 @@ async function fetchSpotifyPlaybackSnapshot(accessToken: string): Promise<Spotif
     repeatState: normalizeSpotifyRepeatState(data.repeat_state),
     deviceId: typeof data.device?.id === "string" ? data.device.id : null,
     deviceName: typeof data.device?.name === "string" ? data.device.name : null,
+  };
+}
+
+async function findAvailableSpotifyPlaybackDevice(
+  accessToken: string,
+): Promise<{ deviceId: string; deviceName: string; deviceType: string | null } | null> {
+  const res = await fetch("https://api.spotify.com/v1/me/player/devices", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+
+  const data = (await res.json().catch(() => null)) as { devices?: SpotifyPlaybackDevice[] } | null;
+  const devices = data?.devices ?? [];
+  const pick = (predicate: (device: SpotifyPlaybackDevice) => boolean) =>
+    devices.find(
+      (device) =>
+        typeof device.id === "string" &&
+        device.id.trim().length > 0 &&
+        device.is_restricted !== true &&
+        predicate(device),
+    );
+  const candidate =
+    pick((device) => device.is_active === true) ??
+    pick((device) => device.name !== "Marinara Engine") ??
+    pick((device) => device.name === "Marinara Engine");
+  if (!candidate?.id) return null;
+
+  return {
+    deviceId: candidate.id,
+    deviceName: candidate.name ?? "Spotify device",
+    deviceType: candidate.type ?? null,
   };
 }
 
@@ -841,15 +897,23 @@ function selectSpotifyTrackCandidates(args: {
   };
 }
 
+type SpotifyTrackInner = {
+  uri?: string;
+  name?: string;
+  artists?: Array<{ name?: string }>;
+  album?: { name?: string };
+};
+
 function mapSpotifyTrackItems(
   items: Array<{
-    track?: { uri?: string; name?: string; artists?: Array<{ name?: string }>; album?: { name?: string } } | null;
+    track?: SpotifyTrackInner | null;
+    item?: SpotifyTrackInner | null;
   }>,
   offset: number,
 ): SpotifyTrackCandidate[] {
   return items
     .map((item, index) => {
-      const track = item.track;
+      const track = item.track ?? item.item;
       if (!track?.uri?.startsWith("spotify:track:")) return null;
       return {
         uri: track.uri,
@@ -887,7 +951,7 @@ async function fetchSpotifyTrackIndex(
     const endpoint =
       playlistId === "liked"
         ? `https://api.spotify.com/v1/me/tracks?${new URLSearchParams({ limit: String(pageSize), offset: String(offset) })}`
-        : `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks?${new URLSearchParams({ limit: String(pageSize), offset: String(offset) })}`;
+        : `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/items?${new URLSearchParams({ limit: String(pageSize), offset: String(offset) })}`;
     const res = await fetch(endpoint, {
       headers: { Authorization: `Bearer ${creds.accessToken}` },
       signal: AbortSignal.timeout(15_000),
@@ -897,9 +961,7 @@ async function fetchSpotifyTrackIndex(
       throw new Error(`Spotify API error (${res.status}): ${body.slice(0, 200)}`);
     }
     const data = (await res.json()) as {
-      items?: Array<{
-        track?: { uri?: string; name?: string; artists?: Array<{ name?: string }>; album?: { name?: string } } | null;
-      }>;
+      items?: Array<{ track?: SpotifyTrackInner | null; item?: SpotifyTrackInner | null }>;
       total?: number;
       next?: string | null;
     };
@@ -973,7 +1035,7 @@ async function spotifyGetPlaylistTracks(
     const url =
       playlistId === "liked"
         ? `https://api.spotify.com/v1/me/tracks?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`
-        : `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`;
+        : `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/items?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`;
 
     const res = await fetch(url, {
       headers: { Authorization: `Bearer ${creds.accessToken}` },
@@ -984,9 +1046,7 @@ async function spotifyGetPlaylistTracks(
       return { error: `Spotify API error (${res.status}): ${body.slice(0, 200)}` };
     }
     const data = (await res.json()) as {
-      items?: Array<{
-        track: { uri: string; name: string; artists: Array<{ name: string }>; album: { name: string } };
-      }>;
+      items?: Array<{ track?: SpotifyTrackInner | null; item?: SpotifyTrackInner | null }>;
       total?: number;
     };
     const tracks = mapSpotifyTrackItems(data.items ?? [], offset);
@@ -1070,7 +1130,17 @@ async function spotifyPlay(
     const firstUri = uris[0]!;
     const singleTrackUri = uris.length === 1 && firstUri.startsWith("spotify:track:");
     const beforePlayback = await fetchSpotifyPlaybackSnapshot(creds.accessToken);
-    const targetDeviceId = beforePlayback?.deviceId ?? null;
+    const fallbackDevice = beforePlayback?.deviceId
+      ? null
+      : await findAvailableSpotifyPlaybackDevice(creds.accessToken);
+    const targetDeviceId = beforePlayback?.deviceId ?? fallbackDevice?.deviceId ?? null;
+    const targetDeviceName = beforePlayback?.deviceName ?? fallbackDevice?.deviceName ?? null;
+    if (!targetDeviceId) {
+      return {
+        error:
+          "No Spotify device is available. Enable the Spotify mini player in Settings, or open Spotify on another device, then try again.",
+      };
+    }
     const playQuery = targetDeviceId ? `?${new URLSearchParams({ device_id: targetDeviceId }).toString()}` : "";
 
     if (singleTrackUri && repeatAfterPlay === "track") {
@@ -1101,7 +1171,7 @@ async function spotifyPlay(
         repeat,
         repeatState: current?.repeatState ?? repeat ?? null,
         currentUri: current?.trackUri ?? null,
-        device: current?.deviceName ?? beforePlayback?.deviceName ?? null,
+        device: current?.deviceName ?? targetDeviceName,
         display: `🎵 Now playing playlist: ${firstUri}${reason ? ` — ${reason}` : ""}`,
       };
     }
@@ -1135,7 +1205,7 @@ async function spotifyPlay(
       repeat,
       repeatState: current?.repeatState ?? repeat ?? null,
       currentUri: current?.trackUri ?? null,
-      device: current?.deviceName ?? beforePlayback?.deviceName ?? null,
+      device: current?.deviceName ?? targetDeviceName,
       queued: uris.length,
       display: `🎵 Queued ${uris.length} tracks${reason ? ` — ${reason}` : ""}`,
     };

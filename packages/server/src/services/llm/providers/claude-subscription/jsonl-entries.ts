@@ -128,10 +128,7 @@ function parseToolArguments(args: string, toolName: string): Record<string, unkn
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
-    logger.warn(
-      "[claude-subscription/jsonl] tool_use input for %s was not a JSON object; substituting {}",
-      toolName,
-    );
+    logger.warn("[claude-subscription/jsonl] tool_use input for %s was not a JSON object; substituting {}", toolName);
     return {};
   } catch (err) {
     logger.warn(
@@ -447,9 +444,7 @@ export function currentToSdkUserMessage(message: ChatMessage): SdkUserMessageFor
         "[claude-subscription/jsonl] role=tool current turn missing tool_call_id; emitting tool_result with empty tool_use_id",
       );
     }
-    content = [
-      { type: "tool_result", tool_use_id: message.tool_call_id ?? "", content: text },
-    ];
+    content = [{ type: "tool_result", tool_use_id: message.tool_call_id ?? "", content: text }];
   } else {
     const images: ImageBlock[] = [];
     for (const url of message.images ?? []) {

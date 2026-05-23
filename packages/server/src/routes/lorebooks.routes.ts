@@ -13,6 +13,7 @@ import {
   createLorebookFolderSchema,
   updateLorebookFolderSchema,
   LOCAL_SIDECAR_CONNECTION_ID,
+  stripMacroComments,
   type CreateLorebookEntryInput,
   type LorebookEntryTimingState,
   type LorebookEntry,
@@ -44,6 +45,10 @@ function toSafeExportName(name: string, fallback: string) {
     .replace(/\s+/g, " ")
     .trim();
   return sanitized || fallback;
+}
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
 }
 
 type ExportFormat = "native" | "compatible";
@@ -656,12 +661,12 @@ export async function lorebooksRoutes(app: FastifyInstance) {
           const persona = await charactersStorage.getPersona(personaId);
           if (persona) {
             personaName = persona.name || personaName;
-            personaDescription = persona.description ?? "";
+            personaDescription = cardPromptText(persona.description);
             personaFields = {
-              personality: persona.personality ?? "",
-              scenario: persona.scenario ?? "",
-              backstory: persona.backstory ?? "",
-              appearance: persona.appearance ?? "",
+              personality: cardPromptText(persona.personality),
+              scenario: cardPromptText(persona.scenario),
+              backstory: cardPromptText(persona.backstory),
+              appearance: cardPromptText(persona.appearance),
             };
           }
         }
@@ -757,6 +762,10 @@ export async function lorebooksRoutes(app: FastifyInstance) {
 
     const allEntries = await storage.listEntries(req.params.id);
     if (!allEntries.length) return { vectorized: 0, total: 0, skipped: 0 };
+    const lorebook = (await storage.getById(req.params.id)) as Record<string, unknown> | null;
+    if (lorebook?.excludeFromVectorization === true) {
+      return { vectorized: 0, total: allEntries.length, skipped: allEntries.length };
+    }
     const vectorizableEntries = allEntries.filter(
       (entry) => !(entry as Record<string, unknown>).excludeFromVectorization,
     );

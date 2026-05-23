@@ -315,7 +315,7 @@ export function RoleplayHUD({
               className={cn(
                 MOBILE_HUD_BTN,
                 "justify-center text-[0.5625rem] font-medium",
-                isTrackerBusy ? "text-purple-600 dark:text-purple-300" : "text-[var(--muted-foreground)]",
+                isTrackerBusy ? "text-foreground/75" : "text-foreground/45 hover:text-foreground/70",
               )}
             >
               <RefreshCw size="0.875rem" className={cn("shrink-0 h-4 w-4", isTrackerBusy && "animate-spin")} />
@@ -404,7 +404,10 @@ export function RoleplayHUD({
                 onRetriggerTrackers();
               }}
               disabled={isTrackerBusy}
-              className={cn(WIDGET, isTrackerBusy ? "text-purple-300" : "text-[var(--muted-foreground)]")}
+              className={cn(
+                WIDGET,
+                isTrackerBusy ? "text-foreground/75" : "text-foreground/45 hover:text-foreground/70",
+              )}
               title={isTrackerBusy ? "Trackers running…" : "Run Trackers"}
             >
               <RefreshCw size="0.875rem" className={cn(isTrackerBusy && "animate-spin")} />
@@ -441,7 +444,7 @@ function TrackerPanelToggleButton({ onToggle }: { onToggle: () => void }) {
     <button
       data-tracker-panel-toggle="roleplay-hud"
       onClick={onToggle}
-      className={cn(WIDGET, "text-pink-200/75 hover:border-[var(--primary)]/40 hover:text-[var(--primary)]")}
+      className={cn(WIDGET, "text-foreground/50 hover:border-foreground/20 hover:text-foreground/75")}
       title="Show Tracker Panel"
       aria-label="Show Tracker Panel"
     >
@@ -606,7 +609,7 @@ function ActionsGroup({
         ref={btnRef}
         onClick={() => setAgentsOpen(!agentsOpen)}
         className={cn(
-          "flex items-center gap-1.5 md:gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)]/80 backdrop-blur-md px-2 py-1.5 md:px-2 md:py-2 md:h-10 transition-all hover:bg-[var(--card)] dark:border-foreground/10 dark:bg-black/40 dark:hover:bg-black/60 cursor-pointer select-none",
+          "group flex items-center gap-1.5 md:gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)]/80 backdrop-blur-md px-2 py-1.5 md:px-2 md:py-2 md:h-10 transition-all hover:bg-[var(--card)] dark:border-foreground/10 dark:bg-black/40 dark:hover:bg-black/60 cursor-pointer select-none",
           agentsOpen && "bg-[var(--card)] border-[var(--border)] dark:bg-black/60 dark:border-foreground/20",
         )}
         title="Agents & Actions"
@@ -614,18 +617,29 @@ function ActionsGroup({
         <Sparkles
           size="0.875rem"
           strokeWidth={2.5}
-          className={cn("text-purple-400/70 shrink-0", isAgentProcessing && "animate-pulse")}
+          className={cn(
+            "shrink-0 transition-colors group-hover:text-foreground/75",
+            agentsOpen || isAgentProcessing ? "text-foreground/75" : "text-foreground/55",
+            isAgentProcessing && "animate-pulse",
+          )}
         />
         {showEcho && (
           <MessageCircle
             size="0.8125rem"
             strokeWidth={2.5}
-            className={cn(echoChamberOpen ? "text-purple-400" : "text-purple-400/50", "shrink-0")}
+            className={cn(
+              "shrink-0 transition-colors group-hover:text-foreground/70",
+              echoChamberOpen ? "text-foreground/75" : "text-foreground/45",
+            )}
           />
         )}
-        <Trash2 size="0.8125rem" strokeWidth={2.5} className="text-purple-400/50 shrink-0" />
+        <Trash2
+          size="0.8125rem"
+          strokeWidth={2.5}
+          className="shrink-0 text-foreground/45 transition-colors group-hover:text-foreground/70"
+        />
         {badgeCount > 0 && (
-          <span className="hidden md:flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-500/80 px-1 text-[0.5rem] font-bold text-foreground">
+          <span className="hidden md:flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-foreground/15 px-1 text-[0.5rem] font-bold text-foreground/80 ring-1 ring-foreground/10">
             {badgeCount}
           </span>
         )}
@@ -888,7 +902,7 @@ function CharactersWidget({
       <button
         ref={buttonRef}
         onClick={() => setOpen(!open)}
-        className={cn(WIDGET, "text-purple-500 dark:text-purple-300")}
+        className={cn(WIDGET, "text-foreground/60 hover:text-foreground/75")}
         title="Present Characters"
       >
         {characters.length > 0 ? (
@@ -905,7 +919,10 @@ function CharactersWidget({
             )}
           </div>
         ) : (
-          <Users size="0.875rem" className="text-purple-400/50 max-md:h-3.5 max-md:w-3.5" />
+          <Users
+            size="0.875rem"
+            className="text-foreground/45 transition-colors group-hover:text-foreground/70 max-md:h-3.5 max-md:w-3.5"
+          />
         )}
       </button>
 

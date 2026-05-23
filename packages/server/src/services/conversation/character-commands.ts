@@ -85,6 +85,11 @@ export interface DirectMessageCommand {
   character: string;
   /** Text the character sends in the generated conversation DM */
   message: string;
+  /** Original command text, used to strip or visible-fallback individual commands. */
+  raw?: string;
+  /** Resolved by the generation route once the target is verified as a real character card. */
+  resolvedCharacterId?: string;
+  resolvedCharacterName?: string;
 }
 
 export interface HapticCommand {
@@ -477,11 +482,7 @@ function parseUpdateLorebookBlock(raw: string): UpdateLorebookCommand | null {
           keys: parseUnknownStringList(data.keys ?? nestedEntry.keys),
           secondaryKeys: parseUnknownStringList(data.secondaryKeys ?? nestedEntry.secondaryKeys),
           tag:
-            typeof data.tag === "string"
-              ? data.tag
-              : typeof nestedEntry.tag === "string"
-                ? nestedEntry.tag
-                : undefined,
+            typeof data.tag === "string" ? data.tag : typeof nestedEntry.tag === "string" ? nestedEntry.tag : undefined,
           constant:
             typeof data.constant === "boolean"
               ? data.constant
@@ -839,7 +840,7 @@ export function parseDirectMessageCommands(content: string): {
     const message = parseQuotedParam(params, "message");
     const cleanMessage = message ? stripConversationPromptTimestamps(message.trim()) : "";
     if (character && cleanMessage) {
-      commands.push({ type: "dm", character, message: cleanMessage });
+      commands.push({ type: "dm", character, message: cleanMessage, raw: match[0] });
     }
   }
 

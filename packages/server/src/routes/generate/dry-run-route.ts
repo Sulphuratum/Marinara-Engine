@@ -3,6 +3,7 @@ import {
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
   resolveMacros,
+  stripMacroComments,
   type APIProvider,
   type LorebookEntryTimingState,
 } from "@marinara-engine/shared";
@@ -44,6 +45,8 @@ import {
   resolveActiveCharacterIds,
   resolvePromptCharacterIdsForTarget,
   resolveRegenerationGameStateAnchor,
+  resolveProviderTopK,
+  normalizeServiceTier,
   resolveVisibleGameStateAnchor,
   resolveBaseUrl,
   type PromptAttachment,
@@ -53,6 +56,10 @@ import { createGameStateStorage, type GameStateVisibleAnchor } from "../../servi
 import { logger } from "../../lib/logger.js";
 
 type WrapFormat = "xml" | "markdown" | "none";
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
+}
 
 function resolveDryRunLorebookGenerationTriggers(
   input: {
@@ -603,6 +610,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     let showThoughts = true;
     let reasoningEffort: "low" | "medium" | "high" | "maximum" | null = null;
     let verbosity: "low" | "medium" | "high" | null = null;
+    let serviceTier: "flex" | "priority" | null = null;
     let assistantPrefill = "";
     let customParameters: Record<string, unknown> = {};
     let effectiveMaxContext = minContextLimit(connectionMaxContext, knownModelContext);
@@ -620,6 +628,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (typeof params.showThoughts === "boolean") showThoughts = params.showThoughts;
       if (params.reasoningEffort !== undefined) reasoningEffort = params.reasoningEffort;
       if (params.verbosity !== undefined) verbosity = params.verbosity;
+      if (params.serviceTier !== undefined) serviceTier = normalizeServiceTier(params.serviceTier);
       if (typeof params.assistantPrefill === "string") assistantPrefill = params.assistantPrefill;
       customParameters = mergeCustomParameters(customParameters, params.customParameters);
 
@@ -686,12 +695,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     }
 
     const isGoogleProvider = conn.provider === "google" || conn.provider === "google_vertex";
+    const excludePastReasoning = chatMeta.excludePastReasoning !== false;
     let mappedMessages = chatMessages.map((m: any) => {
       const extra = parseExtra(m.extra);
       const attachments = extra.attachments as PromptAttachment[] | undefined;
       const images = extractImageAttachmentDataUrls(attachments);
       const geminiParts =
-        isGoogleProvider && m.role === "assistant" && extra.geminiParts
+        !excludePastReasoning && isGoogleProvider && m.role === "assistant" && extra.geminiParts
           ? { providerMetadata: { geminiParts: extra.geminiParts } }
           : {};
       return {
@@ -747,7 +757,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (persona) {
         personaId = persona.id as string;
         personaName = persona.name;
-        personaDescription = persona.description ?? "";
+        personaDescription = cardPromptText(persona.description);
         // Append active alt description extensions
         if (persona.altDescriptions) {
           try {
@@ -757,7 +767,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
                 : persona.altDescriptions;
             if (Array.isArray(altDescs)) {
               for (const ext of altDescs) {
-                if (ext?.active && ext?.content) personaDescription += "\n" + ext.content;
+                if (ext?.active && ext?.content) {
+                  const content = cardPromptText(ext.content);
+                  if (content) personaDescription += "\n" + content;
+                }
               }
             }
           } catch {
@@ -765,10 +778,10 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           }
         }
         personaFields = {
-          personality: persona.personality ?? "",
-          scenario: persona.scenario ?? "",
-          backstory: persona.backstory ?? "",
-          appearance: persona.appearance ?? "",
+          personality: cardPromptText(persona.personality),
+          scenario: cardPromptText(persona.scenario),
+          backstory: cardPromptText(persona.backstory),
+          appearance: cardPromptText(persona.appearance),
         };
       }
     } catch {
@@ -969,25 +982,24 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           try {
             const data = JSON.parse(row.data) as Record<string, unknown>;
             const name = typeof data.name === "string" ? data.name : "Character";
-            const personality = typeof data.personality === "string" ? data.personality : "";
-            const scenario = typeof data.scenario === "string" ? data.scenario : "";
-            const mesExample = typeof data.mes_example === "string" ? data.mes_example : "";
-            const systemPrompt = typeof data.system_prompt === "string" ? data.system_prompt : "";
-            const postHistoryInstructions =
-              typeof data.post_history_instructions === "string" ? data.post_history_instructions : "";
+            const personality = cardPromptText(data.personality);
+            const scenario = cardPromptText(data.scenario);
+            const mesExample = cardPromptText(data.mes_example);
+            const systemPrompt = cardPromptText(data.system_prompt);
+            const postHistoryInstructions = cardPromptText(data.post_history_instructions);
             const extensions =
               data.extensions && typeof data.extensions === "object"
                 ? (data.extensions as Record<string, unknown>)
                 : {};
-            const desc = getCharacterDescriptionWithExtensions({ ...data, extensions } as any);
+            const desc = cardPromptText(getCharacterDescriptionWithExtensions({ ...data, extensions } as any));
             const characterMacroContext = {
               ...promptMacroContext,
               char: name,
               characterFields: {
                 description: desc,
                 personality,
-                backstory: typeof extensions.backstory === "string" ? extensions.backstory : "",
-                appearance: typeof extensions.appearance === "string" ? extensions.appearance : "",
+                backstory: cardPromptText(extensions.backstory),
+                appearance: cardPromptText(extensions.appearance),
                 scenario,
                 example: mesExample,
                 systemPrompt,
@@ -1270,6 +1282,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       showThoughts = assembled.parameters.showThoughts ?? true;
       reasoningEffort = assembled.parameters.reasoningEffort ?? null;
       verbosity = assembled.parameters.verbosity ?? null;
+      serviceTier = assembled.parameters.serviceTier ?? null;
       assistantPrefill = assembled.parameters.assistantPrefill ?? "";
       customParameters = mergeCustomParameters(customParameters, assembled.parameters.customParameters);
 
@@ -1367,7 +1380,11 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     }
 
     if (usePromptParts || !effectivePresetId) {
-      const characterDepthEntries = await collectCharacterDepthPromptEntries(app.db, promptCharacterIds, promptMacroContext);
+      const characterDepthEntries = await collectCharacterDepthPromptEntries(
+        app.db,
+        promptCharacterIds,
+        promptMacroContext,
+      );
       if (characterDepthEntries.length > 0) {
         finalMessages = injectAtDepth(finalMessages as any, characterDepthEntries) as any;
       }
@@ -1460,6 +1477,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       frequencyPenalty = 0;
       presencePenalty = 0;
     }
+    const providerTopK = resolveProviderTopK(conn.provider, topK);
 
     const provider: BaseLLMProvider =
       connId === LOCAL_SIDECAR_CONNECTION_ID
@@ -1540,12 +1558,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           maxTokens: maxTokensForSend,
           maxContext: effectiveMaxContext ?? connectionMaxContext,
           topP,
-          topK: topK || undefined,
+          topK: providerTopK,
           frequencyPenalty: frequencyPenalty || undefined,
           presencePenalty: presencePenalty || undefined,
           enableThinking: enableThinking || undefined,
           reasoningEffort: resolvedEffort || undefined,
           verbosity: verbosity || undefined,
+          serviceTier: serviceTier || undefined,
           showThoughts: showThoughts || undefined,
           assistantPrefill: assistantPrefill || undefined,
           customParameters: Object.keys(customParameters).length > 0 ? customParameters : undefined,
@@ -1597,12 +1616,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           maxTokens: maxTokensForSend,
           maxContext: effectiveMaxContext ?? connectionMaxContext,
           topP,
-          topK: topK || undefined,
+          topK: providerTopK,
           frequencyPenalty: frequencyPenalty || undefined,
           presencePenalty: presencePenalty || undefined,
           enableThinking,
           reasoningEffort: resolvedEffort ?? undefined,
           verbosity: verbosity ?? undefined,
+          serviceTier,
           customParameters,
           onToken,
           signal: abortController.signal,
@@ -1657,12 +1677,13 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         maxTokens: maxTokensForSend,
         maxContext: effectiveMaxContext ?? connectionMaxContext,
         topP,
-        topK: topK || undefined,
+        topK: providerTopK,
         frequencyPenalty: frequencyPenalty || undefined,
         presencePenalty: presencePenalty || undefined,
         enableThinking,
         reasoningEffort: resolvedEffort ?? undefined,
         verbosity: verbosity ?? undefined,
+        serviceTier,
         customParameters,
         signal: abortController.signal,
       });

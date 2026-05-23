@@ -367,6 +367,7 @@ async function importLorebook(data: unknown, db: DB) {
       tokenBudget: Number(lb.tokenBudget ?? 2048),
       recursiveScanning: Boolean(lb.recursiveScanning),
       maxRecursionDepth: Number(lb.maxRecursionDepth ?? 3),
+      excludeFromVectorization: Boolean(lb.excludeFromVectorization),
       characterId: typeof lb.characterId === "string" ? lb.characterId : null,
       characterIds: Array.isArray(lb.characterIds)
         ? lb.characterIds.filter((value): value is string => typeof value === "string")

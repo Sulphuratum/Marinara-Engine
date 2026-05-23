@@ -24,7 +24,7 @@ import { useGenerate } from "../../hooks/use-generate";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useCreateMessage, useDeleteMessage, useUpdateMessageExtra, chatKeys } from "../../hooks/use-chats";
 import { characterKeys } from "../../hooks/use-characters";
-import { buildGuidedGenerationInstructionMessage, type Message } from "@marinara-engine/shared";
+import { buildGuidedGenerationInstructionMessage, formatTextQuotes, type Message } from "@marinara-engine/shared";
 import {
   matchSlashCommand,
   getSlashCompletions,
@@ -106,9 +106,6 @@ function readFileAsDataUrl(file: Blob): Promise<string> {
   });
 }
 
-// Normalize curly/smart quotes to straight quotes (hoisted to avoid recreation)
-const normalizeQuotes = (s: string) => s.replace(/["\u201C\u201D\u201E\u201F]/g, '"').replace(/[\u2018\u2019]/g, "'");
-
 interface ChatInputProps {
   mode?: "conversation" | "roleplay";
   characterNames?: string[];
@@ -189,6 +186,7 @@ export const ChatInput = memo(function ChatInput({
   const showQuickReplyGuide = useUIStore((s) => s.showQuickReplyGuide);
   const showQuickReplyImpersonate = useUIStore((s) => s.showQuickReplyImpersonate);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
   const createMessage = useCreateMessage(activeChatId);
   const deleteMessage = useDeleteMessage(activeChatId);
   const updateMessageExtra = useUpdateMessageExtra(activeChatId);
@@ -503,7 +501,7 @@ export const ChatInput = memo(function ChatInput({
       return;
     }
 
-    const normalized = normalizeQuotes(raw.trim());
+    const normalized = formatTextQuotes(raw.trim(), quoteFormat);
 
     if (isPromptPreviewMacro(normalized)) {
       if (textareaRef.current) {
@@ -659,6 +657,7 @@ export const ChatInput = memo(function ChatInput({
     setInputDraft,
     completions,
     onPeekPrompt,
+    quoteFormat,
   ]);
 
   const runQuickSlashCommand = useCallback(
@@ -752,7 +751,7 @@ export const ChatInput = memo(function ChatInput({
       draftTimerRef.current = null;
     }
 
-    const normalized = normalizeQuotes(raw.trim());
+    const normalized = formatTextQuotes(raw.trim(), quoteFormat);
     const chat = useChatStore.getState().activeChat;
     const cachedCharacters = qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list());
     const cachedPersonas = qc.getQueryData<Array<Record<string, unknown>>>(characterKeys.personas);
@@ -852,6 +851,7 @@ export const ChatInput = memo(function ChatInput({
     createMessage,
     deleteMessage,
     updateMessageExtra,
+    quoteFormat,
   ]);
 
   const handleGuidedGenerationButton = useCallback(async () => {
@@ -983,9 +983,8 @@ export const ChatInput = memo(function ChatInput({
   const handleInput = () => {
     const el = textareaRef.current;
     if (!el) return;
-    // Normalize smart quotes directly in the DOM
     const raw = el.value;
-    const fixed = normalizeQuotes(raw);
+    const fixed = formatTextQuotes(raw, quoteFormat);
     if (raw !== fixed) {
       const pos = el.selectionStart;
       el.value = fixed;
@@ -1125,16 +1124,17 @@ export const ChatInput = memo(function ChatInput({
     try {
       const translated = await translateDraftText(raw);
       if (!translated || !textareaRef.current) return;
-      textareaRef.current.value = translated;
+      const formatted = formatTextQuotes(translated, quoteFormat);
+      textareaRef.current.value = formatted;
       textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = Math.min(textareaRef.current.scrollHeight, 200) + "px";
-      syncInputState(translated);
-      setInputDraft(activeChatId, translated);
+      syncInputState(formatted);
+      setInputDraft(activeChatId, formatted);
       textareaRef.current.focus();
     } finally {
       setIsTranslatingDraft(false);
     }
-  }, [activeChatId, isTranslatingDraft, setInputDraft, syncInputState]);
+  }, [activeChatId, isTranslatingDraft, quoteFormat, setInputDraft, syncInputState]);
 
   const handleSpeechTranscript = useCallback(
     (transcript: string) => {
@@ -1146,7 +1146,7 @@ export const ChatInput = memo(function ChatInput({
       const after = el.value.slice(end);
       const prefix = before && !/\s$/.test(before) ? " " : "";
       const suffix = after && !/^\s/.test(after) ? " " : "";
-      const nextValue = `${before}${prefix}${transcript}${suffix}${after}`;
+      const nextValue = formatTextQuotes(`${before}${prefix}${transcript}${suffix}${after}`, quoteFormat);
       const nextCursor = before.length + prefix.length + transcript.length;
 
       el.value = nextValue;
@@ -1157,7 +1157,7 @@ export const ChatInput = memo(function ChatInput({
       if (activeChatId) setInputDraft(activeChatId, nextValue);
       el.focus();
     },
-    [activeChatId, setInputDraft, syncInputState],
+    [activeChatId, quoteFormat, setInputDraft, syncInputState],
   );
 
   return (
@@ -1238,7 +1238,7 @@ export const ChatInput = memo(function ChatInput({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "mari-chat-input-box relative flex items-center gap-1.5 rounded-2xl border-2 px-2.5 py-2.5 transition-all duration-200 sm:gap-2 sm:px-4",
+          "mari-chat-input-box relative flex items-center gap-1 rounded-2xl border-2 px-2 py-1.5 transition-all duration-200 sm:gap-2 sm:px-4 sm:py-2.5",
           "bg-[var(--card)]",
           isDragging
             ? "border-blue-400/50 bg-blue-500/10 shadow-lg shadow-blue-500/10"
@@ -1260,9 +1260,9 @@ export const ChatInput = memo(function ChatInput({
           onClick={() => fileInputRef.current?.click()}
           disabled={!activeChatId}
           className={cn(
-            "rounded-lg p-1.5 transition-all active:scale-90",
+            "flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-90 disabled:cursor-not-allowed disabled:text-foreground/25 disabled:opacity-50 sm:h-8 sm:w-8",
             attachments.length
-              ? "text-blue-400 hover:bg-foreground/10"
+              ? "bg-foreground/10 text-foreground/75"
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
           )}
           title="Attach files"
@@ -1285,11 +1285,13 @@ export const ChatInput = memo(function ChatInput({
           onPaste={handlePaste}
           placeholder={
             activeChatId
-              ? activeCharacterNames.length > 0
-                ? activeCharacterNames.length > 1
-                  ? `Message @${activeCharacterNames.join(", @")}, / for commands`
-                  : `Message @${activeCharacterNames[0]}, / for commands`
-                : "Type here, / for commands."
+              ? mode === "roleplay"
+                ? "Write your response, / for commands"
+                : activeCharacterNames.length > 0
+                  ? activeCharacterNames.length > 1
+                    ? `Message @${activeCharacterNames.join(", @")}, / for commands`
+                    : `Message @${activeCharacterNames[0]}, / for commands`
+                  : "Type here, / for commands."
               : "Select a chat first"
           }
           disabled={!activeChatId}
@@ -1307,7 +1309,7 @@ export const ChatInput = memo(function ChatInput({
             className={cn(
               "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
               emojiOpen
-                ? "text-foreground bg-foreground/10"
+                ? "bg-foreground/10 text-foreground/75"
                 : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
             )}
             title="Emoji"
@@ -1329,11 +1331,11 @@ export const ChatInput = memo(function ChatInput({
             ref={charPickerBtnRef}
             onClick={() => setCharPickerOpen((v) => !v)}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+              "flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
               guideGenerations && hasInput
-                ? "text-[var(--primary)] bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/30 hover:bg-[var(--primary)]/20"
+                ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
                 : charPickerOpen
-                  ? "text-foreground bg-foreground/10"
+                  ? "bg-foreground/10 text-foreground/75"
                   : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
             )}
             title={guideGenerations && hasInput ? "Trigger character response (guided)" : "Trigger character response"}
@@ -1348,9 +1350,9 @@ export const ChatInput = memo(function ChatInput({
             onClick={() => void handleTranslateDraft()}
             disabled={!activeChatId || !hasInput || isStreaming || isTranslatingDraft}
             className={cn(
-              "flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200",
+              "flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
               hasInput && !isStreaming && !isTranslatingDraft
-                ? "text-foreground/70 hover:bg-foreground/10 hover:text-foreground active:scale-90"
+                ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70 active:scale-90"
                 : "text-foreground/25",
             )}
             title="Translate draft"
@@ -1385,11 +1387,11 @@ export const ChatInput = memo(function ChatInput({
             !activeChatId
           }
           className={cn(
-            "mari-chat-send-btn flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200",
+            "mari-chat-send-btn flex h-11 w-11 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
             isStreaming
-              ? "text-foreground hover:opacity-80"
+              ? "text-foreground/75 hover:text-foreground/90"
               : (hasInput || attachments.length || canRetry || canContinue) && activeChatId && !isReadingAttachments
-                ? "text-foreground hover:text-foreground/80 active:scale-90"
+                ? "text-foreground/75 hover:text-foreground/90 active:scale-90"
                 : "text-foreground/20",
           )}
         >

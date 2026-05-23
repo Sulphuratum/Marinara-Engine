@@ -19,6 +19,15 @@ import { HelpTooltip } from "../../ui/HelpTooltip";
 
 const PREFERRED_PROMPT_KEY = "conversation.selfie";
 
+type PromptOverridesEditorProps = {
+  title?: string;
+  description?: string;
+  help?: string;
+  keys?: readonly string[];
+  preferredKey?: string;
+  defaultOpen?: boolean;
+};
+
 function humanizePromptKey(key: string) {
   return key
     .replace(/\./g, " ")
@@ -27,7 +36,8 @@ function humanizePromptKey(key: string) {
 }
 
 function promptOverrideStatus(entry: PromptOverrideSummary | undefined) {
-  if (!entry?.hasOverride) return { label: "Default", className: "bg-[var(--secondary)] text-[var(--muted-foreground)]" };
+  if (!entry?.hasOverride)
+    return { label: "Default", className: "bg-[var(--secondary)] text-[var(--muted-foreground)]" };
   if (entry.enabled) {
     return { label: "Custom active", className: "bg-[var(--primary)]/15 text-[var(--primary)]" };
   }
@@ -67,9 +77,34 @@ function buildEditableDefaultTemplate(
   return template;
 }
 
-export function PromptOverridesEditor() {
-  const [isOpen, setIsOpen] = useState(false);
-  const [hasOpened, setHasOpened] = useState(false);
+function renderTemplatePreview(
+  template: string,
+  exampleContext: Record<string, string | number | undefined> | undefined,
+  variables: Array<{ name: string; example?: string }>,
+) {
+  const declared = new Set(variables.map((variable) => variable.name));
+  const unknownVariables = new Set<string>();
+  const rendered = template.replace(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g, (token, name: string) => {
+    if (!declared.has(name)) {
+      unknownVariables.add(name);
+      return token;
+    }
+    const value = exampleContext?.[name] ?? variables.find((variable) => variable.name === name)?.example ?? "";
+    return String(value);
+  });
+  return { rendered, unknownVariables: Array.from(unknownVariables) };
+}
+
+export function PromptOverridesEditor({
+  title = "Prompt Overrides",
+  description = "Edit the templates used by image and sprite prompt builders.",
+  help = "Global templates for registered prompt builders. Chat-specific selfie prompts still override the global conversation selfie template.",
+  keys,
+  preferredKey = PREFERRED_PROMPT_KEY,
+  defaultOpen = false,
+}: PromptOverridesEditorProps) {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [hasOpened, setHasOpened] = useState(defaultOpen);
   const contentId = useId();
 
   const toggleOpen = () => {
@@ -97,33 +132,38 @@ export function PromptOverridesEditor() {
           <span className="min-w-0">
             <span className="flex items-center gap-1.5">
               <FileText size="0.75rem" className="text-[var(--muted-foreground)]" />
-              <span className="text-xs font-medium text-[var(--foreground)]">Prompt Overrides</span>
+              <span className="text-xs font-medium text-[var(--foreground)]">{title}</span>
             </span>
             <span className="mt-1 block text-[0.625rem] leading-relaxed text-[var(--muted-foreground)]">
-              Edit the templates used by image and sprite prompt builders.
+              {description}
             </span>
           </span>
         </button>
         <span className="mt-0.5 shrink-0">
-          <HelpTooltip text="Global templates for registered prompt builders. Chat-specific selfie prompts still override the global conversation selfie template." />
+          <HelpTooltip text={help} />
         </span>
       </div>
 
       {hasOpened && (
         <div id={contentId} hidden={!isOpen} className="border-t border-[var(--border)]/70 p-3 pt-2.5">
-          <PromptOverridesEditorBody />
+          <PromptOverridesEditorBody keys={keys} preferredKey={preferredKey} />
         </div>
       )}
     </section>
   );
 }
 
-function PromptOverridesEditorBody() {
+function PromptOverridesEditorBody({ keys, preferredKey }: { keys?: readonly string[]; preferredKey: string }) {
   const { data: entries = [], isLoading: loadingEntries, isError: listFailed } = usePromptOverrides();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const keySet = useMemo(() => (keys ? new Set(keys) : null), [keys]);
+  const filteredEntries = useMemo(
+    () => (keySet ? entries.filter((entry) => keySet.has(entry.key)) : entries),
+    [entries, keySet],
+  );
   const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.key === selectedKey),
-    [entries, selectedKey],
+    () => filteredEntries.find((entry) => entry.key === selectedKey),
+    [filteredEntries, selectedKey],
   );
   const detailQuery = usePromptOverride(selectedKey);
   const defaultQuery = usePromptOverrideDefault(selectedKey);
@@ -135,14 +175,14 @@ function PromptOverridesEditorBody() {
   const [lastError, setLastError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (selectedKey || entries.length === 0) return;
-    setSelectedKey(entries.some((entry) => entry.key === PREFERRED_PROMPT_KEY) ? PREFERRED_PROMPT_KEY : entries[0].key);
-  }, [entries, selectedKey]);
+    if (selectedKey || filteredEntries.length === 0) return;
+    setSelectedKey(filteredEntries.some((entry) => entry.key === preferredKey) ? preferredKey : filteredEntries[0].key);
+  }, [filteredEntries, preferredKey, selectedKey]);
 
   useEffect(() => {
-    if (!selectedKey || entries.length === 0) return;
-    if (!entries.some((entry) => entry.key === selectedKey)) setSelectedKey(entries[0].key);
-  }, [entries, selectedKey]);
+    if (!selectedKey || filteredEntries.length === 0) return;
+    if (!filteredEntries.some((entry) => entry.key === selectedKey)) setSelectedKey(filteredEntries[0].key);
+  }, [filteredEntries, selectedKey]);
 
   const detail = detailQuery.data;
   const variables = useMemo(
@@ -160,6 +200,10 @@ function PromptOverridesEditorBody() {
   const isDirty = draft !== sourceTemplate || enabled !== sourceEnabled;
   const canSave = !!selectedKey && draft.trim().length > 0 && isDirty && !saveOverride.isPending && !loadingPrompt;
   const canReset = !!selectedKey && (detail?.override || draft !== defaultTemplate) && !resetOverride.isPending;
+  const renderedPreview = useMemo(
+    () => renderTemplatePreview(draft, defaultQuery.data?.exampleContext, variables),
+    [defaultQuery.data?.exampleContext, draft, variables],
+  );
 
   useEffect(() => {
     if (!selectedKey || !defaultQuery.data || detailQuery.isLoading) return;
@@ -255,13 +299,13 @@ function PromptOverridesEditorBody() {
         </span>
         <select
           value={selectedKey ?? ""}
-          disabled={loadingEntries || entries.length === 0}
+          disabled={loadingEntries || filteredEntries.length === 0}
           onChange={(event) => setSelectedKey(event.target.value)}
           className="w-full rounded-lg bg-[var(--background)] px-3 py-2 text-xs text-[var(--foreground)] outline-none ring-1 ring-[var(--border)] focus:ring-[var(--primary)] disabled:opacity-60"
         >
           {loadingEntries && <option value="">Loading prompts...</option>}
-          {!loadingEntries && entries.length === 0 && <option value="">No registered prompts</option>}
-          {entries.map((entry) => (
+          {!loadingEntries && filteredEntries.length === 0 && <option value="">No registered prompts</option>}
+          {filteredEntries.map((entry) => (
             <option key={entry.key} value={entry.key}>
               {humanizePromptKey(entry.key)}
             </option>
@@ -312,6 +356,21 @@ function PromptOverridesEditorBody() {
           className="min-h-52 resize-y rounded-lg border border-[var(--border)] bg-[var(--background)] p-2.5 font-mono text-[0.6875rem] leading-relaxed text-[var(--foreground)] outline-none transition-colors placeholder:text-[var(--muted-foreground)]/45 focus:border-[var(--primary)]/50 disabled:cursor-wait disabled:opacity-60"
         />
       </label>
+
+      <div className="rounded-lg bg-[var(--background)]/55 p-2.5 ring-1 ring-[var(--border)]/70">
+        <div className="mb-1.5 flex items-center justify-between gap-2">
+          <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">Rendered preview</span>
+          <span className="text-[0.5625rem] text-[var(--muted-foreground)]">Example values</span>
+        </div>
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-[var(--secondary)]/70 p-2 font-mono text-[0.625rem] leading-relaxed text-[var(--foreground)]">
+          {loadingPrompt ? "Loading preview..." : renderedPreview.rendered || "Nothing to preview yet."}
+        </pre>
+        {renderedPreview.unknownVariables.length > 0 && (
+          <p className="mt-1.5 text-[0.5625rem] text-amber-500">
+            Unknown variables: {renderedPreview.unknownVariables.join(", ")}
+          </p>
+        )}
+      </div>
 
       <label className="flex cursor-pointer items-start gap-2 rounded-lg bg-[var(--background)]/45 px-2.5 py-2 ring-1 ring-[var(--border)]/70">
         <input

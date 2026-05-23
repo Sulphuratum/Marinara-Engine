@@ -13,6 +13,7 @@ export const lorebooks = sqliteTable("lorebooks", {
   tokenBudget: integer("token_budget").notNull().default(2048),
   recursiveScanning: text("recursive_scanning").notNull().default("false"),
   maxRecursionDepth: integer("max_recursion_depth").notNull().default(3),
+  excludeFromVectorization: text("exclude_from_vectorization").notNull().default("false"),
   characterId: text("character_id"),
   personaId: text("persona_id"),
   chatId: text("chat_id"),

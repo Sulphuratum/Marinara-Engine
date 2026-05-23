@@ -43,9 +43,7 @@ export function QuestBoard({
         badge={`${completedQuests}/${quests.length}`}
         badgeTitle={`${completedQuests} done, ${activeQuests} active`}
         action={action}
-        addAction={
-          addMode ? <AddRowButton title="Add quest" onClick={onAddQuest} className="rounded-sm" /> : undefined
-        }
+        addAction={addMode ? <AddRowButton title="Add quest" onClick={onAddQuest} className="rounded-sm" /> : undefined}
         collapsed={collapsed}
         onToggle={onToggleCollapsed}
       />

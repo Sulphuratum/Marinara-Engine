@@ -216,21 +216,12 @@ export function useTrackerMutations({
     ]);
   }, [quests, updateQuests]);
 
-  const savePersonaStatus = useCallback(
-    (status: string) => patchPlayerStats("status", status),
-    [patchPlayerStats],
-  );
+  const savePersonaStatus = useCallback((status: string) => patchPlayerStats("status", status), [patchPlayerStats]);
 
-  const updatePersonaStats = useCallback(
-    (stats: CharacterStat[]) => patchField("personaStats", stats),
-    [patchField],
-  );
+  const updatePersonaStats = useCallback((stats: CharacterStat[]) => patchField("personaStats", stats), [patchField]);
 
   const addPersonaStat = useCallback(() => {
-    patchField("personaStats", [
-      ...personaStats,
-      { name: "New Stat", value: 0, max: 100, color: "var(--primary)" },
-    ]);
+    patchField("personaStats", [...personaStats, { name: "New Stat", value: 0, max: 100, color: "var(--primary)" }]);
   }, [patchField, personaStats]);
 
   const updateCustomFields = useCallback(

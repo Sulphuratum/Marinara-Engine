@@ -322,8 +322,8 @@ export function ConnectionEditor() {
       { token: "%reference_image%", label: "%reference_image%", critical: false },
       { token: "%reference_image_name%", label: "%reference_image_name%", critical: false },
     ];
-    const hasReferenceImage = wf.includes("%reference_image%");
-    const hasReferenceImageName = wf.includes("%reference_image_name%");
+    const hasReferenceImage = /%reference_image(?:_0[1-4])?%/.test(wf);
+    const hasReferenceImageName = /%reference_image_name(?:_0[1-4])?%/.test(wf);
     const missing = KNOWN_SUBS.filter(({ token }) => {
       if (token === "%reference_image%" && hasReferenceImageName) return false;
       if (token === "%reference_image_name%" && hasReferenceImage) return false;
@@ -1392,8 +1392,8 @@ export function ConnectionEditor() {
                 icon={<Zap size="0.875rem" className="text-sky-400" />}
                 help={
                   selectedImageService === "runpod_comfyui"
-                    ? "Paste your ComfyUI workflow JSON (API format). RunPod needs the full workflow to execute; the endpoint sends this workflow to your serverless endpoint. Use placeholders like %prompt%, %seed%, %width%, %height%, and %reference_image% to let Marinara inject generation parameters."
-                    : "Paste a custom ComfyUI workflow JSON (API format). Use placeholders like %prompt%, %negative_prompt%, %width%, %height%, %seed%, %model%, %steps%, %cfg%, %sampler%, %scheduler%, and %denoise%. For reference images, use %reference_image% to inject a base64 string for workflows that decode it, or %reference_image_name% to upload the image to ComfyUI's input directory and inject the filename for a vanilla LoadImage node. Leave empty to use the built-in default txt2img workflow."
+                    ? "Paste your ComfyUI workflow JSON (API format). RunPod needs the full workflow to execute; the endpoint sends this workflow to your serverless endpoint. Use placeholders like %prompt%, %seed%, %width%, %height%, %reference_image%, and %reference_image_01% through %reference_image_04% to let Marinara inject generation parameters."
+                    : "Paste a custom ComfyUI workflow JSON (API format). Use placeholders like %prompt%, %negative_prompt%, %width%, %height%, %seed%, %model%, %steps%, %cfg%, %sampler%, %scheduler%, and %denoise%. For reference images, use %reference_image% / %reference_image_01% through %reference_image_04% to inject base64 strings, or %reference_image_name% / %reference_image_name_01% through %reference_image_name_04% to upload images to ComfyUI's input directory and inject filenames for LoadImage nodes. Leave empty to use the built-in default txt2img workflow."
                 }
               >
                 <textarea
@@ -1617,6 +1617,7 @@ export function ConnectionEditor() {
                 <div className="rounded-xl bg-[var(--secondary)]/40 p-3 ring-1 ring-[var(--border)]">
                   <GenerationParametersFields
                     value={localDefaultParameters}
+                    showOpenRouterServiceTier={localProvider === "openrouter"}
                     onChange={(next) => {
                       setLocalDefaultParameters(next);
                       markDirty();
@@ -2427,14 +2428,15 @@ function ImageGenerationDefaultsPanel({
                       Upload a 1x1 placeholder when no reference image is provided
                     </span>
                     <span className="mt-0.5 block text-[0.55rem] text-[var(--muted-foreground)]">
-                      Custom workflows using %reference_image% or %reference_image_name% receive a tiny PNG instead
-                      of the raw placeholder text.
+                      Custom workflows using %reference_image% or %reference_image_name% receive a tiny PNG instead of
+                      the raw placeholder text.
                     </span>
                   </span>
                 </label>
                 <p className="text-[0.55rem] text-[var(--muted-foreground)]">
                   Custom ComfyUI workflows can use %steps%, %cfg%, %sampler%, %scheduler%, %denoise%, %clip_skip%,
-                  %reference_image%, and %reference_image_name% placeholders.
+                  %reference_image% / %reference_image_01%-%reference_image_04%, and %reference_image_name% /
+                  %reference_image_name_01%-%reference_image_name_04% placeholders.
                 </p>
               </>
             ) : (

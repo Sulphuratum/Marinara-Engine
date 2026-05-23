@@ -181,7 +181,7 @@ function isEnabledFlag(value: string | undefined | null) {
   return ["1", "true", "yes", "on"].includes((value ?? "").trim().toLowerCase());
 }
 
-function isDockerRuntime() {
+export function isDockerRuntime() {
   return (
     isEnabledFlag(process.env.MARINARA_DOCKER) ||
     normalizeEnvValue(process.env.MARINARA_DOCKER_USER) !== null ||

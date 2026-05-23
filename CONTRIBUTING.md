@@ -209,8 +209,9 @@ Standard release flow:
 1. Bump the canonical version in root `package.json`.
 2. Run `pnpm version:sync -- --android-version-code <next-code>` to sync all derived version fields.
 3. Update `CHANGELOG.md`.
-4. Create and push the tag `vX.Y.Z`.
-5. Let the release workflow publish or update the GitHub Release from the matching changelog entry.
+4. Merge the release-ready `staging` change to `main`.
+5. Create and push the tag `vX.Y.Z` from the `main` commit that contains that exact version bump.
+6. Let the release workflows publish or update the GitHub Release, Windows installer, Android WebView shell APK, and GHCR container images (`X.Y.Z`, `X.Y`, `X`, `latest`, plus `X.Y.Z-lite` / `lite`) from the matching changelog entry.
 
 Release helpers now in the repo:
 

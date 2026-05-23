@@ -50,7 +50,7 @@ import { MariThinkingIndicator } from "./MariThinkingIndicator";
 import { MariCapabilityNotice } from "./MariCapabilityNotice";
 import { SlashCommandFeedback } from "./SlashCommandFeedback";
 import { QuickReplyMenu, type QuickReplyAction } from "./QuickReplyMenu";
-import { buildGuidedGenerationInstructionMessage, type Message } from "@marinara-engine/shared";
+import { buildGuidedGenerationInstructionMessage, formatTextQuotes, type Message } from "@marinara-engine/shared";
 
 interface Attachment {
   type: string;
@@ -232,6 +232,7 @@ export function ConversationInput({
   const showQuickReplyGuide = useUIStore((s) => s.showQuickReplyGuide);
   const showQuickReplyImpersonate = useUIStore((s) => s.showQuickReplyImpersonate);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
   const userActivity = useUIStore((s) => s.userActivity);
   const setUserActivity = useUIStore((s) => s.setUserActivity);
   const createMessage = useCreateMessage(activeChatId);
@@ -1148,6 +1149,13 @@ export function ConversationInput({
   const handleInput = useCallback(() => {
     const el = textareaRef.current;
     if (!el) return;
+    const raw = el.value;
+    const formatted = formatTextQuotes(raw, quoteFormat);
+    if (raw !== formatted) {
+      const cursor = el.selectionStart;
+      el.value = formatted;
+      el.setSelectionRange(cursor, cursor);
+    }
     // Debounced resize to reduce layout reflows during fast typing
     if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     resizeTimerRef.current = setTimeout(() => {
@@ -1155,12 +1163,12 @@ export function ConversationInput({
       el.style.height = "auto";
       el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
     }, 150);
-    syncInputState(el.value);
+    syncInputState(formatted);
 
     if (activeChatId) {
       if (draftTimerRef.current) clearTimeout(draftTimerRef.current);
       const chatId = activeChatId;
-      const draft = el.value;
+      const draft = formatted;
       draftTimerRef.current = setTimeout(() => {
         if (draft.trim()) {
           setInputDraft(chatId, draft);
@@ -1171,8 +1179,8 @@ export function ConversationInput({
     }
 
     // Slash completions
-    if (el.value.startsWith("/")) {
-      const results = getSlashCompletions(el.value);
+    if (formatted.startsWith("/")) {
+      const results = getSlashCompletions(formatted);
       setCompletions(results);
       setSelectedCompletion(0);
     } else {
@@ -1181,7 +1189,7 @@ export function ConversationInput({
 
     // @mention detection — look backwards from cursor for an @ trigger
     const cursor = el.selectionStart;
-    const textBefore = el.value.slice(0, cursor);
+    const textBefore = formatted.slice(0, cursor);
     // Find the last @ that isn't preceded by a word character
     const atMatch = textBefore.match(/(?:^|[^a-zA-Z0-9])@([a-zA-Z0-9 ]*)$/);
     if (atMatch && activeCharacterNames.length > 0) {
@@ -1201,7 +1209,7 @@ export function ConversationInput({
       setMentionQuery(null);
       setMentionCompletions([]);
     }
-  }, [activeChatId, activeCharacterNames, clearInputDraft, setInputDraft, syncInputState]);
+  }, [activeChatId, activeCharacterNames, clearInputDraft, quoteFormat, setInputDraft, syncInputState]);
 
   useEffect(() => {
     if (hasInput && feedback) setFeedback(null);
@@ -1370,16 +1378,17 @@ export function ConversationInput({
     try {
       const translated = await translateDraftText(raw);
       if (!translated || !textareaRef.current) return;
-      textareaRef.current.value = translated;
+      const formatted = formatTextQuotes(translated, quoteFormat);
+      textareaRef.current.value = formatted;
       textareaRef.current.style.height = "auto";
       textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
-      syncInputState(translated);
-      setInputDraft(activeChatId, translated);
+      syncInputState(formatted);
+      setInputDraft(activeChatId, formatted);
       textareaRef.current.focus();
     } finally {
       setIsTranslatingDraft(false);
     }
-  }, [activeChatId, isTranslatingDraft, setInputDraft, syncInputState]);
+  }, [activeChatId, isTranslatingDraft, quoteFormat, setInputDraft, syncInputState]);
 
   const persistSavedStatusOptions = useCallback(
     async (nextOptions: string[]) => {
@@ -1432,7 +1441,7 @@ export function ConversationInput({
       const after = el.value.slice(end);
       const prefix = before && !/\s$/.test(before) ? " " : "";
       const suffix = after && !/^\s/.test(after) ? " " : "";
-      const nextValue = `${before}${prefix}${transcript}${suffix}${after}`;
+      const nextValue = formatTextQuotes(`${before}${prefix}${transcript}${suffix}${after}`, quoteFormat);
       const nextCursor = before.length + prefix.length + transcript.length;
 
       el.value = nextValue;
@@ -1443,7 +1452,7 @@ export function ConversationInput({
       if (activeChatId) setInputDraft(activeChatId, nextValue);
       el.focus();
     },
-    [activeChatId, setInputDraft, syncInputState],
+    [activeChatId, quoteFormat, setInputDraft, syncInputState],
   );
 
   const statusDotClass = (status?: string) =>
@@ -1560,7 +1569,7 @@ export function ConversationInput({
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={cn(
-          "relative flex items-center gap-1.5 rounded-2xl border-2 px-2.5 py-2.5 transition-all duration-200 sm:gap-2 sm:px-4 bg-[var(--card)] dark:bg-black/40",
+          "relative flex items-center gap-1 rounded-2xl border-2 bg-[var(--card)] px-2 py-1.5 transition-all duration-200 sm:gap-2 sm:px-4 sm:py-2.5 dark:bg-black/40",
           isDragging ? "border-blue-400/50 bg-blue-500/10 shadow-lg shadow-blue-500/10" : "border-[var(--border)]",
         )}
       >
@@ -1578,7 +1587,12 @@ export function ConversationInput({
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="rounded-lg p-1.5 text-foreground/40 transition-all hover:bg-foreground/10 hover:text-foreground/70 active:scale-90"
+          className={cn(
+            "flex h-11 w-11 items-center justify-center rounded-xl transition-all active:scale-90 sm:h-8 sm:w-8",
+            attachments.length
+              ? "bg-foreground/10 text-foreground/75"
+              : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+          )}
           title="Attach file"
         >
           <Plus size="1rem" />
@@ -1623,10 +1637,10 @@ export function ConversationInput({
                 setEmojiOpen(false);
               }}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+                "flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
                 gifOpen
-                  ? "text-foreground bg-foreground/10"
-                  : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+                  ? "bg-foreground/10 text-foreground/75"
+                  : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
               )}
               title="GIF"
             >
@@ -1651,8 +1665,8 @@ export function ConversationInput({
               className={cn(
                 "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
                 emojiOpen
-                  ? "text-foreground bg-foreground/10"
-                  : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+                  ? "bg-foreground/10 text-foreground/75"
+                  : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
               )}
               title="Emoji"
             >
@@ -1672,12 +1686,12 @@ export function ConversationInput({
               ref={charPickerBtnRef}
               onClick={() => setCharPickerOpen((v) => !v)}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+                "flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
                 guideGenerations && hasInput
-                  ? "text-[var(--primary)] bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/30 hover:bg-[var(--primary)]/20"
+                  ? "bg-foreground/10 text-foreground/75 ring-1 ring-foreground/20 hover:bg-foreground/15"
                   : charPickerOpen
-                    ? "text-foreground bg-foreground/10"
-                    : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+                    ? "bg-foreground/10 text-foreground/75"
+                    : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
               )}
               title={
                 guideGenerations && hasInput ? "Trigger character response (guided)" : "Trigger character response"
@@ -1693,9 +1707,9 @@ export function ConversationInput({
               onClick={() => void handleTranslateDraft()}
               disabled={!activeChatId || !hasInput || isTranslatingDraft}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+                "flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
                 hasInput && !isTranslatingDraft
-                  ? "text-foreground/70 hover:bg-foreground/10 hover:text-foreground"
+                  ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
                   : "text-foreground/25",
               )}
               title="Translate draft"
@@ -1719,11 +1733,11 @@ export function ConversationInput({
             onClick={() => setStatusMenuOpen((v) => !v)}
             disabled={!activePersona}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-full transition-colors",
+              "flex h-11 w-11 items-center justify-center rounded-full transition-colors sm:h-8 sm:w-8",
               statusMenuOpen
-                ? "text-foreground bg-foreground/10"
+                ? "bg-foreground/10 text-foreground/75"
                 : activePersona
-                  ? "text-foreground/70 hover:bg-foreground/10 hover:text-foreground"
+                  ? "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70"
                   : "text-foreground/25",
             )}
             title={activePersona ? "Saved persona statuses" : "Choose a persona to save statuses"}
@@ -1743,11 +1757,11 @@ export function ConversationInput({
             disabled={!isActuallyGenerating && (isReadingAttachments || !activeChatId || !canSubmit)}
             aria-label={sendButtonTitle}
             className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-xl transition-all duration-200",
+              "flex h-11 w-11 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",
               isActuallyGenerating
-                ? "text-foreground hover:opacity-80"
+                ? "text-foreground/75 hover:text-foreground/90"
                 : canSubmit && !isReadingAttachments
-                  ? "text-foreground hover:text-foreground/80 active:scale-90"
+                  ? "text-foreground/75 hover:text-foreground/90 active:scale-90"
                   : "text-foreground/20",
             )}
             title={sendButtonTitle}

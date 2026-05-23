@@ -17,6 +17,7 @@ import {
   resolveMacros,
   resolveDeferredCharacterMacros,
   hasDeferredCharacterMacros,
+  stripMacroComments,
   LIMITS,
   coerceGameStateTextValue,
   appendChatSummaryEntryToMetadata,
@@ -61,6 +62,7 @@ import { resolveConnectionImageDefaults } from "../services/image/image-generati
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { extractLeadingThinkingBlocks } from "../services/llm/inline-thinking.js";
 import { resolveSpotifyCredentials, spotifyHasScope } from "../services/spotify/spotify.service.js";
+import { buildSpotifyDjConstraints } from "../services/spotify/spotify-dj-constraints.js";
 import {
   assemblePrompt,
   buildPromptMacroContext,
@@ -126,6 +128,14 @@ import {
 import { buildImpersonateInstruction } from "../services/conversation/impersonate-prompt.js";
 import { stripConversationPromptTimestamps } from "../services/conversation/transcript-sanitize.js";
 import {
+  formatZonedConversationDate,
+  formatZonedConversationTime,
+  getZonedWeekdayName,
+  isSameZonedLogicalDay,
+  normalizePromptTimeZone,
+  toZonedWallClockDate,
+} from "../services/conversation/timezone.js";
+import {
   formatConversationDateKey,
   generateMissingConversationSummaries,
   parseConversationDateKey,
@@ -164,6 +174,8 @@ import {
   resolveRegenerationGameStateAnchor,
   resolveUserRegenerationPersistentAttachments,
   resolveVisibleGameStateAnchor,
+  resolveProviderTopK,
+  normalizeServiceTier,
   resolveKnowledgeSourceLorebookIds,
   shouldPreferLatestVisibleGameState,
   shouldAbortOnPassiveGenerationDisconnect,
@@ -240,6 +252,10 @@ import {
 import { getMoraleTier, formatMoraleContext } from "../services/game/morale.service.js";
 import type { GameMap, GameNpc, LorebookEntry } from "@marinara-engine/shared";
 import { sidecarModelService } from "../services/sidecar/sidecar-model.service.js";
+
+function cardPromptText(value: unknown): string {
+  return typeof value === "string" ? stripMacroComments(value).trim() : "";
+}
 
 function bumpCharacterVersion(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -386,6 +402,10 @@ function sanitizeConnectedGameTranscript(content: string): string {
     .trim();
 }
 
+function stripSpacesBeforeLineBreaks(content: string): string {
+  return content.replace(/[ \t]+(\r?\n)/g, "$1");
+}
+
 function prefixConversationUserTurn(content: string, personaName: string): string {
   const speaker = personaName.trim() || "User";
   const trimmed = content.trim();
@@ -433,6 +453,14 @@ function resolveLorebookGenerationTriggers(
 }
 
 type LorebookScanMessage = { role: "user" | "assistant" | "system"; content: string };
+type GenerationPromptMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+  contextKind?: "prompt" | "history" | "injection";
+  characterId?: string | null;
+  images?: string[];
+  providerMetadata?: Record<string, unknown>;
+};
 
 function buildLorebookScanMessagesWithGenerationGuide(
   messages: LorebookScanMessage[],
@@ -564,6 +592,71 @@ function normalizeDmTargetName(value: string): string {
     .replace(/^il\s+/, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function parseChatCharacterIdsForDm(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+  if (typeof value !== "string") return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : [];
+  } catch {
+    return value.trim() ? [value.trim()] : [];
+  }
+}
+
+function readCharacterNameFromRow(row: { data?: unknown }): string {
+  try {
+    const data = typeof row.data === "string" ? JSON.parse(row.data) : row.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) return "";
+    const name = (data as { name?: unknown }).name;
+    return typeof name === "string" ? name : "";
+  } catch {
+    return "";
+  }
+}
+
+function resolveRoleplayDmTarget(
+  requestedTarget: string,
+  roleplayCharacters: Array<{ id: string; name: string }>,
+  allCharacters: Array<{ id: string; data?: unknown }>,
+): { id: string; name: string } | null {
+  const requestedKey = normalizeDmTargetName(requestedTarget);
+  if (!requestedKey) return null;
+
+  const roleplayTarget = roleplayCharacters.find(
+    (character) => character.id === requestedTarget || normalizeDmTargetName(character.name) === requestedKey,
+  );
+  if (roleplayTarget) return { id: roleplayTarget.id, name: roleplayTarget.name };
+
+  for (const candidate of allCharacters) {
+    if (candidate.id === requestedTarget) {
+      const name = readCharacterNameFromRow(candidate).trim();
+      return { id: candidate.id, name: name || requestedTarget };
+    }
+    const candidateName = readCharacterNameFromRow(candidate);
+    if (candidateName && normalizeDmTargetName(candidateName) === requestedKey) {
+      return { id: candidate.id, name: candidateName };
+    }
+  }
+
+  return null;
+}
+
+function formatUnresolvedRoleplayDmFallback(command: DirectMessageCommand): string {
+  const character = command.character.trim();
+  const message = stripConversationPromptTimestamps(command.message).trim();
+  if (!message) return "";
+  return character ? `${character}: "${message}"` : message;
+}
+
+function replaceRoleplayDmCommandText(source: string, command: DirectMessageCommand, replacement: string): string {
+  if (command.raw && source.includes(command.raw)) {
+    return source.replace(command.raw, replacement);
+  }
+  return source;
 }
 
 function normalizeMaxContext(value: unknown): number | undefined {
@@ -717,9 +810,7 @@ function parseRuntimeAgentSettings(settings: unknown): Record<string, unknown> {
   if (typeof settings === "string") {
     try {
       const parsed = JSON.parse(settings) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
     } catch {
       return {};
     }
@@ -839,6 +930,448 @@ export function clearUnusedRuntimeAgentSectionsForTest(
 
 const clearUnusedRuntimeAgentSections = clearUnusedRuntimeAgentSectionsForTest;
 
+type SpotifyRuntimeAgent = ResolvedAgent & {
+  __spotifyToolCalls?: Set<string>;
+  __spotifyPlayApplied?: boolean;
+  __spotifyPlayError?: string | null;
+  __spotifyToolError?: string | null;
+  __spotifyPlayUris?: string[];
+  __spotifyCandidateTracks?: SpotifyRuntimeTrack[];
+  __spotifyCurrentAfterPlayUri?: string | null;
+  __spotifyPlayDisplay?: string | null;
+  __spotifyPlayReason?: string | null;
+  __spotifyQueued?: number | null;
+  __spotifyDevice?: string | null;
+};
+
+type SpotifyRuntimeTrack = {
+  uri: string;
+  name: string;
+  artist: string;
+  album?: string | null;
+};
+
+function readSpotifyStringField(data: unknown, key: string): string {
+  if (!data || typeof data !== "object") return "";
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function readSpotifyNumberField(data: unknown, key: string): number | null {
+  if (!data || typeof data !== "object") return null;
+  const value = (data as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readSpotifyTrackUris(data: unknown): string[] {
+  if (!data || typeof data !== "object") return [];
+  const record = data as Record<string, unknown>;
+  const raw =
+    (Array.isArray(record.trackUris) && record.trackUris) ||
+    (Array.isArray(record.uris) && record.uris) ||
+    (typeof record.trackUri === "string" ? [record.trackUri] : null) ||
+    (typeof record.uri === "string" ? [record.uri] : null) ||
+    [];
+  return raw.filter((uri): uri is string => typeof uri === "string" && uri.startsWith("spotify:"));
+}
+
+function readSpotifyTrackNames(data: unknown): string[] {
+  if (!data || typeof data !== "object") return [];
+  const record = data as Record<string, unknown>;
+  const raw =
+    (Array.isArray(record.trackNames) && record.trackNames) ||
+    (typeof record.trackName === "string" ? [record.trackName] : null) ||
+    [];
+  return raw.filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+}
+
+function readSpotifyCandidateTracks(data: unknown): SpotifyRuntimeTrack[] {
+  if (!data || typeof data !== "object") return [];
+  const record = data as Record<string, unknown>;
+  const rawTracks = Array.isArray(record.tracks) ? record.tracks : [];
+  return rawTracks
+    .map((track): SpotifyRuntimeTrack | null => {
+      if (!track || typeof track !== "object") return null;
+      const item = track as Record<string, unknown>;
+      const uri = typeof item.uri === "string" && item.uri.startsWith("spotify:track:") ? item.uri : "";
+      if (!uri) return null;
+      return {
+        uri,
+        name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : "Unknown track",
+        artist: typeof item.artist === "string" && item.artist.trim() ? item.artist.trim() : "",
+        album: typeof item.album === "string" && item.album.trim() ? item.album.trim() : null,
+      };
+    })
+    .filter((track): track is SpotifyRuntimeTrack => track !== null);
+}
+
+function rememberSpotifyCandidateTracks(agent: SpotifyRuntimeAgent, data: unknown): void {
+  const tracks = readSpotifyCandidateTracks(data);
+  if (tracks.length === 0) return;
+  const seen = new Set<string>();
+  const merged: SpotifyRuntimeTrack[] = [];
+  for (const track of [...tracks, ...(agent.__spotifyCandidateTracks ?? [])]) {
+    if (seen.has(track.uri)) continue;
+    seen.add(track.uri);
+    merged.push(track);
+  }
+  agent.__spotifyCandidateTracks = merged.slice(0, 120);
+}
+
+function formatSpotifyTrackName(track: SpotifyRuntimeTrack): string {
+  return `${track.name}${track.artist ? ` — ${track.artist}` : ""}`;
+}
+
+function readSpotifyTrackNamesForUris(agent: SpotifyRuntimeAgent, uris: string[]): string[] {
+  if (uris.length === 0) return [];
+  const byUri = new Map((agent.__spotifyCandidateTracks ?? []).map((track) => [track.uri, track]));
+  return uris
+    .map((uri) => byUri.get(uri))
+    .filter((track): track is SpotifyRuntimeTrack => Boolean(track))
+    .map(formatSpotifyTrackName);
+}
+
+function readSpotifyPlaybackTrackUri(data: unknown): string | null {
+  if (!data || typeof data !== "object") return null;
+  const record = data as Record<string, unknown>;
+  if (typeof record.currentUri === "string" && record.currentUri.startsWith("spotify:track:")) {
+    return record.currentUri;
+  }
+  const track = record.track;
+  if (track && typeof track === "object") {
+    const uri = (track as Record<string, unknown>).uri;
+    if (typeof uri === "string" && uri.startsWith("spotify:track:")) return uri;
+  }
+  return null;
+}
+
+function extractSpotifyJsonPayload(text: string): Record<string, unknown> | null {
+  const resultMatch = text.match(/<result\s+agent\s*=\s*["']?spotify["']?\s*>([\s\S]*?)<\/result>/i);
+  let candidate = (resultMatch?.[1] ?? text).trim();
+  const fenceMatch = candidate.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+  if (fenceMatch) candidate = fenceMatch[1]!.trim();
+  const jsonMatch = candidate.match(/\{[\s\S]*\}/);
+  if (jsonMatch) candidate = jsonMatch[0]!;
+
+  try {
+    const parsed = JSON.parse(candidate);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeSpotifyAgentResult(result: AgentResult): AgentResult {
+  if (result.agentType !== "spotify" || !result.success || !result.data || typeof result.data !== "object") {
+    return result;
+  }
+
+  const data = result.data as Record<string, unknown>;
+  if (data.parseError !== true || typeof data.raw !== "string") return result;
+
+  const parsed = extractSpotifyJsonPayload(data.raw);
+  if (!parsed) return result;
+
+  return {
+    ...result,
+    data: parsed,
+  };
+}
+
+function shouldDeferSpotifyAgentEvent(result: AgentResult): boolean {
+  if (result.agentType !== "spotify" || !result.success || !result.data || typeof result.data !== "object") {
+    return false;
+  }
+
+  return (result.data as Record<string, unknown>).parseError === true;
+}
+
+function isBlockingSpotifyToolError(error: string | null | undefined): error is string {
+  return (
+    !!error && /(not configured|not connected|token|scope|premium|active spotify device|playback failed)/i.test(error)
+  );
+}
+
+async function executeSpotifyAgentToolJson(
+  agent: SpotifyRuntimeAgent,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!agent.toolContext) return { error: "Spotify tool context is unavailable." };
+  const raw = await agent.toolContext.executeToolCall({
+    id: `spotify-agent-${name}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type: "function",
+    function: {
+      name,
+      arguments: JSON.stringify(args),
+    },
+  });
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      rememberSpotifyCandidateTracks(agent, parsed);
+      return parsed as Record<string, unknown>;
+    }
+    return { raw };
+  } catch {
+    return { raw };
+  }
+}
+
+function getSpotifyConstraintRecord(context: AgentContext): Record<string, unknown> {
+  return context.memory._spotifyDjConstraints && typeof context.memory._spotifyDjConstraints === "object"
+    ? (context.memory._spotifyDjConstraints as Record<string, unknown>)
+    : {};
+}
+
+function buildSpotifyFallbackQuery(
+  agent: SpotifyRuntimeAgent,
+  resultData: Record<string, unknown>,
+  context: AgentContext,
+): { query: string; mood: string } {
+  const mood = readSpotifyStringField(resultData, "mood");
+  const searchQuery = readSpotifyStringField(resultData, "searchQuery");
+  const contextSize = normalizeAgentContextSize(agent.settings.contextSize);
+  const recentText = context.recentMessages
+    .slice(-contextSize)
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n");
+  const text = [searchQuery, mood, recentText, context.mainResponse ?? ""]
+    .filter((part) => typeof part === "string" && part.trim().length > 0)
+    .join("\n")
+    .replace(/<\/?[a-zA-Z][^>]*>/g, " ")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 1200);
+  return {
+    query: text || "roleplay scene music",
+    mood: mood || "Spotify DJ selection",
+  };
+}
+
+async function loadSpotifyFallbackCandidates(args: {
+  agent: SpotifyRuntimeAgent;
+  resultData: Record<string, unknown>;
+  context: AgentContext;
+}): Promise<{ tracks: SpotifyRuntimeTrack[]; error: string | null; searchQuery: string; mood: string }> {
+  const { agent, resultData, context } = args;
+  const existing = agent.__spotifyCandidateTracks ?? [];
+  const queryInfo = buildSpotifyFallbackQuery(agent, resultData, context);
+  if (existing.length > 0) {
+    return { tracks: existing, error: null, searchQuery: queryInfo.query, mood: queryInfo.mood };
+  }
+
+  const constraints = getSpotifyConstraintRecord(context);
+  const sourceType = typeof constraints.sourceType === "string" ? constraints.sourceType : "liked";
+  const playlistId =
+    typeof constraints.playlistId === "string" && constraints.playlistId.trim()
+      ? constraints.playlistId.trim()
+      : sourceType === "playlist"
+        ? ""
+        : "liked";
+  const artist = typeof constraints.artist === "string" && constraints.artist.trim() ? constraints.artist.trim() : "";
+
+  const sourceResult =
+    sourceType === "artist"
+      ? await executeSpotifyAgentToolJson(agent, "spotify_search", {
+          query: [artist ? `artist:${artist}` : "", queryInfo.query].filter(Boolean).join(" "),
+          limit: 20,
+        })
+      : sourceType === "any"
+        ? await executeSpotifyAgentToolJson(agent, "spotify_search", {
+            query: queryInfo.query,
+            limit: 20,
+          })
+        : await executeSpotifyAgentToolJson(agent, "spotify_get_playlist_tracks", {
+            playlistId: playlistId || "liked",
+            query: queryInfo.query,
+            mood: queryInfo.mood,
+            candidateLimit: 40,
+          });
+
+  const tracks = readSpotifyCandidateTracks(sourceResult);
+  if (tracks.length > 0) {
+    rememberSpotifyCandidateTracks(agent, sourceResult);
+    return { tracks, error: null, searchQuery: queryInfo.query, mood: queryInfo.mood };
+  }
+
+  const error = typeof sourceResult.error === "string" ? sourceResult.error : "No Spotify candidates found.";
+  return { tracks: [], error, searchQuery: queryInfo.query, mood: queryInfo.mood };
+}
+
+async function playSpotifyFallbackCandidates(args: {
+  agent: SpotifyRuntimeAgent;
+  result: AgentResult;
+  resultData: Record<string, unknown>;
+  context: AgentContext;
+  reason: string;
+}): Promise<AgentResult> {
+  const { agent, result, resultData, context, reason } = args;
+  if (!agent.toolContext) {
+    return { ...result, success: false, error: "Spotify DJ chose music, but Spotify tools were unavailable." };
+  }
+
+  const candidates = await loadSpotifyFallbackCandidates({ agent, resultData, context });
+  if (candidates.error || candidates.tracks.length === 0) {
+    return { ...result, success: false, error: candidates.error ?? "No Spotify candidates found." };
+  }
+
+  const queueSize = context.chatMode === "game" ? 1 : 5;
+  const picked = candidates.tracks.slice(0, queueSize);
+  const uris = picked.map((track) => track.uri);
+  const play = await executeSpotifyAgentToolJson(
+    agent,
+    "spotify_play",
+    uris.length === 1 ? { uri: uris[0], reason } : { uris, reason },
+  );
+  if (play.applied !== true) {
+    const playError = typeof play.error === "string" ? play.error : "Spotify play did not apply playback.";
+    return { ...result, success: false, error: playError };
+  }
+
+  const parsedData = { ...resultData };
+  delete parsedData.parseError;
+  delete parsedData.raw;
+  const queued = readSpotifyNumberField(play, "queued") ?? uris.length;
+  const display = readSpotifyStringField(play, "display");
+  return {
+    ...result,
+    success: true,
+    error: null,
+    data: {
+      ...parsedData,
+      action: "play",
+      mood: candidates.mood,
+      searchQuery: candidates.searchQuery,
+      trackUris: uris,
+      trackNames: picked.map(formatSpotifyTrackName),
+      queued,
+      currentUri: readSpotifyPlaybackTrackUri(play) ?? null,
+      device: readSpotifyStringField(play, "device") || null,
+      display:
+        display ||
+        (queued > 1
+          ? `🎵 Queued ${queued} tracks: ${candidates.mood}`
+          : `🎵 Started Spotify playback: ${candidates.mood}`),
+      deterministicFallbackApplied: true,
+    },
+  };
+}
+
+async function applySpotifyAgentPlaybackFallback(
+  agent: SpotifyRuntimeAgent,
+  result: AgentResult,
+  context: AgentContext,
+): Promise<AgentResult> {
+  const normalizedResult = normalizeSpotifyAgentResult(result);
+  if (
+    agent.type !== "spotify" ||
+    !normalizedResult.success ||
+    !normalizedResult.data ||
+    typeof normalizedResult.data !== "object"
+  ) {
+    return normalizedResult;
+  }
+
+  const data = normalizedResult.data as Record<string, unknown>;
+  if (agent.__spotifyPlayApplied === true) {
+    const parsedData = { ...data };
+    delete parsedData.parseError;
+    delete parsedData.raw;
+    const playedUris = agent.__spotifyPlayUris?.length ? agent.__spotifyPlayUris : readSpotifyTrackUris(data);
+    const trackNames = readSpotifyTrackNames(data);
+    const fallbackTrackNames = readSpotifyTrackNamesForUris(agent, playedUris);
+    const mood = readSpotifyStringField(data, "mood") || agent.__spotifyPlayReason || "Spotify DJ selection";
+    const queued = agent.__spotifyQueued ?? (playedUris.length > 0 ? playedUris.length : null);
+    return {
+      ...normalizedResult,
+      error: null,
+      data: {
+        ...parsedData,
+        action: "play",
+        mood,
+        trackUris: playedUris,
+        trackNames: trackNames.length > 0 ? trackNames : fallbackTrackNames,
+        queued,
+        currentUri: agent.__spotifyCurrentAfterPlayUri ?? null,
+        device: agent.__spotifyDevice ?? null,
+        display:
+          agent.__spotifyPlayDisplay ??
+          (queued && queued > 1 ? `🎵 Queued ${queued} tracks: ${mood}` : `🎵 Started Spotify playback: ${mood}`),
+        toolPlaybackApplied: true,
+      },
+    };
+  }
+
+  const action = readSpotifyStringField(data, "action");
+  const requestedUris = readSpotifyTrackUris(data);
+  if (isBlockingSpotifyToolError(agent.__spotifyToolError) && action !== "play") {
+    return { ...normalizedResult, success: false, error: agent.__spotifyToolError };
+  }
+  if (data.parseError === true || (action === "play" && requestedUris.length === 0)) {
+    return playSpotifyFallbackCandidates({
+      agent,
+      result: normalizedResult,
+      resultData: data,
+      context,
+      reason: readSpotifyStringField(data, "mood") || "Spotify DJ malformed-result recovery",
+    });
+  }
+  if (action !== "play" || requestedUris.length === 0) return normalizedResult;
+
+  const spotifyPlayCalled = agent.__spotifyToolCalls instanceof Set && agent.__spotifyToolCalls.has("spotify_play");
+  if (spotifyPlayCalled && agent.__spotifyPlayError) {
+    return { ...normalizedResult, success: false, error: agent.__spotifyPlayError };
+  }
+  if (!agent.toolContext) {
+    return {
+      ...normalizedResult,
+      success: false,
+      error: "Spotify DJ chose music, but Spotify tools were unavailable.",
+    };
+  }
+
+  const playArgs =
+    requestedUris.length === 1
+      ? { uri: requestedUris[0], reason: readSpotifyStringField(data, "mood") || "Spotify DJ selection" }
+      : { uris: requestedUris, reason: readSpotifyStringField(data, "mood") || "Spotify DJ selection" };
+  const play = await executeSpotifyAgentToolJson(agent, "spotify_play", playArgs);
+  if (play.applied !== true) {
+    const playError = typeof play.error === "string" ? play.error : "Spotify play did not apply playback.";
+    return { ...normalizedResult, success: false, error: playError };
+  }
+
+  const currentUri = readSpotifyPlaybackTrackUri(play);
+  const trackNames = readSpotifyTrackNames(data);
+  const fallbackTrackNames = readSpotifyTrackNamesForUris(agent, requestedUris);
+  const queued = readSpotifyNumberField(play, "queued") ?? requestedUris.length;
+  const display = readSpotifyStringField(play, "display");
+  return {
+    ...normalizedResult,
+    error: null,
+    data: {
+      ...data,
+      trackUris: requestedUris,
+      trackNames: trackNames.length > 0 ? trackNames : fallbackTrackNames,
+      toolFallbackApplied: true,
+      currentUri: currentUri ?? null,
+      queued,
+      display: display || undefined,
+    },
+  };
+}
+
+async function applySpotifyAgentPlaybackFallbacks(
+  results: AgentResult[],
+  resolvedAgents: ResolvedAgent[],
+  context: AgentContext,
+): Promise<AgentResult[]> {
+  const spotifyAgent = resolvedAgents.find((agent) => agent.type === "spotify") as SpotifyRuntimeAgent | undefined;
+  if (!spotifyAgent) return results;
+  return Promise.all(results.map((result) => applySpotifyAgentPlaybackFallback(spotifyAgent, result, context)));
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -907,6 +1440,201 @@ function isStandaloneCharacterProfileBlock(content: string, characterName: strin
   }
   const escaped = characterName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`^#{1,6}\\s+${escaped}\\s*$`, "m").test(trimmed);
+}
+
+function nameToMarkdownHeadingForMatch(name: string): string {
+  return name
+    .replace(/[^a-zA-Z0-9\s_-]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function removeXmlCharacterBlocks(content: string, characterName: string): string {
+  const tagNames = new Set([nameToXmlTag(characterName)]);
+  if (/^[A-Za-z][\w.-]*$/.test(characterName)) tagNames.add(characterName);
+
+  let result = content;
+  for (const tagName of tagNames) {
+    if (!tagName) continue;
+    const escapedTag = escapeRegExp(tagName);
+    const blockPattern = new RegExp(
+      `\\n?[ \\t]*<${escapedTag}(?:\\s[^>]*)?>[\\s\\S]*?<\\/${escapedTag}>[ \\t]*(?=\\n|$)`,
+      "gi",
+    );
+    result = result.replace(blockPattern, "\n");
+  }
+  return result;
+}
+
+function removeMarkdownCharacterBlocks(content: string, characterNames: string[]): string {
+  if (!characterNames.length) return content;
+  const targetHeadings = new Set(
+    characterNames.flatMap((name) => [name.trim().toLowerCase(), nameToMarkdownHeadingForMatch(name)]).filter(Boolean),
+  );
+  const lines = content.split(/\r?\n/);
+  const kept: string[] = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const match = line.match(/^(#{1,6})\s+(.+?)\s*$/);
+    const heading = match?.[2]?.trim().toLowerCase();
+    if (!match || !heading || !targetHeadings.has(heading)) {
+      kept.push(line);
+      continue;
+    }
+
+    const level = match[1]!.length;
+    index += 1;
+    while (index < lines.length) {
+      const nextMatch = lines[index]!.match(/^(#{1,6})\s+/);
+      if (nextMatch && nextMatch[1]!.length <= level) {
+        index -= 1;
+        break;
+      }
+      index += 1;
+    }
+  }
+
+  return kept.join("\n");
+}
+
+function removeOtherCharacterProfileBlocks(content: string, otherCharacterNames: string[]): string {
+  if (!otherCharacterNames.length) return content;
+  let result = content;
+  for (const name of otherCharacterNames) {
+    result = removeXmlCharacterBlocks(result, name);
+  }
+  result = removeMarkdownCharacterBlocks(result, otherCharacterNames);
+  return result.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+function stripChatHistoryXmlWrappers(content: string): string {
+  return content
+    .replace(/^\s*<chat_history>\s*\n?/i, "")
+    .replace(/\n?\s*<\/chat_history>\s*$/i, "")
+    .replace(/^\s*<last_message>\s*\n?/i, "")
+    .replace(/\n?\s*<\/last_message>\s*$/i, "")
+    .trim();
+}
+
+function stripChatHistoryMarkdownWrappers(content: string): string {
+  return content
+    .replace(/^\s*##\s+Chat History\s*\n/i, "")
+    .replace(/^\s*##\s+Last Message\s*\n/i, "")
+    .trim();
+}
+
+function reassignHistoryLastMessageWrapper(messages: GenerationPromptMessage[]): void {
+  const historyIndexes = messages
+    .map((message, index) => (message.contextKind === "history" ? index : -1))
+    .filter((index) => index >= 0);
+  if (historyIndexes.length === 0) return;
+
+  const hasXmlWrappers = historyIndexes.some((index) =>
+    /<\/?(?:chat_history|last_message)>/i.test(messages[index]!.content),
+  );
+  const hasMarkdownWrappers = historyIndexes.some((index) =>
+    /(?:^|\n)\s*##\s+(?:Chat History|Last Message)\s*(?:\n|$)/i.test(messages[index]!.content),
+  );
+  if (!hasXmlWrappers && !hasMarkdownWrappers) return;
+
+  for (const index of historyIndexes) {
+    const stripped = hasXmlWrappers
+      ? stripChatHistoryXmlWrappers(messages[index]!.content)
+      : stripChatHistoryMarkdownWrappers(messages[index]!.content);
+    messages[index] = { ...messages[index]!, content: stripped };
+  }
+
+  let lastUserHistoryIndex = -1;
+  for (let i = historyIndexes.length - 1; i >= 0; i--) {
+    const index = historyIndexes[i]!;
+    if (messages[index]!.role === "user") {
+      lastUserHistoryIndex = index;
+      break;
+    }
+  }
+  if (lastUserHistoryIndex < 0) return;
+
+  const historyBeforeLast = historyIndexes.filter((index) => index < lastUserHistoryIndex);
+  if (hasXmlWrappers) {
+    if (historyBeforeLast.length > 0) {
+      const firstHistoryIndex = historyBeforeLast[0]!;
+      const lastHistoryIndex = historyBeforeLast[historyBeforeLast.length - 1]!;
+      messages[firstHistoryIndex] = {
+        ...messages[firstHistoryIndex]!,
+        content: `<chat_history>\n${messages[firstHistoryIndex]!.content}`,
+      };
+      messages[lastHistoryIndex] = {
+        ...messages[lastHistoryIndex]!,
+        content: `${messages[lastHistoryIndex]!.content}\n</chat_history>`,
+      };
+    }
+    messages[lastUserHistoryIndex] = {
+      ...messages[lastUserHistoryIndex]!,
+      content: `<last_message>\n${messages[lastUserHistoryIndex]!.content}\n</last_message>`,
+    };
+    return;
+  }
+
+  if (historyBeforeLast.length > 0) {
+    const firstHistoryIndex = historyBeforeLast[0]!;
+    messages[firstHistoryIndex] = {
+      ...messages[firstHistoryIndex]!,
+      content: `## Chat History\n${messages[firstHistoryIndex]!.content}`,
+    };
+  }
+  messages[lastUserHistoryIndex] = {
+    ...messages[lastUserHistoryIndex]!,
+    content: `## Last Message\n${messages[lastUserHistoryIndex]!.content}`,
+  };
+}
+
+function scopeIndividualGroupMessagesForTarget(
+  messages: GenerationPromptMessage[],
+  targetCharacterId: string | null,
+  characters: Array<{ id: string; name: string }>,
+): GenerationPromptMessage[] {
+  if (!targetCharacterId) return messages;
+  const targetCharacter = characters.find((character) => character.id === targetCharacterId);
+  if (!targetCharacter) return messages;
+  const otherCharacterNames = characters
+    .filter((character) => character.id !== targetCharacterId)
+    .map((character) => character.name);
+
+  const scoped = messages
+    .map((message) => {
+      let next: GenerationPromptMessage = { ...message };
+      const isHistoryMessage =
+        next.contextKind === "history" ||
+        (next.contextKind === undefined && next.role !== "system" && next.characterId != null);
+
+      if (!isHistoryMessage) {
+        const content = removeOtherCharacterProfileBlocks(next.content, otherCharacterNames);
+        next = { ...next, content };
+      }
+
+      if (isHistoryMessage) {
+        if (next.characterId) {
+          const role = next.characterId === targetCharacterId ? "assistant" : "user";
+          next = { ...next, role };
+        } else if (next.role === "assistant") {
+          next = { ...next, role: "user" };
+        }
+
+        if (next.role !== "assistant" && next.providerMetadata) {
+          const withoutAssistantMetadata = { ...next };
+          delete withoutAssistantMetadata.providerMetadata;
+          next = withoutAssistantMetadata;
+        }
+      }
+
+      return next;
+    })
+    .filter((message) => message.content.trim());
+
+  reassignHistoryLastMessageWrapper(scoped);
+  pruneEmptyPromptWrappers(scoped);
+  return scoped;
 }
 
 export async function generateRoutes(app: FastifyInstance) {
@@ -1095,6 +1823,10 @@ export async function generateRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "No base URL configured for this connection" });
     }
     let chatMeta = parseExtra(chat.metadata) as Record<string, unknown>;
+    const promptTimeZone =
+      normalizePromptTimeZone(chatMeta.promptTimeZone) ?? normalizePromptTimeZone(input.userTimeZone);
+    const promptNow = toZonedWallClockDate(new Date(), promptTimeZone);
+    const excludePastReasoning = chatMeta.excludePastReasoning !== false;
     let memoryRecallEmbeddingSource: Awaited<ReturnType<typeof resolveMemoryRecallEmbeddingSource>> | null = null;
     try {
       memoryRecallEmbeddingSource = await resolveMemoryRecallEmbeddingSource(app.db, {
@@ -1230,11 +1962,13 @@ export async function generateRoutes(app: FastifyInstance) {
         const images = extractImageAttachmentDataUrls(attachments);
         const providerMetadata: Record<string, unknown> = {};
         // For Google connections, carry stored Gemini parts (thought signatures) on assistant messages
-        if (isGoogleProvider && m.role === "assistant" && extra.geminiParts) {
+        if (!excludePastReasoning && isGoogleProvider && m.role === "assistant" && extra.geminiParts) {
           providerMetadata.geminiParts = extra.geminiParts;
         }
         const chatCompletionsReasoning =
-          m.role === "assistant" && shouldReplayStoredChatCompletionsReasoning(conn.provider, conn.model)
+          !excludePastReasoning &&
+          m.role === "assistant" &&
+          shouldReplayStoredChatCompletionsReasoning(conn.provider, conn.model)
             ? readChatCompletionsReasoningMetadata(extra.chatCompletionsReasoning)
             : undefined;
         if (chatCompletionsReasoning) {
@@ -1255,6 +1989,8 @@ export async function generateRoutes(app: FastifyInstance) {
         return {
           role: m.role === "narrator" ? ("system" as const) : (m.role as "user" | "assistant" | "system"),
           content,
+          contextKind: "history" as const,
+          characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
           ...(images?.length ? { images } : {}),
           ...(Object.keys(providerMetadata).length ? { providerMetadata } : {}),
         };
@@ -1321,7 +2057,7 @@ export async function generateRoutes(app: FastifyInstance) {
       if (persona) {
         personaId = persona.id as string;
         personaName = persona.name;
-        personaDescription = persona.description;
+        personaDescription = cardPromptText(persona.description);
 
         // Append active alt description extensions
         if (persona.altDescriptions) {
@@ -1331,8 +2067,9 @@ export async function generateRoutes(app: FastifyInstance) {
               content: string;
             }>;
             for (const ext of altDescs) {
-              if (ext.active && ext.content) {
-                personaDescription += "\n" + ext.content;
+              const content = cardPromptText(ext.content);
+              if (ext.active && content) {
+                personaDescription += "\n" + content;
               }
             }
           } catch {
@@ -1341,10 +2078,10 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         personaFields = {
-          personality: persona.personality ?? "",
-          scenario: persona.scenario ?? "",
-          backstory: persona.backstory ?? "",
-          appearance: persona.appearance ?? "",
+          personality: cardPromptText(persona.personality),
+          scenario: cardPromptText(persona.scenario),
+          backstory: cardPromptText(persona.backstory),
+          appearance: cardPromptText(persona.appearance),
         };
       }
 
@@ -1396,7 +2133,7 @@ export async function generateRoutes(app: FastifyInstance) {
       // ("snackbar without follow-up", #898). The loop re-runs the generation
       // up to MAX_FOLLOW_UP_ITERATIONS additional times if a fetch fired in
       // the previous pass, so Mari can speak to the data she just pulled.
-      let runningMessagesForFollowUp = [...mappedMessages];
+      let runningMessagesForFollowUp: GenerationPromptMessage[] = [...mappedMessages];
       let followUpIteration = 0;
       const MAX_FOLLOW_UP_ITERATIONS = 2;
 
@@ -1420,12 +2157,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // the loop body gates on this so a fetch that found nothing or threw
         // doesn't burn an extra generation pass with no new context to read.
         let mariFetchSucceededThisIteration = false;
-        let finalMessages: Array<{
-          role: "system" | "user" | "assistant";
-          content: string;
-          images?: string[];
-          providerMetadata?: Record<string, unknown>;
-        }> = [...runningMessagesForFollowUp];
+        let finalMessages: GenerationPromptMessage[] = [...runningMessagesForFollowUp];
         let conversationCommandsReminder: string | null = null;
         const conversationCommandsEnabled = chatMode === "conversation" && chatMeta.characterCommands !== false;
         let temperature = 1;
@@ -1437,6 +2169,7 @@ export async function generateRoutes(app: FastifyInstance) {
         let showThoughts = true;
         let reasoningEffort: "low" | "medium" | "high" | "maximum" | null = null;
         let verbosity: "low" | "medium" | "high" | null = null;
+        let serviceTier: "flex" | "priority" | null = null;
         let assistantPrefill = "";
         let customParameters: Record<string, unknown> = {};
         let wrapFormat: "xml" | "markdown" | "none" = "xml";
@@ -1466,6 +2199,8 @@ export async function generateRoutes(app: FastifyInstance) {
         );
         const hasPerChatAgentList = chatActiveAgentIds.length > 0;
         const perChatAgentSet = new Set(chatActiveAgentIds);
+        const chatSummaryAgentActive = chatEnableAgents && perChatAgentSet.has("chat-summary");
+        const activeChatSummary = chatSummaryAgentActive ? ((chatMeta.summary as string) ?? "").trim() || null : null;
         const configuredPromptAgents = chatEnableAgents && hasPerChatAgentList ? await agentsStore.list() : [];
         const runtimeSectionEligibleAgentTypes = buildRuntimeAgentSectionEligibleTypesForTest({
           enableAgents: chatEnableAgents,
@@ -1678,7 +2413,7 @@ export async function generateRoutes(app: FastifyInstance) {
             })(),
             chatMessages: mappedMessages,
             lorebookScanMessages: toLorebookScanMessages(),
-            chatSummary: ((chatMeta.summary as string) ?? "").trim() || null,
+            chatSummary: activeChatSummary,
             enableAgents: chatEnableAgents,
             activeAgentIds: chatActiveAgentIds,
             activeLorebookIds: chatActiveLorebookIds,
@@ -1729,6 +2464,7 @@ export async function generateRoutes(app: FastifyInstance) {
           showThoughts = assembled.parameters.showThoughts ?? true;
           reasoningEffort = assembled.parameters.reasoningEffort ?? null;
           verbosity = assembled.parameters.verbosity ?? null;
+          serviceTier = assembled.parameters.serviceTier ?? null;
           assistantPrefill = assembled.parameters.assistantPrefill ?? "";
           customParameters = mergeCustomParameters(customParameters, assembled.parameters.customParameters);
 
@@ -1777,10 +2513,10 @@ export async function generateRoutes(app: FastifyInstance) {
               const schedule = schedules[cid];
               if (schedule) {
                 const schedSvc = await import("../services/conversation/schedule.service.js");
-                const derived = schedSvc.getCurrentStatus(schedule);
+                const derived = schedSvc.getCurrentStatus(schedule, promptNow);
                 status = derived.status;
                 activity = derived.activity;
-                todaySchedule = schedSvc.getTodaySchedule(schedule);
+                todaySchedule = schedSvc.getTodaySchedule(schedule, promptNow);
                 // Sync status to character DB so sidebar/header dots stay in sync
                 const prevStatus = d.extensions?.conversationStatus;
                 if (prevStatus !== status) {
@@ -1870,6 +2606,8 @@ export async function generateRoutes(app: FastifyInstance) {
                 return {
                   role: m.role === "narrator" ? ("system" as const) : (m.role as "user" | "assistant" | "system"),
                   content: appendReadableAttachmentsToContent(m.content as string, att),
+                  contextKind: "history" as const,
+                  characterId: typeof m.characterId === "string" && m.characterId ? m.characterId : null,
                   ...(imgs?.length ? { images: imgs } : {}),
                 };
               });
@@ -1889,27 +2627,15 @@ export async function generateRoutes(app: FastifyInstance) {
           // older messages are grouped by date inside <date="DD.MM.YYYY"> blocks.
           // The "day" boundary is shifted by dayRolloverHour so a late-night
           // session doesn't get split when calendar midnight passes.
-          const now = new Date();
+          const nowInstant = new Date();
           const rolloverHour = Math.max(
             0,
             Math.min(11, Math.floor((chatMeta.dayRolloverHour as number | undefined) ?? 4)),
           );
-          const shifted = (ts: Date) => new Date(ts.getTime() - rolloverHour * 3_600_000);
-          const logicalNow = shifted(now);
-          const todayKey = `${logicalNow.getFullYear()}-${logicalNow.getMonth()}-${logicalNow.getDate()}`;
-
-          const isSameDay = (ts: Date) => {
-            const d = shifted(ts);
-            return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}` === todayKey;
-          };
-
-          const fmtDate = (ts: Date) => {
-            const d = shifted(ts);
-            return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.${d.getFullYear()}`;
-          };
-          const todayDateKey = fmtDate(now);
-          const fmtTime = (ts: Date) =>
-            `${String(ts.getHours()).padStart(2, "0")}:${String(ts.getMinutes()).padStart(2, "0")}`;
+          const isSameDay = (ts: Date) => isSameZonedLogicalDay(ts, nowInstant, promptTimeZone, rolloverHour);
+          const fmtDate = (ts: Date) => formatZonedConversationDate(ts, promptTimeZone, rolloverHour);
+          const todayDateKey = fmtDate(nowInstant);
+          const fmtTime = (ts: Date) => formatZonedConversationTime(ts, promptTimeZone);
 
           // Strip leaked [HH:MM] or [DD.MM.YYYY] timestamps that models sometimes echo
           const stripLeakedTimestamps = stripConversationPromptTimestamps;
@@ -2001,8 +2727,9 @@ export async function generateRoutes(app: FastifyInstance) {
             model: conn.model,
             personaName,
             charIdToName,
-            now,
+            now: nowInstant,
             rolloverHour,
+            timeZone: promptTimeZone,
             maxMissingDays: 2,
           });
           for (const failure of summaryRun.failedDays) {
@@ -2115,11 +2842,8 @@ export async function generateRoutes(app: FastifyInstance) {
           // the last summary and today's first verbatim message.
           const weekBlocksEmitted = new Set<string>();
           const fmtTailPrefix = (ts: Date) => {
-            const d = String(ts.getDate()).padStart(2, "0");
-            const mo = String(ts.getMonth() + 1).padStart(2, "0");
-            const h = String(ts.getHours()).padStart(2, "0");
-            const mi = String(ts.getMinutes()).padStart(2, "0");
-            return `[${d}.${mo} ${h}:${mi}]`;
+            const date = formatZonedConversationDate(ts, promptTimeZone).slice(0, 5);
+            return `[${date} ${formatZonedConversationTime(ts, promptTimeZone)}]`;
           };
           const buildTailTurns = () => {
             if (tailEntries.length === 0) return [];
@@ -2498,9 +3222,9 @@ export async function generateRoutes(app: FastifyInstance) {
           }
 
           // Build the context injection (last user-role message before generation)
-          const timeStr = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-          const dateStr = `${String(now.getDate()).padStart(2, "0")}.${String(now.getMonth() + 1).padStart(2, "0")}.${now.getFullYear()}`;
-          const dayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][now.getDay()]!;
+          const timeStr = formatZonedConversationTime(nowInstant, promptTimeZone);
+          const dateStr = formatZonedConversationDate(nowInstant, promptTimeZone);
+          const dayName = getZonedWeekdayName(nowInstant, promptTimeZone);
 
           const scheduleLines: string[] = [];
           for (const c of convoCharInfo) {
@@ -2590,6 +3314,8 @@ export async function generateRoutes(app: FastifyInstance) {
               charNameMap,
               personaName,
               input.userMessage ?? "",
+              1500,
+              promptTimeZone,
             );
           }
 
@@ -3022,6 +3748,7 @@ export async function generateRoutes(app: FastifyInstance) {
           if (typeof params.showThoughts === "boolean") showThoughts = params.showThoughts;
           if (params.reasoningEffort !== undefined) reasoningEffort = params.reasoningEffort;
           if (params.verbosity !== undefined) verbosity = params.verbosity;
+          if (params.serviceTier !== undefined) serviceTier = normalizeServiceTier(params.serviceTier);
           if (typeof params.assistantPrefill === "string") assistantPrefill = params.assistantPrefill;
           customParameters = mergeCustomParameters(customParameters, params.customParameters);
 
@@ -3116,6 +3843,7 @@ export async function generateRoutes(app: FastifyInstance) {
           frequencyPenalty = 0;
           presencePenalty = 0;
         }
+        const providerTopK = resolveProviderTopK(conn.provider, topK);
 
         // Create provider
         const provider = createLLMProvider(
@@ -3182,6 +3910,9 @@ export async function generateRoutes(app: FastifyInstance) {
           // If this chat has a per-chat agent list, only include agents in that list
           if (hasPerChatAgentList && !perChatAgentSet.has(cfg.type)) continue;
           const settings = cfg.settings ? JSON.parse(cfg.settings as string) : {};
+          if (cfg.type === "spotify" && (!Array.isArray(settings.enabledTools) || settings.enabledTools.length === 0)) {
+            settings.enabledTools = DEFAULT_AGENT_TOOLS.spotify ?? [];
+          }
           let agentProvider = provider;
           let agentModel = conn.model;
           let agentMaxParallelJobs = chatConnectionMaxParallelJobs;
@@ -3270,7 +4001,10 @@ export async function generateRoutes(app: FastifyInstance) {
             defaultAgentConnectionAgents.push(builtIn.name);
           }
           const builtInSettings = getDefaultBuiltInAgentSettings(builtIn.id);
-          if (builtIn.id === "spotify" && !Array.isArray(builtInSettings.enabledTools)) {
+          if (
+            builtIn.id === "spotify" &&
+            (!Array.isArray(builtInSettings.enabledTools) || builtInSettings.enabledTools.length === 0)
+          ) {
             builtInSettings.enabledTools = DEFAULT_AGENT_TOOLS.spotify ?? [];
           }
 
@@ -3484,20 +4218,21 @@ export async function generateRoutes(app: FastifyInstance) {
             if (chatMode !== "conversation" && charData.extensions?.isBuiltInAssistant) {
               scenario = scenario.replace(/<assistant_capabilities>[\s\S]*?<\/assistant_capabilities>/gi, "").trim();
             }
-            const description = getCharacterDescriptionWithExtensions(charData);
+            scenario = cardPromptText(scenario);
+            const description = cardPromptText(getCharacterDescriptionWithExtensions(charData));
             charInfo.push({
               id: cid,
               name: charData.name ?? "Unknown",
               description,
-              personality: charData.personality ?? "",
+              personality: cardPromptText(charData.personality),
               scenario,
-              creatorNotes: charData.creator_notes ?? "",
-              systemPrompt: charData.system_prompt ?? "",
-              backstory: charData.extensions?.backstory ?? "",
-              appearance: charData.extensions?.appearance ?? "",
-              mesExample: charData.mes_example ?? "",
-              firstMes: charData.first_mes ?? "",
-              postHistoryInstructions: charData.post_history_instructions ?? "",
+              creatorNotes: cardPromptText(charData.creator_notes),
+              systemPrompt: cardPromptText(charData.system_prompt),
+              backstory: cardPromptText(charData.extensions?.backstory),
+              appearance: cardPromptText(charData.extensions?.appearance),
+              mesExample: cardPromptText(charData.mes_example),
+              firstMes: cardPromptText(charData.first_mes),
+              postHistoryInstructions: cardPromptText(charData.post_history_instructions),
               tags: Array.isArray(charData.tags) ? charData.tags.map(String).filter(Boolean) : [],
               talkativeness: Math.max(0, Math.min(1, Number(charData.extensions?.talkativeness ?? 0.5))),
               avatarPath: (charRow.avatarPath as string) ?? null,
@@ -3782,10 +4517,12 @@ export async function generateRoutes(app: FastifyInstance) {
               if (gmChar) {
                 const gmData = typeof gmChar.data === "string" ? JSON.parse(gmChar.data) : gmChar.data;
                 const parts = [`Name: ${gmData.name}`];
-                if (gmData.personality) parts.push(`Personality: ${gmData.personality}`);
-                if (gmData.description) parts.push(`Description: ${gmData.description}`);
-                const gmBackstory = gmData.extensions?.backstory || gmData.backstory;
-                const gmAppearance = gmData.extensions?.appearance || gmData.appearance;
+                const gmPersonality = cardPromptText(gmData.personality);
+                const gmDescription = cardPromptText(gmData.description);
+                const gmBackstory = cardPromptText(gmData.extensions?.backstory || gmData.backstory);
+                const gmAppearance = cardPromptText(gmData.extensions?.appearance || gmData.appearance);
+                if (gmPersonality) parts.push(`Personality: ${gmPersonality}`);
+                if (gmDescription) parts.push(`Description: ${gmDescription}`);
                 if (gmBackstory) parts.push(`Backstory: ${gmBackstory}`);
                 if (gmAppearance) parts.push(`Appearance: ${gmAppearance}`);
                 gmCharacterCard = parts.join("\n");
@@ -3819,10 +4556,12 @@ export async function generateRoutes(app: FastifyInstance) {
                 partyNames.push(name);
                 partyIdNamePairs.push({ id: pcId, name });
                 const parts = [`Name: ${name}`];
-                if (pcData.personality) parts.push(`Personality: ${pcData.personality}`);
-                if (pcData.description) parts.push(`Description: ${pcData.description}`);
-                const backstory = pcData.extensions?.backstory || pcData.backstory;
-                const appearance = pcData.extensions?.appearance || pcData.appearance;
+                const personality = cardPromptText(pcData.personality);
+                const description = cardPromptText(pcData.description);
+                const backstory = cardPromptText(pcData.extensions?.backstory || pcData.backstory);
+                const appearance = cardPromptText(pcData.extensions?.appearance || pcData.appearance);
+                if (personality) parts.push(`Personality: ${personality}`);
+                if (description) parts.push(`Description: ${description}`);
                 if (backstory) parts.push(`Backstory: ${backstory}`);
                 if (appearance) parts.push(`Appearance: ${appearance}`);
                 // Append game character card info (class, abilities, etc.)
@@ -3886,10 +4625,14 @@ export async function generateRoutes(app: FastifyInstance) {
               );
               if (persona) {
                 const parts = [`Name: ${persona.name}`];
-                if (persona.description) parts.push(`Description: ${persona.description}`);
-                if (persona.personality) parts.push(`Personality: ${persona.personality}`);
-                if (persona.backstory) parts.push(`Backstory: ${persona.backstory}`);
-                if (persona.appearance) parts.push(`Appearance: ${persona.appearance}`);
+                const description = cardPromptText(persona.description);
+                const personality = cardPromptText(persona.personality);
+                const backstory = cardPromptText(persona.backstory);
+                const appearance = cardPromptText(persona.appearance);
+                if (description) parts.push(`Description: ${description}`);
+                if (personality) parts.push(`Personality: ${personality}`);
+                if (backstory) parts.push(`Backstory: ${backstory}`);
+                if (appearance) parts.push(`Appearance: ${appearance}`);
                 // Append game character card info for persona
                 const pgc = gameCardByName.get(persona.name.toLowerCase());
                 if (pgc) {
@@ -4303,6 +5046,7 @@ export async function generateRoutes(app: FastifyInstance) {
               `<dm_commands>`,
               `Optional hidden command, use only when it naturally fits the scene:`,
               `- [dm: character="${dmTargetHint}" message="short text"] - only if a roleplay character sends {{user}} a direct message through a phone, communicator, letter app, terminal, or similar in-world channel. Marinara strips the command from the roleplay reply and posts the full message into the linked conversation when one exists; otherwise it creates a new DM conversation with that character.`,
+              `Only use one of the listed character names/IDs. Do not use this command for incidental NPCs without a character card.`,
               `Do not also quote the exact same direct-message text in the roleplay narration unless the user should see it in both places.`,
               `</dm_commands>`,
             ].join("\n"),
@@ -4333,6 +5077,7 @@ export async function generateRoutes(app: FastifyInstance) {
             : ((chatMeta.groupChatMode as string) ?? "merged");
         // Auto-enable speaker colors for conversation mode groups (system prompt already requests tags)
         const groupSpeakerColors = chatMeta.groupSpeakerColors === true || (chatMode === "conversation" && isGroupChat);
+        const groupTurnPromptEnabled = chatMeta.groupTurnPromptEnabled !== false;
 
         if (isGroupChat && chatMode !== "conversation") {
           // Strip <speaker> tags from history to save tokens in roleplay mode.
@@ -4467,7 +5212,7 @@ export async function generateRoutes(app: FastifyInstance) {
           memory: {},
           activatedLorebookEntries: null,
           writableLorebookIds: null,
-          chatSummary: ((chatMeta.summary as string) ?? "").trim() || null,
+          chatSummary: activeChatSummary,
           streaming: input.streaming,
           signal: abortController.signal,
         };
@@ -4489,6 +5234,28 @@ export async function generateRoutes(app: FastifyInstance) {
                 lastRunIdx >= 0 ? allChatMessages.slice(lastRunIdx + 1).filter((m: any) => m.role === "assistant") : [];
               if (assistantMsgsSince.length + 1 < runInterval) {
                 resolvedAgents.splice(resolvedAgents.indexOf(directorAgent), 1);
+              }
+            }
+          }
+        }
+
+        // ── Interval gating: Illustrator only creates a new image every N assistant messages ──
+        const illustratorAgentForInterval = resolvedAgents.find((a) => a.type === "illustrator");
+        if (illustratorAgentForInterval) {
+          const rawInterval = (illustratorAgentForInterval.settings as { runInterval?: unknown }).runInterval;
+          const parsed =
+            typeof rawInterval === "number" ? rawInterval : typeof rawInterval === "string" ? Number(rawInterval) : NaN;
+          const fallback = (getDefaultBuiltInAgentSettings("illustrator").runInterval as number) ?? 5;
+          const runInterval = Number.isFinite(parsed) && parsed >= 1 ? Math.min(100, Math.floor(parsed)) : fallback;
+          if (runInterval > 1) {
+            const lastRun = await agentsStore.getLastSuccessfulRunByType("illustrator", input.chatId);
+            if (lastRun) {
+              const lastRunMsgId = lastRun.messageId;
+              const lastRunIdx = allChatMessages.findIndex((m: any) => m.id === lastRunMsgId);
+              const assistantMsgsSince =
+                lastRunIdx >= 0 ? allChatMessages.slice(lastRunIdx + 1).filter((m: any) => m.role === "assistant") : [];
+              if (assistantMsgsSince.length + 1 < runInterval) {
+                resolvedAgents.splice(resolvedAgents.indexOf(illustratorAgentForInterval), 1);
               }
             }
           }
@@ -4624,6 +5391,10 @@ export async function generateRoutes(app: FastifyInstance) {
           } catch {
             /* non-critical */
           }
+        }
+
+        if (resolvedAgents.some((a) => a.type === "spotify")) {
+          agentContext.memory._spotifyDjConstraints = buildSpotifyDjConstraints({ chatMode, chatMeta });
         }
 
         // If the haptic agent is enabled, inject connected device info (names + capabilities) into context
@@ -4834,12 +5605,15 @@ export async function generateRoutes(app: FastifyInstance) {
             if (lastRun) {
               const lastRunMsgId = lastRun.messageId;
               const lastRunIdx = allChatMessages.findIndex((m: any) => m.id === lastRunMsgId);
-              const userMsgsSince =
-                lastRunIdx >= 0 ? allChatMessages.slice(lastRunIdx + 1).filter((m: any) => m.role === "user") : [];
-              // +1 for the current user message being generated
-              if (userMsgsSince.length + 1 < triggersAfter) {
-                shouldRun = false;
+              if (lastRunIdx >= 0) {
+                const userMsgsSince = allChatMessages.slice(lastRunIdx + 1).filter((m: any) => m.role === "user");
+                // +1 for the current user message being generated
+                if (userMsgsSince.length + 1 < triggersAfter) {
+                  shouldRun = false;
+                }
               }
+              // If the run anchor was deleted, treat this like a first run so
+              // Automated Chat Summary can recover instead of staying gated forever.
             }
             // First run ever: allow it to proceed
           }
@@ -5019,6 +5793,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // otherwise Promise.allSettled in executePhase silently drops the
         // entire group's results, causing agents to appear as "not triggered".
         const sendAgentEvent = (result: AgentResult) => {
+          if (shouldDeferSpotifyAgentEvent(result)) return;
           trySendSseEvent(reply, {
             type: "agent_result",
             data: {
@@ -5306,22 +6081,44 @@ export async function generateRoutes(app: FastifyInstance) {
           if (agent.toolContext) continue;
 
           const agentSettings = typeof agent.settings === "string" ? JSON.parse(agent.settings) : agent.settings || {};
-          const agentEnabledNames = Array.isArray(agentSettings.enabledTools)
+          let agentEnabledNames = Array.isArray(agentSettings.enabledTools)
             ? (agentSettings.enabledTools as string[])
             : [];
+          if (agent.type === "spotify" && agentEnabledNames.length === 0) {
+            agentEnabledNames = [...spotifyToolNames];
+            agent.settings = { ...agentSettings, enabledTools: agentEnabledNames };
+          }
           if (agentEnabledNames.length === 0) continue;
 
+          const allowSpotifyAgentTools = agent.type === "spotify";
           const agentTools = allToolDefs.filter(
             (td) =>
               agentEnabledNames.includes(td.function.name) &&
-              (spotifyToolsAvailable || !spotifyToolNames.has(td.function.name)),
+              (spotifyToolsAvailable || !spotifyToolNames.has(td.function.name) || allowSpotifyAgentTools),
           );
           if (agentTools.length === 0) continue;
           const allowedToolNames = new Set(agentTools.map((td) => td.function.name));
+          if (agent.type === "spotify") {
+            const spotifyAgent = agent as SpotifyRuntimeAgent;
+            spotifyAgent.__spotifyToolCalls = new Set<string>();
+            spotifyAgent.__spotifyPlayApplied = false;
+            spotifyAgent.__spotifyPlayError = null;
+            spotifyAgent.__spotifyToolError = null;
+            spotifyAgent.__spotifyPlayUris = [];
+            spotifyAgent.__spotifyCandidateTracks = [];
+            spotifyAgent.__spotifyCurrentAfterPlayUri = null;
+            spotifyAgent.__spotifyPlayDisplay = null;
+            spotifyAgent.__spotifyPlayReason = null;
+            spotifyAgent.__spotifyQueued = null;
+            spotifyAgent.__spotifyDevice = null;
+          }
 
           agent.toolContext = {
             tools: agentTools,
             executeToolCall: async (call) => {
+              if (agent.type === "spotify") {
+                ((agent as SpotifyRuntimeAgent).__spotifyToolCalls ??= new Set<string>()).add(call.function.name);
+              }
               if (!allowedToolNames.has(call.function.name)) {
                 return JSON.stringify({
                   error: `Tool not allowed for agent ${agent.type}: ${call.function.name}`,
@@ -5331,7 +6128,41 @@ export async function generateRoutes(app: FastifyInstance) {
               const results = await executeToolCalls([call], {
                 ...baseToolExecutionContext,
               });
-              return results[0]?.result ?? "Tool execution failed";
+              const result = results[0]?.result ?? "Tool execution failed";
+              if (agent.type === "spotify" && call.function.name === "spotify_play") {
+                try {
+                  const parsed = JSON.parse(result) as Record<string, unknown>;
+                  const spotifyAgent = agent as SpotifyRuntimeAgent;
+                  if (typeof parsed.error === "string") {
+                    spotifyAgent.__spotifyToolError = parsed.error;
+                  }
+                  if (parsed.applied === true) {
+                    spotifyAgent.__spotifyPlayApplied = true;
+                    spotifyAgent.__spotifyPlayError = null;
+                    spotifyAgent.__spotifyPlayUris = readSpotifyTrackUris(parsed);
+                    spotifyAgent.__spotifyCurrentAfterPlayUri = readSpotifyPlaybackTrackUri(parsed);
+                    spotifyAgent.__spotifyPlayDisplay = readSpotifyStringField(parsed, "display") || null;
+                    spotifyAgent.__spotifyPlayReason = readSpotifyStringField(parsed, "reason") || null;
+                    spotifyAgent.__spotifyQueued = readSpotifyNumberField(parsed, "queued");
+                    spotifyAgent.__spotifyDevice = readSpotifyStringField(parsed, "device") || null;
+                  } else if (typeof parsed.error === "string") {
+                    spotifyAgent.__spotifyPlayError = parsed.error;
+                  }
+                } catch {
+                  // Leave the raw tool result for the model; fallback validation handles explicit failures.
+                }
+              } else if (agent.type === "spotify" && spotifyToolNames.has(call.function.name)) {
+                try {
+                  const parsed = JSON.parse(result) as Record<string, unknown>;
+                  rememberSpotifyCandidateTracks(agent as SpotifyRuntimeAgent, parsed);
+                  if (typeof parsed.error === "string") {
+                    (agent as SpotifyRuntimeAgent).__spotifyToolError = parsed.error;
+                  }
+                } catch {
+                  // Non-JSON Spotify tool results are passed through to the model unchanged.
+                }
+              }
+              return result;
             },
           };
         }
@@ -6028,15 +6859,16 @@ export async function generateRoutes(app: FastifyInstance) {
           }
         }
 
-        // Notify UI if a chat summary was injected into the prompt (works with or without the agent)
-        if (chatMeta.summary) {
+        // Notify UI only when the Automated Chat Summary agent is active and
+        // its persisted summary is actually injected into this roleplay prompt.
+        if (activeChatSummary) {
           const chatSummaryCfg = enabledConfigs.find((c: any) => c.type === "chat-summary");
           reply.raw.write(
             `data: ${JSON.stringify({
               type: "agent_result",
               data: {
                 agentType: "chat-summary",
-                agentName: (chatSummaryCfg as any)?.name || "Chat Summary",
+                agentName: (chatSummaryCfg as any)?.name || "Automated Chat Summary",
                 resultType: "context_injection",
                 data: { text: "Chat summary injected into prompt" },
                 success: true,
@@ -6079,16 +6911,10 @@ export async function generateRoutes(app: FastifyInstance) {
           const prefillPosition = tailMessages.googleUserRegenerationInjected
             ? "before final user message"
             : "as final assistant message";
-          logger.debug(
-            "[generate] Injected assistant prefill (%d chars) %s",
-            assistantPrefill.length,
-            prefillPosition,
-          );
+          logger.debug("[generate] Injected assistant prefill (%d chars) %s", assistantPrefill.length, prefillPosition);
         }
         if (tailMessages.googleUserRegenerationInjected && assistantPrefill.trim()) {
-          logger.debug(
-            "[generate] Preserved assistant prefill before Gemini user-message regeneration instruction",
-          );
+          logger.debug("[generate] Preserved assistant prefill before Gemini user-message regeneration instruction");
         }
 
         let fullResponse = "";
@@ -6279,6 +7105,7 @@ export async function generateRoutes(app: FastifyInstance) {
               maxTokens: selectorMaxTokens,
               maxContext: effectiveMaxContext,
               topP: 1,
+              serviceTier,
               stream: false,
               signal: abortController.signal,
             });
@@ -6332,13 +7159,7 @@ export async function generateRoutes(app: FastifyInstance) {
         /** Generate a single response for a given character and save it. */
         const generateForCharacter = async (
           targetCharId: string | null,
-          messagesForGen: Array<{
-            role: "system" | "user" | "assistant";
-            content: string;
-            contextKind?: "prompt" | "history" | "injection";
-            images?: string[];
-            providerMetadata?: Record<string, unknown>;
-          }>,
+          messagesForGen: GenerationPromptMessage[],
           markGenerationCommitted = false,
         ): Promise<{
           savedMsg: Awaited<ReturnType<typeof chats.createMessage>>;
@@ -6349,10 +7170,14 @@ export async function generateRoutes(app: FastifyInstance) {
         } | null> => {
           const targetCharacterProfile =
             deferCharacterMacros && targetCharId ? characterMacroProfilesById.get(targetCharId) : undefined;
-          const preparedMessagesForGen = messagesForGen.map((message) => ({
+          const scopedMessagesForGen =
+            isGroupChat && groupChatMode === "individual" && chatMode !== "conversation" && targetCharId
+              ? scopeIndividualGroupMessagesForTarget(messagesForGen, targetCharId, charInfo)
+              : messagesForGen;
+          const preparedMessagesForGen = scopedMessagesForGen.map((message) => ({
             ...message,
             content: (targetCharacterProfile
-              ? resolveDeferredCharacterMacros(message.content, targetCharacterProfile)
+              ? resolveDeferredCharacterMacros(message.content, targetCharacterProfile, promptMacroContext)
               : message.content
             ).replace(/\n([ \t]*\n){2,}/g, "\n\n"),
           }));
@@ -6368,15 +7193,7 @@ export async function generateRoutes(app: FastifyInstance) {
             return null;
           }
 
-          const toProviderMessages = (
-            promptMessages: Array<{
-              role: "system" | "user" | "assistant";
-              content: string;
-              contextKind?: "prompt" | "history" | "injection";
-              images?: string[];
-              providerMetadata?: Record<string, unknown>;
-            }>,
-          ): ChatMessage[] =>
+          const toProviderMessages = (promptMessages: GenerationPromptMessage[]): ChatMessage[] =>
             promptMessages.map((message) => ({
               role: message.role,
               content: message.content,
@@ -6423,6 +7240,9 @@ export async function generateRoutes(app: FastifyInstance) {
           fullResponse = "";
           fullThinking = "";
           providerThinking = "";
+          if (tailMessages.assistantPrefillInjected && assistantPrefill) {
+            writeContentChunked(assistantPrefill);
+          }
           let geminiResponseParts: unknown[] | null = null;
           let chatCompletionsReasoning: Record<string, unknown> | null = null;
           const rememberChatCompletionsReasoning = (metadata: Record<string, unknown>) => {
@@ -6449,8 +7269,7 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           }, 15_000);
 
-          try {
-            // ── LOG_LEVEL=debug or Settings -> Advanced -> Debug mode: log full prompt to server console ──
+          const logPromptSentToModel = (messages: ChatMessage[], label = "Prompt sent to model") => {
             if (isDebug || requestDebug) {
               const effModel = conn.model.toLowerCase();
               const tempSuppressed =
@@ -6460,26 +7279,35 @@ export async function generateRoutes(app: FastifyInstance) {
               const effTopP = tempSuppressed ? "N/A" : topP;
 
               debugLog(
-                "\n[debug] Prompt sent to model (%d messages):\n  Model: %s (%s)  Temp: %s  MaxTokens: %s  MaxContext: %s  TopP: %s  TopK: %s  EnableThinking: %s  ShowThoughts: %s  Effort: %s  Verbosity: %s  Stream: %s",
-                initialProviderMessages.length,
+                "\n[debug] %s (%d messages):\n  Model: %s (%s)  Temp: %s  MaxTokens: %s  MaxContext: %s  TopP: %s  TopK: %s  EnableThinking: %s  ShowThoughts: %s  Effort: %s  Verbosity: %s  Stream: %s",
+                label,
+                messages.length,
                 conn.model,
                 conn.provider,
                 effTemp,
                 effectiveMaxTokensForSend,
                 effectiveMaxContext ?? connectionMaxContext ?? "default",
                 effTopP,
-                topK || "default",
+                providerTopK ?? "default",
                 enableThinking,
                 showThoughts,
                 resolvedEffort ?? "none",
                 verbosity ?? "default",
                 input.streaming,
               );
-              for (const m of initialProviderMessages) {
-                debugLog("  [%s] %s", m.role.toUpperCase(), m.content);
+              for (const m of messages) {
+                const extras: string[] = [];
+                if (m.images?.length) extras.push(`images=${m.images.length}`);
+                if (m.tool_call_id) extras.push(`tool_call_id=${m.tool_call_id}`);
+                if (m.tool_calls?.length) extras.push(`tool_calls=${JSON.stringify(m.tool_calls)}`);
+                if (m.providerMetadata)
+                  extras.push(`providerMetadataKeys=${Object.keys(m.providerMetadata).join(",")}`);
+                debugLog("  [%s]%s %s", m.role.toUpperCase(), extras.length ? ` ${extras.join(" ")}` : "", m.content);
               }
             }
+          };
 
+          try {
             if (enableChatTools && provider.chatComplete) {
               const MAX_TOOL_ROUNDS = 5;
               let loopMessages: ChatMessage[] = initialProviderMessages;
@@ -6493,7 +7321,9 @@ export async function generateRoutes(app: FastifyInstance) {
               if (input.regenerateMessageId) {
                 encryptedReasoningCache.delete(input.chatId);
               }
-              if (!encryptedReasoningCache.has(input.chatId)) {
+              if (excludePastReasoning) {
+                encryptedReasoningCache.delete(input.chatId);
+              } else if (!encryptedReasoningCache.has(input.chatId)) {
                 for (let i = chatMessages.length - 1; i >= 0; i--) {
                   const msg = chatMessages[i]!;
                   if (msg.role === "assistant") {
@@ -6537,13 +7367,17 @@ export async function generateRoutes(app: FastifyInstance) {
                 let result;
                 try {
                   loopMessages = fitPromptForSend(loopMessages);
+                  logPromptSentToModel(
+                    loopMessages,
+                    round === 0 ? "Prompt sent to model" : `Prompt sent to model (tool round ${round + 1})`,
+                  );
                   result = await provider.chatComplete(loopMessages, {
                     model: conn.model,
                     temperature,
                     maxTokens: effectiveMaxTokensForSend,
                     maxContext: effectiveMaxContext,
                     topP,
-                    topK: topK || undefined,
+                    topK: providerTopK,
                     frequencyPenalty: frequencyPenalty || undefined,
                     presencePenalty: presencePenalty || undefined,
                     tools: toolDefs,
@@ -6553,13 +7387,18 @@ export async function generateRoutes(app: FastifyInstance) {
                     captureReasoning,
                     reasoningEffort: resolvedEffort ?? undefined,
                     verbosity: verbosity ?? undefined,
+                    serviceTier,
                     customParameters,
                     onThinking,
                     onToken: input.streaming ? onToken : undefined,
                     openrouterProvider: conn.openrouterProvider ?? undefined,
                     signal: abortController.signal,
-                    encryptedReasoningItems: encryptedReasoningCache.get(input.chatId),
-                    onEncryptedReasoning: (items) => encryptedReasoningCache.set(input.chatId, items),
+                    encryptedReasoningItems: excludePastReasoning
+                      ? undefined
+                      : encryptedReasoningCache.get(input.chatId),
+                    onEncryptedReasoning: excludePastReasoning
+                      ? undefined
+                      : (items) => encryptedReasoningCache.set(input.chatId, items),
                     onChatCompletionsReasoning: rememberChatCompletionsReasoning,
                   });
                 } catch (err: any) {
@@ -6679,13 +7518,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   // Reset per-character accumulator for final round content
                   const prevLen = fullResponse.length;
                   loopMessages = fitPromptForSend(loopMessages);
+                  logPromptSentToModel(loopMessages, "Prompt sent to model (final tool follow-up)");
                   const finalResult = await provider.chatComplete(loopMessages, {
                     model: conn.model,
                     temperature,
                     maxTokens: effectiveMaxTokensForSend,
                     maxContext: effectiveMaxContext,
                     topP,
-                    topK: topK || undefined,
+                    topK: providerTopK,
                     frequencyPenalty: frequencyPenalty || undefined,
                     presencePenalty: presencePenalty || undefined,
                     enableCaching: conn.enableCaching === "true",
@@ -6694,13 +7534,18 @@ export async function generateRoutes(app: FastifyInstance) {
                     captureReasoning,
                     reasoningEffort: resolvedEffort ?? undefined,
                     verbosity: verbosity ?? undefined,
+                    serviceTier,
                     customParameters,
                     onThinking,
                     onToken: input.streaming ? onToken : undefined,
                     openrouterProvider: conn.openrouterProvider ?? undefined,
                     signal: abortController.signal,
-                    encryptedReasoningItems: encryptedReasoningCache.get(input.chatId),
-                    onEncryptedReasoning: (items) => encryptedReasoningCache.set(input.chatId, items),
+                    encryptedReasoningItems: excludePastReasoning
+                      ? undefined
+                      : encryptedReasoningCache.get(input.chatId),
+                    onEncryptedReasoning: excludePastReasoning
+                      ? undefined
+                      : (items) => encryptedReasoningCache.set(input.chatId, items),
                     onChatCompletionsReasoning: rememberChatCompletionsReasoning,
                   });
                   if (finalResult.content && fullResponse.length === prevLen) {
@@ -6727,13 +7572,14 @@ export async function generateRoutes(app: FastifyInstance) {
                 }
               }
             } else {
+              logPromptSentToModel(initialProviderMessages);
               const gen = provider.chat(initialProviderMessages, {
                 model: conn.model,
                 temperature,
                 maxTokens: effectiveMaxTokensForSend,
                 maxContext: effectiveMaxContext,
                 topP,
-                topK: topK || undefined,
+                topK: providerTopK,
                 frequencyPenalty: frequencyPenalty || undefined,
                 presencePenalty: presencePenalty || undefined,
                 stream: input.streaming,
@@ -6743,6 +7589,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 captureReasoning,
                 reasoningEffort: resolvedEffort ?? undefined,
                 verbosity: verbosity ?? undefined,
+                serviceTier,
                 customParameters,
                 openrouterProvider: conn.openrouterProvider ?? undefined,
                 onThinking,
@@ -6750,8 +7597,10 @@ export async function generateRoutes(app: FastifyInstance) {
                   geminiResponseParts = parts;
                 },
                 signal: abortController.signal,
-                encryptedReasoningItems: encryptedReasoningCache.get(input.chatId),
-                onEncryptedReasoning: (items) => encryptedReasoningCache.set(input.chatId, items),
+                encryptedReasoningItems: excludePastReasoning ? undefined : encryptedReasoningCache.get(input.chatId),
+                onEncryptedReasoning: excludePastReasoning
+                  ? undefined
+                  : (items) => encryptedReasoningCache.set(input.chatId, items),
                 onChatCompletionsReasoning: rememberChatCompletionsReasoning,
               });
               let result = await gen.next();
@@ -6822,6 +7671,17 @@ export async function generateRoutes(app: FastifyInstance) {
             // ── Parse and strip hidden character commands ──
             let parsedCommands: CharacterCommand[] = [];
             let contentReplaced = false;
+            if (
+              tailMessages.assistantPrefillInjected &&
+              assistantPrefill &&
+              fullResponse.startsWith(assistantPrefill)
+            ) {
+              const responseAfterPrefill = fullResponse.slice(assistantPrefill.length);
+              if (responseAfterPrefill.startsWith(assistantPrefill)) {
+                fullResponse = assistantPrefill + responseAfterPrefill.slice(assistantPrefill.length);
+                contentReplaced = true;
+              }
+            }
             const promotableThinking = providerThinking.trim() || fullThinking.trim();
             // Some OpenAI-compatible providers misplace the actual assistant text
             // in reasoning/thinking fields. Conversation mode only recovers when
@@ -6868,14 +7728,44 @@ export async function generateRoutes(app: FastifyInstance) {
             if (roleplayDmCommandsEnabled) {
               const parsed = parseDirectMessageCommands(fullResponse);
               if (parsed.commands.length > 0) {
-                parsedCommands = [...parsedCommands, ...parsed.commands];
-                fullResponse = parsed.cleanContent;
+                const allCharacters = (await chars.list()) as Array<{ id: string; data?: unknown }>;
+                const executableCommands: DirectMessageCommand[] = [];
+                const skippedTargets: string[] = [];
+                let nextResponse = fullResponse;
+
+                for (const command of parsed.commands) {
+                  const target = resolveRoleplayDmTarget(command.character, charInfo, allCharacters);
+                  if (target) {
+                    executableCommands.push({
+                      ...command,
+                      resolvedCharacterId: target.id,
+                      resolvedCharacterName: target.name,
+                    });
+                    nextResponse = replaceRoleplayDmCommandText(nextResponse, command, "");
+                  } else {
+                    skippedTargets.push(command.character);
+                    nextResponse = replaceRoleplayDmCommandText(
+                      nextResponse,
+                      command,
+                      formatUnresolvedRoleplayDmFallback(command),
+                    );
+                  }
+                }
+
+                if (executableCommands.length > 0) {
+                  parsedCommands = [...parsedCommands, ...executableCommands];
+                }
+                fullResponse = nextResponse.replace(/\n{3,}/g, "\n\n").trim();
                 contentReplaced = true;
                 logger.info(
-                  "[generate] Parsed %d roleplay DM command(s): %j",
-                  parsed.commands.length,
-                  parsed.commands.map((c) => c.character),
+                  "[generate] Parsed %d executable roleplay DM command(s), skipped %d cardless target(s): %j",
+                  executableCommands.length,
+                  skippedTargets.length,
+                  executableCommands.map((c) => c.resolvedCharacterName ?? c.character),
                 );
+                for (const target of skippedTargets) {
+                  logger.warn('[generate] Skipped roleplay DM command for cardless target "%s"', target);
+                }
               }
             }
 
@@ -6953,6 +7843,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   beforeTrim.length,
                   fullResponse.length,
                 );
+              }
+            }
+
+            if (chatMode === "roleplay") {
+              const beforeRoleplayWhitespace = fullResponse;
+              fullResponse = stripSpacesBeforeLineBreaks(fullResponse).trim();
+              if (fullResponse !== beforeRoleplayWhitespace) {
+                contentReplaced = true;
               }
             }
 
@@ -7036,6 +7934,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   showThoughts: showThoughts ?? null,
                   reasoningEffort: resolvedEffort ?? reasoningEffort ?? null,
                   verbosity: verbosity ?? null,
+                  serviceTier,
                   assistantPrefill: assistantPrefill || null,
                   customParameters: Object.keys(customParameters).length > 0 ? customParameters : null,
                   tokensPrompt: usage?.promptTokens ?? null,
@@ -7207,6 +8106,9 @@ export async function generateRoutes(app: FastifyInstance) {
           });
         };
         const buildCharacterInstruction = (charId: string, charName: string) => {
+          if (chatMode !== "conversation") {
+            return groupTurnPromptEnabled ? `Respond ONLY as ${charName}.` : null;
+          }
           if (groupResponseOrder !== "manual") return `Respond ONLY as ${charName}.`;
           const latestOtherSender = latestVisibleSenderOtherThan(charId);
           return [
@@ -7243,7 +8145,9 @@ export async function generateRoutes(app: FastifyInstance) {
             const charInstruction = buildCharacterInstruction(charId, charName);
             const messagesWithInstruction = [...filterManualTargetProfileBlocks(runningMessages, charId)];
             // Add as a system message at the end (just before any trailing user message)
-            messagesWithInstruction.push({ role: "system", content: charInstruction });
+            if (charInstruction) {
+              messagesWithInstruction.push({ role: "system", content: charInstruction });
+            }
 
             const genResult = await generateForCharacter(
               charId,
@@ -7265,7 +8169,12 @@ export async function generateRoutes(app: FastifyInstance) {
             collectedOocMessages.push(...genResult.oocMessages);
 
             // Add this character's response to the running context for the next character
-            runningMessages.push({ role: "assistant", content: genResult.response });
+            runningMessages.push({
+              role: "assistant",
+              content: genResult.response,
+              contextKind: "history",
+              characterId: charId,
+            });
           }
         } else {
           // Single/merged: one generation
@@ -7310,8 +8219,12 @@ export async function generateRoutes(app: FastifyInstance) {
             const targetCharName = charInfo.find((c) => c.id === targetCharId)?.name ?? "Character";
             const charInstruction = targetCharId
               ? buildCharacterInstruction(targetCharId, targetCharName)
-              : `Respond ONLY as ${targetCharName}.`;
-            sentMessages.push({ role: "system", content: charInstruction });
+              : groupTurnPromptEnabled
+                ? `Respond ONLY as ${targetCharName}.`
+                : null;
+            if (charInstruction) {
+              sentMessages.push({ role: "system", content: charInstruction });
+            }
           }
 
           const genResult = await generateForCharacter(targetCharId, sentMessages, true);
@@ -7391,6 +8304,13 @@ export async function generateRoutes(app: FastifyInstance) {
             );
           }
 
+          const postAgentContext: AgentContext = {
+            ...agentContext,
+            mainResponse: combinedResponse,
+            preGenInjections: contextInjections,
+            parallelResults,
+          };
+
           let postResults = hasPostProcessingAgents
             ? [
                 ...(await pipeline.postGenerate(combinedResponse, {
@@ -7421,6 +8341,14 @@ export async function generateRoutes(app: FastifyInstance) {
               );
               sendAgentEvent(lorebookKeeperResult);
               postResults.push(lorebookKeeperResult);
+            }
+          }
+
+          const spotifyFallbackInputResults = postResults;
+          postResults = await applySpotifyAgentPlaybackFallbacks(postResults, resolvedAgents, postAgentContext);
+          for (let i = 0; i < postResults.length; i++) {
+            if (postResults[i] !== spotifyFallbackInputResults[i]) {
+              sendAgentEvent(postResults[i]!);
             }
           }
 
@@ -7456,8 +8384,14 @@ export async function generateRoutes(app: FastifyInstance) {
                   agentCfg.model,
                   agentCfg.toolContext,
                 );
-                sendAgentEvent(retried);
-                retryResults.push(retried);
+                const finalizedRetryResults = await applySpotifyAgentPlaybackFallbacks(
+                  [retried],
+                  resolvedAgents,
+                  retryCtx,
+                );
+                const finalizedRetry = finalizedRetryResults[0] ?? retried;
+                sendAgentEvent(finalizedRetry);
+                retryResults.push(finalizedRetry);
               } catch {
                 retryResults.push(failed);
               }
@@ -7695,15 +8629,17 @@ export async function generateRoutes(app: FastifyInstance) {
               }
             }
 
-            try {
-              await agentsStore.saveRun({
-                agentConfigId: result.agentId,
-                chatId: input.chatId,
-                messageId: resultMessageId,
-                result,
-              });
-            } catch {
-              // Non-critical — don't fail the whole generation
+            if (result.agentType !== "illustrator" && result.type !== "image_prompt") {
+              try {
+                await agentsStore.saveRun({
+                  agentConfigId: result.agentId,
+                  chatId: input.chatId,
+                  messageId: resultMessageId,
+                  result,
+                });
+              } catch {
+                // Non-critical — don't fail the whole generation
+              }
             }
 
             // Validate expression agent results — reject hallucinated expressions and unknown characters
@@ -8598,6 +9534,18 @@ export async function generateRoutes(app: FastifyInstance) {
                       logger.info(
                         `[illustrator] Generated illustration: ${(illData.reason as string)?.slice(0, 80) ?? imagePrompt.slice(0, 80)}...`,
                       );
+                      if (resultMessageId) {
+                        try {
+                          await agentsStore.saveRun({
+                            agentConfigId: result.agentId,
+                            chatId: input.chatId,
+                            messageId: resultMessageId,
+                            result,
+                          });
+                        } catch (err) {
+                          logger.warn(err, "[illustrator] Failed to persist successful illustration run");
+                        }
+                      }
                     } catch (illErr) {
                       logger.error(illErr, "[illustrator] Image generation failed");
                       reply.raw.write(
@@ -8924,7 +9872,7 @@ export async function generateRoutes(app: FastifyInstance) {
                               : `Generate a casual selfie of ${charName} based on the current conversation context.`,
                           },
                         ],
-                        { model: conn.model, temperature: 0.7, maxTokens: 8196 },
+                        { model: conn.model, temperature: 0.7, maxTokens: 8196, serviceTier },
                       );
 
                       const imagePrompt = (promptResult.content ?? "").trim();
@@ -9178,39 +10126,56 @@ export async function generateRoutes(app: FastifyInstance) {
                   // ── Roleplay DM: post into the linked conversation when available; otherwise create a DM chat ──
                   const dmCmd = command as DirectMessageCommand;
                   try {
-                    const requestedTarget = dmCmd.character.trim();
-                    const requestedKey = normalizeDmTargetName(requestedTarget);
                     const messageText = stripConversationPromptTimestamps(dmCmd.message).trim().slice(0, 4000);
-                    if (!requestedKey || !messageText) continue;
-
-                    const roleplayTarget = charInfo.find(
-                      (character) =>
-                        character.id === requestedTarget || normalizeDmTargetName(character.name) === requestedKey,
-                    );
-                    let targetCharId = roleplayTarget?.id ?? null;
-                    let targetName = roleplayTarget?.name ?? requestedTarget;
-
-                    if (!targetCharId) {
-                      const allCharsList = await chars.list();
-                      const targetChar = allCharsList.find((candidate: any) => {
-                        if (candidate.id === requestedTarget) return true;
-                        const data =
-                          typeof candidate.data === "string" ? JSON.parse(candidate.data as string) : candidate.data;
-                        const candidateName = typeof data?.name === "string" ? data.name : "";
-                        return normalizeDmTargetName(candidateName) === requestedKey;
-                      });
-                      if (targetChar) {
-                        const targetData =
-                          typeof targetChar.data === "string" ? JSON.parse(targetChar.data as string) : targetChar.data;
-                        targetCharId = targetChar.id;
-                        targetName = targetData?.name ?? requestedTarget;
-                      }
-                    }
+                    const targetCharId = dmCmd.resolvedCharacterId ?? null;
+                    const targetName = dmCmd.resolvedCharacterName ?? dmCmd.character.trim();
 
                     if (!targetCharId) {
                       logger.warn('[commands] DM target character "%s" not found', dmCmd.character);
                       continue;
                     }
+                    if (!messageText) continue;
+
+                    const sourceUserMessage = [...allChatMessages]
+                      .reverse()
+                      .find((m: any) => m.role === "user" && !isMessageHiddenFromAI(m));
+                    const sourceUserText = sourceUserMessage
+                      ? stripConversationPromptTimestamps(String(sourceUserMessage.content ?? ""))
+                          .trim()
+                          .slice(0, 4000)
+                      : "";
+                    const ensureSourceUserMessage = async (targetChatId: string, dedupePerTarget: boolean) => {
+                      if (!sourceUserMessage?.id || !sourceUserText) return null;
+
+                      const targetMessages = await chats.listMessages(targetChatId);
+                      const alreadyMirrored = targetMessages.some((m: any) => {
+                        const extra = parseExtra(m.extra) as Record<string, unknown>;
+                        if (
+                          extra.roleplayDmSourceChatId !== input.chatId ||
+                          extra.roleplayDmSourceUserMessageId !== sourceUserMessage.id
+                        ) {
+                          return false;
+                        }
+                        return !dedupePerTarget || extra.roleplayDmTargetCharacterId === targetCharId;
+                      });
+                      if (alreadyMirrored) return null;
+
+                      const userMsg = await chats.createMessage({
+                        chatId: targetChatId,
+                        role: "user",
+                        characterId: null,
+                        content: sourceUserText,
+                      });
+                      if (userMsg?.id) {
+                        await chats.updateMessageExtra(userMsg.id, {
+                          roleplayDmSourceChatId: input.chatId,
+                          roleplayDmSourceUserMessageId: sourceUserMessage.id,
+                          roleplayDmTargetCharacterId: targetCharId,
+                        });
+                      }
+                      recordUserActivity(targetChatId);
+                      return userMsg;
+                    };
 
                     const freshChat = await chats.getById(input.chatId);
                     const connectedId = freshChat?.connectedChatId as string | null;
@@ -9218,6 +10183,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     const linkedConversationId = connectedChat?.mode === "conversation" ? connectedChat.id : null;
 
                     if (linkedConversationId) {
+                      const sourceUserDmMessage = await ensureSourceUserMessage(linkedConversationId, false);
                       const dmMessage = await chats.createMessage({
                         chatId: linkedConversationId,
                         role: "assistant",
@@ -9236,6 +10202,8 @@ export async function generateRoutes(app: FastifyInstance) {
                             characterName: targetName,
                             sourceChatId: input.chatId,
                             sourceMessageId: messageId || null,
+                            sourceUserMessageId: sourceUserMessage?.id ?? null,
+                            userMessageId: sourceUserDmMessage?.id ?? null,
                             messageId: dmMessage?.id ?? null,
                           },
                         })}\n\n`,
@@ -9249,49 +10217,72 @@ export async function generateRoutes(app: FastifyInstance) {
                       continue;
                     }
 
-                    const newChat = await chats.create({
-                      name: `DM with ${targetName}`,
-                      mode: "conversation",
-                      characterIds: [targetCharId],
-                      groupId: null,
-                      personaId: (chat.personaId as string | null) ?? null,
-                      promptPresetId: null,
-                      connectionId: (chat.connectionId as string | null) ?? null,
+                    const allChatsList = await chats.list();
+                    const existingDmChat = allChatsList.find((candidate: any) => {
+                      if (candidate.mode !== "conversation" || candidate.id === input.chatId) return false;
+                      const meta = parseExtra(candidate.metadata) as Record<string, unknown>;
+                      if (meta.dmOriginChatId !== input.chatId) return false;
+                      if (typeof meta.dmTargetCharacterId === "string" && meta.dmTargetCharacterId !== targetCharId) {
+                        return false;
+                      }
+                      return parseChatCharacterIdsForDm(candidate.characterIds).includes(targetCharId);
                     });
-                    if (!newChat) throw new Error("Failed to create DM conversation");
 
-                    await chats.patchMetadata(newChat.id, {
+                    const targetChat =
+                      existingDmChat ??
+                      (await chats.create({
+                        name: `DM with ${targetName}`,
+                        mode: "conversation",
+                        characterIds: [targetCharId],
+                        groupId: null,
+                        personaId: (chat.personaId as string | null) ?? null,
+                        promptPresetId: null,
+                        connectionId: (chat.connectionId as string | null) ?? null,
+                      }));
+                    if (!targetChat) throw new Error("Failed to create DM conversation");
+
+                    await chats.patchMetadata(targetChat.id, {
                       dmOriginChatId: input.chatId,
                       dmOriginChatName: chat.name ?? null,
                       dmOriginMessageId: messageId || null,
+                      dmSourceUserMessageId: sourceUserMessage?.id ?? null,
+                      dmTargetCharacterId: targetCharId,
+                      roleplayDmThread: true,
                     });
+                    const sourceUserDmMessage = await ensureSourceUserMessage(targetChat.id, true);
                     const dmMessage = await chats.createMessage({
-                      chatId: newChat.id,
+                      chatId: targetChat.id,
                       role: "assistant",
                       characterId: targetCharId,
                       content: messageText,
                     });
-                    recordAssistantActivity(newChat.id, targetCharId);
+                    recordAssistantActivity(targetChat.id, targetCharId);
+
+                    const createdNewChat = !existingDmChat;
 
                     reply.raw.write(
                       `data: ${JSON.stringify({
                         type: "assistant_action",
                         data: {
-                          action: "chat_created",
-                          chatId: newChat.id,
-                          chatName: newChat.name ?? `DM with ${targetName}`,
+                          action: createdNewChat ? "chat_created" : "dm_posted",
+                          chatId: targetChat.id,
+                          chatName: targetChat.name ?? `DM with ${targetName}`,
                           mode: "conversation",
                           characterName: targetName,
                           sourceChatId: input.chatId,
                           sourceMessageId: messageId || null,
+                          sourceUserMessageId: sourceUserMessage?.id ?? null,
+                          userMessageId: sourceUserDmMessage?.id ?? null,
                           messageId: dmMessage?.id ?? null,
                         },
                       })}\n\n`,
                     );
                     logger.info(
-                      '[commands] Roleplay DM conversation created with "%s" (%s) from chat %s',
+                      createdNewChat
+                        ? '[commands] Roleplay DM conversation created with "%s" (%s) from chat %s'
+                        : '[commands] Roleplay DM from "%s" reused conversation %s from chat %s',
                       targetName,
-                      newChat.id,
+                      targetChat.id,
                       input.chatId,
                     );
                   } catch (err) {
@@ -9995,9 +10986,10 @@ export async function generateRoutes(app: FastifyInstance) {
           // the iteration-0 block above only runs on the original history.
           const lastResponseText = allResponses.join("\n\n");
           if (lastResponseText) {
-            const newMariMsg: { role: "assistant"; content: string } = {
+            const newMariMsg: GenerationPromptMessage = {
               role: "assistant",
               content: lastResponseText,
+              characterId: null,
             };
             applyRegexScriptsToPromptMessages([newMariMsg], await regexScriptsStore.list(), {
               resolveMacros: (value) => resolveMacros(value, promptMacroContext, { trimResult: false }),

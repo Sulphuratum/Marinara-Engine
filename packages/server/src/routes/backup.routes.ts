@@ -1846,6 +1846,7 @@ export async function backupRoutes(app: FastifyInstance) {
                   tokenBudget: lb.tokenBudget,
                   recursiveScanning: lb.recursiveScanning,
                   maxRecursionDepth: lb.maxRecursionDepth,
+                  excludeFromVectorization: lb.excludeFromVectorization ?? false,
                   enabled: lb.enabled ?? true,
                   characterId: lb.characterId ?? null,
                   characterIds: Array.isArray(lb.characterIds)

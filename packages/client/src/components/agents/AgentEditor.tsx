@@ -302,7 +302,7 @@ export function AgentEditor() {
       setLocalSpotifyClientId(settings.spotifyClientId ?? "");
       setLocalSourceLorebookIds(settings.sourceLorebookIds ?? []);
       setLocalUseChatActiveLorebooks(
-        (settings.useChatActiveLorebooks as boolean | undefined) ?? (defaultSettings.useChatActiveLorebooks === true),
+        (settings.useChatActiveLorebooks as boolean | undefined) ?? defaultSettings.useChatActiveLorebooks === true,
       );
       setLocalSourceFileIds(settings.sourceFileIds ?? []);
       setLocalAutoGenerateAvatars(settings.autoGenerateAvatars ?? false);
@@ -382,6 +382,9 @@ export function AgentEditor() {
 
   // Narrative Director agent — run interval setting
   const isDirectorAgent = agentDetailId === "director" || dbConfig?.type === "director";
+
+  // Illustrator agent — run interval setting
+  const isIllustratorAgent = agentDetailId === "illustrator" || dbConfig?.type === "illustrator";
 
   // Chat Summary agent — uses "Triggers After" instead of context size
   const isChatSummaryAgent = agentDetailId === "chat-summary" || dbConfig?.type === "chat-summary";
@@ -1370,10 +1373,7 @@ export function AgentEditor() {
                         setLocalActivationScanDepth(
                           v === ""
                             ? ""
-                            : Math.max(
-                                1,
-                                Math.min(MAX_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH, parseInt(v, 10) || 1),
-                              ),
+                            : Math.max(1, Math.min(MAX_CUSTOM_AGENT_ACTIVATION_SCAN_DEPTH, parseInt(v, 10) || 1)),
                         );
                         markDirty();
                       }}
@@ -1448,12 +1448,16 @@ export function AgentEditor() {
             </FieldGroup>
           )}
 
-          {/* ── Run Interval (Narrative Director) ── */}
-          {isDirectorAgent && (
+          {/* ── Run Interval (Narrative Director / Illustrator) ── */}
+          {(isDirectorAgent || isIllustratorAgent) && (
             <FieldGroup
               label="Run Interval"
               icon={<Clock size="0.875rem" className="text-[var(--primary)]" />}
-              help="How many assistant messages between each Narrative Director intervention. Higher values make the director less aggressive. Set to 1 to run every message."
+              help={
+                isIllustratorAgent
+                  ? "How many assistant messages between allowed Illustrator image generations. Set to 1 to allow it every message."
+                  : "How many assistant messages between each Narrative Director intervention. Higher values make the director less aggressive. Set to 1 to run every message."
+              }
             >
               <div className="flex items-center gap-3">
                 <input
@@ -1472,7 +1476,9 @@ export function AgentEditor() {
                 <span className="text-[0.6875rem] text-[var(--muted-foreground)]">messages</span>
               </div>
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                The director only jumps in once every N assistant messages instead of steering every reply. Default: 5.
+                {isIllustratorAgent
+                  ? "The Illustrator can only create a new image once every N assistant messages. If it decides not to draw, the timer does not reset. Default: 5."
+                  : "The director only jumps in once every N assistant messages instead of steering every reply. Default: 5."}
               </p>
             </FieldGroup>
           )}
@@ -1823,9 +1829,7 @@ export function AgentEditor() {
                 <button
                   type="button"
                   aria-pressed={localUseChatActiveLorebooks}
-                  aria-label={`Use this chat's active lorebooks: ${
-                    localUseChatActiveLorebooks ? "on" : "off"
-                  }`}
+                  aria-label={`Use this chat's active lorebooks: ${localUseChatActiveLorebooks ? "on" : "off"}`}
                   onClick={() => {
                     setLocalUseChatActiveLorebooks((value) => !value);
                     markDirty();
@@ -1853,9 +1857,7 @@ export function AgentEditor() {
                 {/* ── Lorebooks ── */}
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
-                    <p className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
-                      Fixed source override
-                    </p>
+                    <p className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">Fixed source override</p>
                     {/* Description coverage badge — Knowledge Router only.
                         Tells the user how many entries in their selected source lorebooks
                         have descriptions filled in. Routing precision drops sharply when

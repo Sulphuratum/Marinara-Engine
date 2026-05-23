@@ -9,7 +9,7 @@ import { SpeechToTextButton } from "../ui/SpeechToTextButton";
 import { useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { translateDraftText } from "../../lib/draft-translation";
-import type { DiceRollResult } from "@marinara-engine/shared";
+import { formatTextQuotes, type DiceRollResult } from "@marinara-engine/shared";
 
 interface Attachment {
   type: string;
@@ -110,6 +110,7 @@ export function GameInput({
 }: GameInputProps) {
   const enterToSend = useUIStore((s) => s.enterToSendGame);
   const speechToTextEnabled = useUIStore((s) => s.speechToTextEnabled);
+  const quoteFormat = useUIStore((s) => s.quoteFormat);
   const storageKey = draftKey ? `game-input-draft:${draftKey}` : null;
   const [text, setText] = useState(() => readGameInputDraft(storageKey));
   const [showDice, setShowDice] = useState(false);
@@ -181,10 +182,11 @@ export function GameInput({
   /** Update text state and persist draft */
   const updateText = useCallback(
     (value: string) => {
-      setText(value);
-      writeGameInputDraft(storageKey, value);
+      const formatted = formatTextQuotes(value, quoteFormat);
+      setText(formatted);
+      writeGameInputDraft(storageKey, formatted);
     },
-    [storageKey],
+    [quoteFormat, storageKey],
   );
 
   /** Clear the persisted draft */
@@ -199,7 +201,7 @@ export function GameInput({
   }, []);
 
   const handleSend = async () => {
-    const trimmed = text.trim();
+    const trimmed = formatTextQuotes(text.trim(), quoteFormat);
     const commitPendingMove = !!pendingMoveLabel && addressMode === "scene";
     const hasTurnContent = trimmed.length > 0 || attachments.length > 0 || commitPendingMove || !!queuedDice;
     if (!hasTurnContent || disabled || rollingQueuedDice) return;
@@ -526,7 +528,11 @@ export function GameInput({
           ref={inputRef}
           value={text}
           onChange={(e) => {
+            const cursor = e.target.selectionStart;
             updateText(e.target.value);
+            requestAnimationFrame(() => {
+              inputRef.current?.setSelectionRange(cursor, cursor);
+            });
             // Auto-grow: reset height then set to scrollHeight
             const el = e.target;
             el.style.height = "auto";
@@ -637,7 +643,12 @@ export function GameInput({
         )}
 
         {speechToTextEnabled && (
-          <SpeechToTextButton disabled={disabled} onTranscript={handleSpeechTranscript} iconSize={18} />
+          <SpeechToTextButton
+            disabled={disabled}
+            onTranscript={handleSpeechTranscript}
+            className="!h-8 !w-8"
+            iconSize={18}
+          />
         )}
 
         <button

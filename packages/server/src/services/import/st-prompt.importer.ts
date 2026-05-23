@@ -100,6 +100,7 @@ export async function importSTPreset(
         presencePenalty: clamp(preset.presence_penalty ?? 0, -2, 2),
         reasoningEffort: toReasoningEffort(preset.reasoning_effort),
         verbosity: null,
+        serviceTier: null,
         assistantPrefill: "",
         customParameters: {},
         squashSystemMessages: preset.squash_system_messages ?? true,
