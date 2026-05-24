@@ -521,16 +521,29 @@ fn legacy_profile_asset_for_path(
     let relative = legacy_profile_asset_relative_path(value)?;
     // Profile imports stage the asset files under a temporary `staging_root`
     // and only move them into `state.data_dir` at install time, which happens
-    // AFTER row normalization. Check the staging dir too so legacy paths
-    // (e.g. `/api/avatars/file/<hash>.png`) get rewritten to the new relative
-    // form during the same pass, instead of being left as broken URLs.
-    let staged_present = staging_root
-        .map(|root| root.join(&relative).is_file())
+    // AFTER row normalization. Read from whichever location currently holds
+    // the file so legacy paths (e.g. `/api/avatars/file/<hash>.png`) get
+    // rewritten - and, for avatars, embedded as data URLs - during this pass
+    // instead of being left as broken URLs.
+    let staged_path = staging_root.map(|root| root.join(&relative));
+    let staged_present = staged_path
+        .as_ref()
+        .map(|path| path.is_file())
         .unwrap_or(false);
-    let absolute = state.data_dir.join(&relative);
-    if !staged_present && !absolute.is_file() {
+    let installed_path = state.data_dir.join(&relative);
+    let read_path = if staged_present {
+        staged_path
+            .as_ref()
+            .expect("staged_present implies staging_root is Some")
+            .clone()
+    } else if installed_path.is_file() {
+        installed_path.clone()
+    } else {
         return None;
-    }
+    };
+    // `absolute` is the post-install location stored on the row, so the
+    // reference stays valid after the staging transaction commits.
+    let absolute = installed_path;
     let filename = relative
         .file_name()
         .map(|value| value.to_string_lossy().to_string())
@@ -538,7 +551,10 @@ fn legacy_profile_asset_for_path(
     let kind = legacy_profile_asset_kind(&relative);
     let value = match kind {
         LegacyProfileAssetKind::Avatar | LegacyProfileAssetKind::FileDataUrl => {
-            data_url_from_file(&absolute)?
+            // Read from `read_path` (staging or installed, whichever holds the
+            // bytes right now) - avatars are inlined as data URLs at this
+            // point, so the bytes need to actually be available.
+            data_url_from_file(&read_path)?
         }
         LegacyProfileAssetKind::Background => managed_asset_url(
             "marinara-background:",
