@@ -495,7 +495,14 @@ async function fetchProviderVoices(cfg: TTSConfig): Promise<TTSVoicesResponse> {
     return voices.length > 0 ? responseFromVoiceOptions(cfg.source, voices, true) : fallbackVoices(cfg.source);
   }
 
-  const res = await safeFetch(`${base}/audio/voices`, {
+  // Include the configured model as a query param so OpenAI-compatible servers
+  // that host multiple TTS models (e.g. mlx-audio) can return the right voice
+  // catalog. Vanilla OpenAI ignores extra query params.
+  const voicesUrl = new URL(`${base}/audio/voices`);
+  const modelHint = cfg.model?.trim();
+  if (modelHint) voicesUrl.searchParams.set("model", modelHint);
+
+  const res = await safeFetch(voicesUrl, {
     headers: openAiHeaders(cfg.apiKey),
     signal: AbortSignal.timeout(10_000),
     policy: {
