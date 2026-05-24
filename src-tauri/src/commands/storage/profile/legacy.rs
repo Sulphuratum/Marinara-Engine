@@ -1,7 +1,8 @@
 use super::super::{
     game_state_snapshots,
     shared::{
-        materialize_message_swipe_fields, non_negative_i64_value, normalize_legacy_text_array_fields,
+        materialize_message_swipe_fields, non_negative_i64_value,
+        normalize_legacy_text_array_fields, string_array_from_value,
     },
 };
 use super::assets::{normalize_legacy_profile_asset_paths, restore_legacy_profile_json_assets};
@@ -146,39 +147,48 @@ fn add_legacy_lorebook_links(rows: &mut [Value], tables: &Map<String, Value>) {
         let Some(lorebook_id) = object.get("id").and_then(Value::as_str) else {
             continue;
         };
-        let mut character_ids =
+        let mut linked_character_ids =
             linked_ids(&character_links, "lorebookId", lorebook_id, "characterId");
-        let mut persona_ids = linked_ids(&persona_links, "lorebookId", lorebook_id, "personaId");
+        let mut linked_persona_ids =
+            linked_ids(&persona_links, "lorebookId", lorebook_id, "personaId");
         if let Some(character_id) = object
             .get("characterId")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         {
-            push_unique(&mut character_ids, character_id);
+            push_unique(&mut linked_character_ids, character_id);
         }
         if let Some(persona_id) = object
             .get("personaId")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         {
-            push_unique(&mut persona_ids, persona_id);
+            push_unique(&mut linked_persona_ids, persona_id);
         }
-        object
-            .entry("characterIds".to_string())
-            .or_insert_with(|| json!(character_ids));
-        object
-            .entry("personaIds".to_string())
-            .or_insert_with(|| json!(persona_ids));
-        // Pre-refactor stored `tags`/`characterIds`/`personaIds` as TEXT
-        // columns (JSON-stringified arrays). The refactor lorebook editor
-        // expects real arrays — without this normalize the editor crashes
-        // on `formTags.map is not a function`. The junction-table paths above
-        // emit real arrays; this catches any text-encoded values that came in
-        // directly on the lorebook row.
+        // Normalize first - pre-refactor stored `tags`/`characterIds`/`personaIds`
+        // as TEXT columns (JSON-stringified arrays). Without this the lorebook
+        // editor crashes on `formTags.map is not a function`, and the junction
+        // links computed above would be discarded by `or_insert_with` whenever
+        // the row carried a text-encoded `"[]"` placeholder.
         normalize_legacy_text_array_fields(
             row,
             &["tags", "characterIds", "personaIds"],
         );
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        // Then union the (now array-shaped) row values with the link-table
+        // results so neither source is dropped.
+        let mut merged_character_ids = string_array_from_value(object.get("characterIds"));
+        for id in linked_character_ids {
+            push_unique(&mut merged_character_ids, &id);
+        }
+        object.insert("characterIds".to_string(), json!(merged_character_ids));
+        let mut merged_persona_ids = string_array_from_value(object.get("personaIds"));
+        for id in linked_persona_ids {
+            push_unique(&mut merged_persona_ids, &id);
+        }
+        object.insert("personaIds".to_string(), json!(merged_persona_ids));
     }
 }
 

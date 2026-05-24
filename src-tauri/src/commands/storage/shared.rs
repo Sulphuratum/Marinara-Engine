@@ -432,12 +432,16 @@ pub(crate) fn normalize_legacy_text_array_fields(record: &mut Value, fields: &[&
         if entry.is_array() {
             continue;
         }
+        // String -> parse as JSON array, fall back to empty.
+        // Anything else (null, number, bool, object) -> empty array. Pre-refactor
+        // should only emit array or text-encoded array here; any other shape is a
+        // malformed legacy value that must not reach the editor as-is.
         if let Some(raw) = entry.as_str() {
             *entry = serde_json::from_str::<Value>(raw)
                 .ok()
                 .filter(Value::is_array)
                 .unwrap_or_else(|| json!([]));
-        } else if entry.is_null() {
+        } else {
             *entry = json!([]);
         }
     }
