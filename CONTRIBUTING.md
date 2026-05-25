@@ -94,7 +94,7 @@ pnpm typecheck
 pnpm build
 pnpm check:architecture
 pnpm check:docs
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml --workspace
 pnpm check
 ```
 
@@ -102,12 +102,12 @@ Use these as a guide:
 
 - TypeScript, React, feature, or engine changes: `pnpm typecheck`.
 - Import graph, dependency boundaries, or bundling changes: `pnpm check:architecture` and usually `pnpm build`.
-- Rust commands, capability crates, provider transport, storage, imports, assets, native integrations, or hostable runtime changes: `cargo check --manifest-path src-tauri/Cargo.toml`.
+- Rust commands, capability crates, provider transport, storage, imports, assets, native integrations, or hostable runtime changes: `cargo check --manifest-path src-tauri/Cargo.toml --workspace`.
 - Docs, templates, skills, or agent guidance: `pnpm check:docs`.
 - Visible UI behavior: run the app and manually verify the workflow. Use Playwright or screenshots when the change is visual or flow-sensitive.
 - Remote runtime behavior: run `marinara-server`, check `/health`, configure the app's Remote Runtime URL, and exercise the supported shared API path when practical.
 
-CI also runs lint, tests, build, size checks, Rust clippy, Rust tests, and browser smoke checks. Local validation should still describe exactly what was run and what remains unverified.
+CI also runs lint, tests, build, size checks, Rust clippy, Rust tests, and the Browser Smoke and Performance job. Local validation should still describe exactly what was run and what remains unverified.
 
 ## Pull Requests
 

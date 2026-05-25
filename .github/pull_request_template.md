@@ -50,7 +50,7 @@ Pressure points touched:
 - [ ] `pnpm build` passes locally
 - [ ] `pnpm check:architecture` passes locally
 - [ ] `pnpm check:docs` passes locally
-- [ ] `cargo check --manifest-path src-tauri/Cargo.toml` passes locally
+- [ ] `cargo check --manifest-path src-tauri/Cargo.toml --workspace` passes locally
 - [ ] Rust clippy/tests were run for Rust behavior changes
 - [ ] Browser or Tauri app manual verification completed
 - [ ] Playwright, screenshot, or recording evidence added for UI changes
