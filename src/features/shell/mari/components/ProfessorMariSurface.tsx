@@ -1,18 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Activity, AlertTriangle, Check, CheckCircle2, ChevronUp, CircleUser, FileText, Link, Plus, Send, Terminal, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronUp,
+  CircleUser,
+  FileText,
+  Link,
+  Paperclip,
+  Send,
+  Sparkles,
+  Terminal,
+  Wrench,
+  X,
+} from "lucide-react";
 import { runProfessorMariEntry, type MariMessage, type MariTraceEvent } from "../../../../engine/mari/mari-entry";
 import { mariApi } from "../../../../shared/api/mari-api";
 import { useConnections } from "../../../catalog/connections/index";
 import { usePersonas } from "../../../catalog/characters/index";
-import { ConversationMessage } from "../../../modes/conversation/index";
-import type { CharacterMap, PersonaInfo } from "../../../modes/shared/chat-ui/types";
-import type { Message } from "../../../../engine/contracts/types/chat";
 import { filterLanguageGenerationConnections } from "../../../../shared/lib/connection-filters";
 import { cn, getAvatarCropStyle, parseAvatarCropJson } from "../../../../shared/lib/utils";
 import { useUIStore } from "../../../../shared/stores/ui.store";
 
 const MARI_AVATAR_URL = "/sprites/mari/Mari_profile.png";
-const MARI_CHARACTER_ID = "__professor_mari_shell__";
+const MARI_THINKING_URL = "/sprites/mari/Mari_thinking.png";
+const MARI_WAVE_URL = "/sprites/mari/Mari_wave.png";
+const MARI_WORKING_URL = "/sprites/mari/Mari_point_down_left.png";
 
 type MariAttachment = {
   id: string;
@@ -41,6 +53,8 @@ type MariPersona = {
   appearance?: string | null;
 };
 
+type MariOptionPanel = "connections" | "personas";
+
 function newId(prefix: string) {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -61,23 +75,9 @@ function getDayKey(value: string) {
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-function toConversationMessage(message: MariMessage): Message {
-  return {
-    id: message.id,
-    chatId: "professor-mari",
-    role: message.role,
-    characterId: message.role === "assistant" ? MARI_CHARACTER_ID : null,
-    content: message.content,
-    activeSwipeIndex: 0,
-    swipeCount: 1,
-    createdAt: message.createdAt,
-    extra: {
-      displayText: null,
-      isGenerated: message.role === "assistant",
-      tokenCount: null,
-      generationInfo: null,
-    },
-  };
+function formatTime(value: string) {
+  const date = new Date(value);
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function formatErrorDetails(error: unknown) {
@@ -101,9 +101,7 @@ export function ProfessorMariSurface() {
   const [attachments, setAttachments] = useState<MariAttachment[]>([]);
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | null>(null);
-  const [connectionMenuOpen, setConnectionMenuOpen] = useState(false);
-  const [personaMenuOpen, setPersonaMenuOpen] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [optionPanel, setOptionPanel] = useState<MariOptionPanel | null>(null);
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendErrorDetails, setSendErrorDetails] = useState<string | null>(null);
@@ -111,6 +109,9 @@ export function ProfessorMariSurface() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLElement>(null);
+  const spriteMeasureRef = useRef<HTMLDivElement>(null);
+  const [spriteSafeInset, setSpriteSafeInset] = useState(0);
   const canSend = (draft.trim().length > 0 || attachments.length > 0) && !sending;
   const connections = useMemo(
     () =>
@@ -125,49 +126,72 @@ export function ProfessorMariSurface() {
   );
   const selectedConnection = connections.find((connection) => connection.id === selectedConnectionId) ?? null;
   const selectedPersona = personas.find((persona) => persona.id === selectedPersonaId) ?? null;
+  const hasToolActivity = liveTrace.some((event) => event.type === "tool_result" || !!event.tool || (Array.isArray(event.toolCalls) && event.toolCalls.length > 0));
+  const mariStage = sendError
+    ? { src: MARI_THINKING_URL, mood: "thinking" as const }
+    : sending
+      ? hasToolActivity
+        ? { src: MARI_WORKING_URL, mood: "working" as const }
+        : { src: MARI_THINKING_URL, mood: "thinking" as const }
+      : { src: MARI_WAVE_URL, mood: "idle" as const };
   const gradientStyle = useMemo(() => {
     const gradient = convoGradient[theme];
     const isDefaultDark = convoGradient.dark.from === "#0a0a0e" && convoGradient.dark.to === "#1c2133";
     const isDefaultLight = convoGradient.light.from === "#f2eff7" && convoGradient.light.to === "#eae6f0";
     if ((theme === "dark" && isDefaultDark) || (theme === "light" && isDefaultLight)) {
-      return { background: "var(--secondary)" };
+      return {
+        background:
+          "radial-gradient(circle at 20% 0%, color-mix(in oklab, var(--primary) 12%, transparent), transparent 22rem), var(--secondary)",
+      };
     }
-    return { background: `linear-gradient(135deg, ${gradient.from}, ${gradient.to})` };
-  }, [convoGradient, theme]);
-  const characterMap: CharacterMap = useMemo(
-    () =>
-      new Map([
-        [
-          MARI_CHARACTER_ID,
-          {
-            name: "Professor Mari",
-            avatarUrl: MARI_AVATAR_URL,
-            conversationStatus: "online",
-          },
-        ],
-      ]),
-    [],
-  );
-  const personaInfo: PersonaInfo | undefined = useMemo(() => {
-    if (!selectedPersona) return undefined;
     return {
-      name: selectedPersona.name,
-      description: selectedPersona.description ?? undefined,
-      avatarUrl: selectedPersona.avatarPath ?? undefined,
-      avatarCrop: parseAvatarCropJson(selectedPersona.avatarCrop),
+      background: `radial-gradient(circle at 20% 0%, color-mix(in oklab, var(--primary) 14%, transparent), transparent 22rem), linear-gradient(135deg, ${gradient.from}, ${gradient.to})`,
     };
-  }, [selectedPersona]);
-  const conversationMessages = useMemo(() => messages.map(toConversationMessage), [messages]);
+  }, [convoGradient, theme]);
+  const surfaceStyle = useMemo(() => {
+    const bubbleOverlap = Math.min(spriteSafeInset * 0.28, 48);
+    return {
+      ...gradientStyle,
+      "--mari-sprite-safe": `${spriteSafeInset}px`,
+      "--mari-chat-gutter": `${Math.max(0, spriteSafeInset - bubbleOverlap)}px`,
+      "--mari-bubble-overlap": `${bubbleOverlap}px`,
+    } as CSSProperties;
+  }, [gradientStyle, spriteSafeInset]);
+
+  useEffect(() => {
+    const updateSpriteSafeInset = () => {
+      const surfaceWidth = surfaceRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const spriteWidth = spriteMeasureRef.current?.getBoundingClientRect().width ?? 0;
+      const roomFactor = Math.max(0, Math.min(1, (surfaceWidth - 520) / 320));
+      const visualOverlap = Math.min(spriteWidth * 0.22, 56);
+      const nextInset = Math.max(0, Math.round((spriteWidth - visualOverlap) * roomFactor));
+      setSpriteSafeInset((current) => (Math.abs(current - nextInset) > 1 ? nextInset : current));
+    };
+
+    updateSpriteSafeInset();
+    window.addEventListener("resize", updateSpriteSafeInset);
+    const observers: ResizeObserver[] = [];
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(updateSpriteSafeInset);
+      if (surfaceRef.current) observer.observe(surfaceRef.current);
+      if (spriteMeasureRef.current) observer.observe(spriteMeasureRef.current);
+      observers.push(observer);
+    }
+    return () => {
+      window.removeEventListener("resize", updateSpriteSafeInset);
+      observers.forEach((observer) => observer.disconnect());
+    };
+  }, [mariStage.src]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length]);
+  }, [messages.length, liveTrace.length]);
 
   useEffect(() => {
     const input = inputRef.current;
     if (!input) return;
     input.style.height = "0px";
-    input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+    input.style.height = `${Math.min(input.scrollHeight, 148)}px`;
   }, [draft]);
 
   const readFiles = async (files: FileList | null) => {
@@ -218,6 +242,7 @@ export function ProfessorMariSurface() {
     setSendErrorDetails(null);
     setLiveTrace([]);
     setSending(true);
+    setOptionPanel(null);
     requestAnimationFrame(() => inputRef.current?.focus());
     let response;
     try {
@@ -276,212 +301,67 @@ export function ProfessorMariSurface() {
   };
 
   return (
-    <section className="mari-chat-area relative flex h-full flex-col overflow-hidden" style={gradientStyle}>
-      <div className="mari-messages-scroll flex-1 overflow-y-auto overflow-x-hidden">
-        <div className="sticky top-0 z-20 flex items-center justify-between px-4 py-2">
-          <div className="flex items-center gap-2 rounded-lg bg-[var(--card)]/80 px-2.5 py-1.5 shadow-sm backdrop-blur-sm dark:bg-black/30">
-            <div className="relative shrink-0">
-              <span className="relative block h-5 w-5 overflow-hidden rounded-full">
-                <img src={MARI_AVATAR_URL} alt="" className="h-full w-full object-cover" draggable={false} />
-              </span>
-              <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-emerald-400 ring-[1.5px] ring-[var(--border)]" />
-            </div>
-            <span className="text-[0.75rem] font-medium text-[var(--foreground)]/90">Professor Mari</span>
-          </div>
-          <div />
-        </div>
+    <section ref={surfaceRef} className="mari-chat-area relative flex h-full flex-col overflow-hidden text-[var(--foreground)]" style={surfaceStyle}>
+      <div className="pointer-events-none absolute inset-0 opacity-[0.045] [background-image:linear-gradient(var(--foreground)_1px,transparent_1px),linear-gradient(90deg,var(--foreground)_1px,transparent_1px)] [background-size:26px_26px]" />
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-[var(--primary)]/10 to-transparent" />
+      <MariStageSprite src={mariStage.src} mood={mariStage.mood} measureRef={spriteMeasureRef} />
 
-        <div className="px-0 pb-4 pt-2">
-          {messages.length === 0 ? (
-            <div className="px-4 pt-2">
-              <p className="text-xs text-[var(--muted-foreground)]">
-                This is the start of your conversation with{" "}
-                <span className="font-medium text-[var(--foreground)]">Professor Mari</span>.
-              </p>
-            </div>
-          ) : (
-            conversationMessages.map((message, index) => {
-              const previous = conversationMessages[index - 1];
-              const showSeparator = !previous || getDayKey(previous.createdAt) !== getDayKey(message.createdAt);
-              const isGrouped =
-                !!previous &&
-                previous.role === message.role &&
-                previous.characterId === message.characterId &&
-                getDayKey(previous.createdAt) === getDayKey(message.createdAt) &&
-                new Date(message.createdAt).getTime() - new Date(previous.createdAt).getTime() <= 5 * 60 * 1000;
-              return (
-                <div key={message.id}>
-                  {showSeparator && (
-                    <div className="relative my-4 flex items-center px-4">
-                      <div className="flex-1 border-t border-[var(--border)]/40" />
-                      <span className="mx-4 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
-                        {formatDaySeparator(message.createdAt)}
-                      </span>
-                      <div className="flex-1 border-t border-[var(--border)]/40" />
-                    </div>
-                  )}
-                  <ConversationMessage
-                    message={message}
-                    isStreaming={false}
-                    isGrouped={isGrouped}
-                    hideActions
-                    characterMap={characterMap}
-                    personaInfo={personaInfo}
-                    chatCharacterIds={[MARI_CHARACTER_ID]}
-                    messageIndex={index + 1}
-                    messageOrderIndex={index}
-                  />
-                  {messages[index]?.role === "assistant" && messages[index]?.trace?.length ? (
-                    <MariTracePanel events={messages[index].trace ?? []} />
-                  ) : null}
-                </div>
-              );
-            })
-          )}
-          {sending && <MariWorkingTrace events={liveTrace} />}
-          {sendError && (
-            <div className="px-4 py-2 text-xs text-red-500">
-              <div>{sendError}</div>
-              {sendErrorDetails && (
-                <details className="mt-2 max-w-3xl rounded-md border border-red-500/20 bg-red-950/10 p-2 text-[0.6875rem] text-red-400">
-                  <summary className="cursor-pointer font-medium">Debug details</summary>
-                  <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words">{sendErrorDetails}</pre>
-                </details>
-              )}
-            </div>
-          )}
-          <div ref={messagesEndRef} className="h-1" />
-        </div>
+      <div className="mari-messages-scroll relative z-10 flex-1 overflow-y-auto overflow-x-hidden">
+        <main className="relative flex min-h-full w-full flex-col px-4 pb-4 pt-4 sm:px-6 sm:pt-5 lg:px-8">
+          <div className="flex-1 space-y-3 pb-32 sm:pb-40" style={{ width: "calc(100% - var(--mari-chat-gutter))", maxWidth: "100%" }}>
+            <MariConversation messages={messages} persona={selectedPersona} />
+            {sending && <MariLiveMessage events={liveTrace} />}
+            {sendError && <MariErrorMessage message={sendError} details={sendErrorDetails} />}
+            <div ref={messagesEndRef} className="h-1" />
+          </div>
+        </main>
       </div>
 
-      <div className="mari-chat-input chat-input-container relative z-10 px-3 pb-3 md:px-[12%]">
-        {(connectionMenuOpen || personaMenuOpen || mobileMenuOpen) && (
-          <MariContextMenu
+      <footer className="relative z-30 px-4 pb-4 sm:px-6 lg:px-8">
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,.txt,.md,.markdown,.json,.jsonl,.csv,.log,.xml,.yaml,.yml"
+          multiple
+          className="hidden"
+          onChange={(event) => void readFiles(event.target.files)}
+        />
+
+        {optionPanel && (
+          <MariOptionPanel
+            mode={optionPanel}
             connections={connections}
             personas={personas}
             selectedConnectionId={selectedConnectionId}
             selectedPersonaId={selectedPersonaId}
-            mode={mobileMenuOpen ? "both" : connectionMenuOpen ? "connections" : "personas"}
+            onModeChange={setOptionPanel}
             onSelectConnection={(id) => {
               setSelectedConnectionId(id);
-              setConnectionMenuOpen(false);
-              setMobileMenuOpen(false);
+              setOptionPanel(null);
             }}
             onSelectPersona={(id) => {
               setSelectedPersonaId(id);
-              setPersonaMenuOpen(false);
-              setMobileMenuOpen(false);
+              setOptionPanel(null);
             }}
           />
         )}
 
-        {attachments.length > 0 && (
-          <div className="mx-auto mb-2 flex max-w-3xl flex-wrap gap-2">
-            {attachments.map((attachment) => (
-              <div
-                key={attachment.id}
-                className="group flex items-center gap-1.5 rounded-lg bg-foreground/10 px-2 py-1 text-xs text-foreground/70"
-              >
-                <FileText size="0.875rem" className="shrink-0 text-foreground/50" />
-                <span className="max-w-[9rem] truncate">{attachment.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
-                  className="rounded-full p-0.5 opacity-60 transition-opacity hover:opacity-100"
-                  title="Remove attachment"
-                  aria-label={`Remove ${attachment.name}`}
-                >
-                  <X size="0.75rem" />
-                </button>
-              </div>
-            ))}
+        <MariAttachmentTray attachments={attachments} onRemove={(id) => setAttachments((current) => current.filter((item) => item.id !== id))} />
+
+        <div className="relative flex flex-wrap items-center gap-1.5 gap-y-2 rounded-2xl border-2 border-[var(--border)] bg-[var(--card)] px-2.5 py-2.5 transition-all duration-200 dark:bg-black/40 sm:flex-nowrap sm:gap-2 sm:px-4">
+          <div className="hidden items-center gap-1.5 sm:flex">
+            <MariAttachButton count={attachments.length} onClick={() => fileInputRef.current?.click()} />
+            <MariConnectionSwitcherButton
+              selectedConnection={selectedConnection}
+              open={optionPanel === "connections"}
+              onClick={() => setOptionPanel((current) => (current === "connections" ? null : "connections"))}
+            />
+            <MariPersonaSwitcherButton
+              selectedPersona={selectedPersona}
+              open={optionPanel === "personas"}
+              onClick={() => setOptionPanel((current) => (current === "personas" ? null : "personas"))}
+            />
           </div>
-        )}
-
-        <div
-          className={cn(
-            "mari-chat-input-box relative mx-auto flex max-w-3xl items-center gap-1.5 rounded-2xl border-2 px-2.5 py-2.5 transition-all duration-200 sm:gap-2 sm:px-4",
-            "bg-[var(--card)]",
-            canSend ? "border-blue-400/30 shadow-md shadow-blue-500/5" : "border-foreground/25",
-          )}
-        >
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,.txt,.md,.markdown,.json,.jsonl,.csv,.log,.xml,.yaml,.yml"
-            multiple
-            className="hidden"
-            onChange={(event) => void readFiles(event.target.files)}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg p-1.5 text-foreground/40 transition-all hover:bg-foreground/10 hover:text-foreground/70 active:scale-90"
-            title="Attach files"
-            aria-label="Attach files"
-          >
-            <Plus size="1rem" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setConnectionMenuOpen((open) => !open);
-              setPersonaMenuOpen(false);
-              setMobileMenuOpen(false);
-            }}
-            className={cn(
-              "hidden h-8 w-8 items-center justify-center rounded-xl transition-all sm:flex",
-              selectedConnection
-                ? "bg-foreground/10 text-foreground"
-                : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
-            )}
-            title={selectedConnection ? selectedConnection.name || selectedConnection.id : "Quick Connection Switcher"}
-            aria-label="Quick Connection Switcher"
-          >
-            <Link size="1rem" />
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setPersonaMenuOpen((open) => !open);
-              setConnectionMenuOpen(false);
-              setMobileMenuOpen(false);
-            }}
-            className={cn(
-              "relative hidden h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 bg-[var(--secondary)] text-foreground/60 transition-all hover:border-foreground/30 hover:opacity-90 sm:flex",
-              selectedPersona ? "border-foreground/40" : "border-transparent",
-            )}
-            title={selectedPersona ? selectedPersona.name : "Quick Persona Switcher"}
-            aria-label="Quick Persona Switcher"
-          >
-            {selectedPersona?.avatarPath ? (
-              <img
-                src={selectedPersona.avatarPath}
-                alt=""
-                className="h-full w-full rounded-full object-cover"
-                style={getAvatarCropStyle(parseAvatarCropJson(selectedPersona.avatarCrop))}
-                draggable={false}
-              />
-            ) : (
-              <CircleUser size="1rem" />
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setMobileMenuOpen((open) => !open);
-              setConnectionMenuOpen(false);
-              setPersonaMenuOpen(false);
-            }}
-            className="flex h-8 w-8 items-center justify-center rounded-xl text-foreground/70 transition-all hover:bg-foreground/10 hover:text-foreground sm:hidden"
-            title="Quick Switcher"
-            aria-label="Quick Switcher"
-          >
-            <ChevronUp size="1rem" className={cn("transition-transform", mobileMenuOpen && "rotate-180")} />
-          </button>
 
           <textarea
             ref={inputRef}
@@ -496,109 +376,425 @@ export function ProfessorMariSurface() {
             rows={1}
             spellCheck
             autoCorrect="on"
-            placeholder="Message @Professor Mari"
-            className="mari-chat-input-textarea max-h-[12.5rem] min-w-0 flex-1 resize-none bg-transparent py-0 text-sm leading-normal text-foreground/90 placeholder:text-foreground/30 outline-none"
+            placeholder="Ask Mari to edit, compare, rewrite, or organize"
+            className="max-h-[12.5rem] min-w-0 basis-full resize-none bg-transparent py-0 text-[1rem] leading-normal text-[var(--foreground)] outline-none placeholder:text-foreground/30 sm:flex-1 sm:basis-auto"
           />
 
-          <button
-            type="button"
-            onClick={() => void send()}
-            disabled={!canSend}
-            className={cn(
-              "mari-chat-send-btn flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition-all duration-200",
-              canSend ? "text-foreground hover:text-foreground/80 active:scale-90" : "text-foreground/20",
-            )}
-            title="Send"
-            aria-label="Send"
-          >
-            <Send size="0.9375rem" className={cn(canSend && "translate-x-[1px]")} />
-          </button>
+          <div className="flex items-center gap-1.5 sm:hidden">
+            <MariAttachButton count={attachments.length} onClick={() => fileInputRef.current?.click()} />
+            <MariMobileSwitcherButton
+              open={!!optionPanel}
+              active={!!selectedConnection || !!selectedPersona}
+              onClick={() => setOptionPanel((current) => (current ? null : "connections"))}
+            />
+          </div>
+
+          <div className="ml-auto flex shrink-0 items-center gap-0.5 sm:ml-0">
+            <button
+              type="button"
+              onClick={() => void send()}
+              disabled={!canSend}
+              className={cn(
+                "flex h-8 w-8 items-center justify-center rounded-xl transition-all duration-200",
+                canSend ? "text-foreground hover:text-foreground/80 active:scale-90" : "text-foreground/20",
+              )}
+              title="Send message"
+              aria-label="Send message"
+            >
+              <Send size="0.9375rem" className="translate-x-px" />
+            </button>
+          </div>
         </div>
-      </div>
+      </footer>
     </section>
   );
 }
 
-function MariWorkingTrace({ events }: { events: MariTraceEvent[] }) {
-  const latest = events.at(-1);
+function MariStageSprite({ src, mood, measureRef }: { src: string; mood: "idle" | "thinking" | "working"; measureRef: RefObject<HTMLDivElement | null> }) {
   return (
-    <div className="mx-4 my-3 max-w-3xl rounded-xl border border-[var(--border)] bg-[var(--card)]/85 p-3 text-xs shadow-sm backdrop-blur-sm md:mx-[12%]">
-      <div className="flex items-center gap-2 text-[var(--foreground)]/85">
-        <Activity size="0.875rem" className="animate-pulse text-blue-400" />
-        <span className="font-semibold">Professor Mari is working</span>
-        {events.length > 0 && (
-          <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
-            {events.length} live {events.length === 1 ? "event" : "events"}
-          </span>
+    <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
+      <div
+        ref={measureRef}
+        className={cn(
+          "absolute bottom-0 right-3 w-[clamp(9rem,26vw,24rem)] origin-bottom-right opacity-70 drop-shadow-2xl transition-all duration-300 sm:right-5 sm:opacity-95",
+          mood === "thinking" && "translate-y-2 opacity-90",
+          mood === "working" && "sm:translate-x-2",
         )}
+      >
+        <img
+          key={src}
+          src={src}
+          alt=""
+          className={cn("h-auto w-full origin-center object-contain object-bottom", mood === "idle" && "scale-x-[-1]")}
+          draggable={false}
+        />
       </div>
-      {latest ? (
-        <div className="mt-2">
-          <MariTraceEventItem event={latest} />
-          {events.length > 1 && (
-            <details className="mt-2 rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/20">
-              <summary className="cursor-pointer px-2.5 py-1.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
-                Show previous live steps
-              </summary>
-              <div className="space-y-2 p-2">
-                {events.slice(0, -1).map((event, index) => (
-                  <MariTraceEventItem key={`${event.type}-live-${index}`} event={event} />
-                ))}
-              </div>
-            </details>
-          )}
-        </div>
-      ) : (
-        <p className="mt-1 text-[0.6875rem] text-[var(--muted-foreground)]">
-          Building the virtual workspace, asking the model, and waiting for the first tool step.
-        </p>
-      )}
     </div>
   );
 }
 
-function MariTracePanel({ events }: { events: MariTraceEvent[] }) {
+function MariWelcomeMessage() {
+  return (
+    <div className="w-full">
+      <div className="flex items-start gap-2.5 sm:gap-3">
+        <MariAvatar large />
+        <div className="min-w-0 flex-1">
+          <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--card)]/88 py-3 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] text-sm leading-6 shadow-sm ring-1 ring-[var(--border)] sm:pl-4 sm:pr-[calc(1rem+var(--mari-bubble-overlap))]">
+            <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--border)] bg-[var(--card)]/88" />
+            <p className="font-semibold text-[var(--foreground)]">Welcome to my domain &gt;:D</p>
+            <p className="mt-1 text-[var(--muted-foreground)]">
+              Hi! I'm Professor Mari! I can view, edit, and create characters, lorebooks, prompts, and much more! Just ask me anything and I'll do my best to help!
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MariConversation({ messages, persona }: { messages: MariMessage[]; persona: MariPersona | null }) {
+  return (
+    <div className="w-full space-y-3">
+      <MariWelcomeMessage />
+      {messages.map((message, index) => {
+        const previous = messages[index - 1];
+        const showSeparator = !!previous && getDayKey(previous.createdAt) !== getDayKey(message.createdAt);
+        return (
+          <div key={message.id}>
+            {showSeparator && (
+              <div className="my-3 flex items-center justify-center">
+                <span className="rounded-full border border-[var(--border)] bg-[var(--card)] px-3 py-1 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+                  {formatDaySeparator(message.createdAt)}
+                </span>
+              </div>
+            )}
+            <MariChatMessage message={message} persona={persona} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MariChatMessage({ message, persona }: { message: MariMessage; persona: MariPersona | null }) {
+  const isAssistant = message.role === "assistant";
+  if (!isAssistant) {
+    return (
+      <div className="flex w-full items-start gap-2.5 py-1 sm:gap-3">
+        <PersonaAvatar persona={persona} />
+        <div className="min-w-0 flex-1">
+          <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--background)]/62 py-2.5 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] text-sm leading-6 shadow-sm ring-1 ring-[var(--border)]/70">
+            <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--border)]/70 bg-[var(--background)]/62" />
+            <div className="whitespace-pre-wrap text-[var(--foreground)]/86">{message.content}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="flex w-full items-start gap-2.5 sm:gap-3">
+      <MariAvatar />
+      <div className="min-w-0 flex-1">
+        <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--card)]/88 py-3 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] text-sm leading-6 shadow-sm ring-1 ring-[var(--border)] sm:pl-4 sm:pr-[calc(1rem+var(--mari-bubble-overlap))]">
+          <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--border)] bg-[var(--card)]/88" />
+          <div className="whitespace-pre-wrap text-[var(--foreground)]">{message.content}</div>
+          <time className="mt-2 block text-[0.625rem] text-[var(--muted-foreground)]">{formatTime(message.createdAt)}</time>
+        </div>
+        {message.trace?.length ? <MariToolDetails events={message.trace} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function PersonaAvatar({ persona }: { persona: MariPersona | null }) {
+  if (persona?.avatarPath) {
+    return (
+      <span className="mt-1 block h-8 w-8 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--secondary)] shadow-sm sm:h-9 sm:w-9">
+        <img
+          src={persona.avatarPath}
+          alt={persona.name}
+          className="h-full w-full object-cover"
+          style={getAvatarCropStyle(parseAvatarCropJson(persona.avatarCrop))}
+          draggable={false}
+        />
+      </span>
+    );
+  }
+  return (
+    <span className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary)] text-[var(--muted-foreground)] shadow-sm sm:h-9 sm:w-9">
+      {persona ? <span className="text-xs font-semibold">{(persona.name || "?")[0].toUpperCase()}</span> : <CircleUser size="1rem" />}
+    </span>
+  );
+}
+
+function MariAvatar({ large }: { large?: boolean }) {
+  return (
+    <span
+      className={cn(
+        "block shrink-0 overflow-hidden border border-[var(--border)] bg-[var(--secondary)] shadow-sm",
+        large ? "h-10 w-10 rounded-2xl sm:h-11 sm:w-11" : "mt-1 h-8 w-8 rounded-full sm:h-9 sm:w-9",
+      )}
+    >
+      <img src={MARI_AVATAR_URL} alt="Professor Mari" className="h-full w-full object-cover" draggable={false} />
+    </span>
+  );
+}
+
+function MariAttachButton({ count, onClick }: { count: number; onClick: () => void }) {
+  return (
+    <ComposerIconButton onClick={onClick} label="Attach files" active={count > 0}>
+      <Paperclip size="1rem" />
+      {count > 0 && (
+        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--primary)] px-1 text-[0.5625rem] font-semibold text-[var(--primary-foreground)]">
+          {count}
+        </span>
+      )}
+    </ComposerIconButton>
+  );
+}
+
+function MariConnectionSwitcherButton({
+  selectedConnection,
+  open,
+  onClick,
+}: {
+  selectedConnection: MariConnection | null;
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={selectedConnection ? selectedConnection.name || selectedConnection.id : "Quick Connection Switcher"}
+      className={cn(
+        "flex h-8 w-8 items-center justify-center rounded-xl transition-all",
+        open ? "bg-foreground/10 text-foreground" : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+      )}
+    >
+      <Link size="1rem" />
+    </button>
+  );
+}
+
+function MariPersonaSwitcherButton({
+  selectedPersona,
+  open,
+  onClick,
+}: {
+  selectedPersona: MariPersona | null;
+  open: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={selectedPersona ? selectedPersona.name : "Quick Persona Switcher"}
+      className={cn(
+        "relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 transition-all",
+        open ? "border-foreground/40" : "border-transparent hover:border-foreground/30 hover:opacity-90",
+      )}
+    >
+      {selectedPersona?.avatarPath ? (
+        <img
+          src={selectedPersona.avatarPath}
+          alt=""
+          className="h-full w-full rounded-full object-cover"
+          style={getAvatarCropStyle(parseAvatarCropJson(selectedPersona.avatarCrop))}
+          draggable={false}
+        />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center rounded-full bg-[var(--secondary)] text-[0.75rem] font-semibold text-[var(--muted-foreground)]">
+          {selectedPersona ? (selectedPersona.name || "?")[0].toUpperCase() : "?"}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function MariMobileSwitcherButton({ open, active, onClick }: { open: boolean; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Quick Switcher"
+      aria-label="Quick Switcher"
+      className={cn(
+        "flex h-8 w-8 items-center justify-center rounded-xl transition-all",
+        open || active ? "bg-foreground/10 text-foreground" : "text-foreground/70 hover:bg-foreground/10 hover:text-foreground",
+      )}
+    >
+      <ChevronUp size="1rem" className={cn("transition-transform", open && "rotate-180")} />
+    </button>
+  );
+}
+
+function ComposerIconButton({ children, label, active, onClick }: { children: ReactNode; label: string; active?: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-all active:scale-90",
+        active ? "bg-foreground/10 text-foreground" : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
+      )}
+      title={label}
+      aria-label={label}
+    >
+      {children}
+    </button>
+  );
+}
+
+function MariAttachmentTray({ attachments, onRemove }: { attachments: MariAttachment[]; onRemove: (id: string) => void }) {
+  if (!attachments.length) return null;
+  return (
+    <div className="mb-2 flex flex-wrap gap-2">
+      {attachments.map((attachment) => (
+        <div
+          key={attachment.id}
+          className="group inline-flex max-w-full items-center gap-1.5 rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-xs ring-1 ring-[var(--border)]"
+        >
+          <FileText size="0.8125rem" className="shrink-0" />
+          <span className="max-w-[12rem] truncate">{attachment.name}</span>
+          <button
+            type="button"
+            onClick={() => onRemove(attachment.id)}
+            className="rounded-full p-0.5 transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+            title="Remove attachment"
+            aria-label={`Remove ${attachment.name}`}
+          >
+            <X size="0.6875rem" />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MariLiveMessage({ events }: { events: MariTraceEvent[] }) {
+  const visibleEvents = events.length ? events : [{ type: "status", label: "Opening the workspace", summary: "Mari is getting her notes ready." } as MariTraceEvent];
+  const recent = visibleEvents.slice(-3);
+  const earlier = visibleEvents.slice(0, -3);
+  return (
+    <div className="flex w-full items-start gap-2.5 sm:gap-3">
+      <MariAvatar />
+      <div className="min-w-0 flex-1">
+        <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--card)]/88 py-3 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] shadow-sm ring-1 ring-[var(--border)] sm:pl-4 sm:pr-[calc(1rem+var(--mari-bubble-overlap))]">
+          <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--border)] bg-[var(--card)]/88" />
+          <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--primary)]" />
+            I am checking that now
+          </div>
+          {earlier.length > 0 && (
+            <details className="mb-2 rounded-xl bg-[var(--secondary)]/45 px-2 py-1.5 text-xs text-[var(--muted-foreground)]">
+              <summary className="cursor-pointer font-medium">{earlier.length} earlier update{earlier.length === 1 ? "" : "s"}</summary>
+              <div className="mt-2 space-y-1.5">
+                {earlier.map((event, index) => (
+                  <MariToolUpdate key={`${event.type}-earlier-${index}`} event={event} />
+                ))}
+              </div>
+            </details>
+          )}
+          <div className="space-y-1.5">
+            {recent.map((event, index) => (
+              <MariToolUpdate key={`${event.type}-recent-${index}`} event={event} active={index === recent.length - 1} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MariToolDetails({ events }: { events: MariTraceEvent[] }) {
   if (!events.length) return null;
   return (
-    <details className="mx-4 mb-3 mt-1 max-w-3xl rounded-xl border border-[var(--border)] bg-[var(--card)]/75 text-xs shadow-sm backdrop-blur-sm open:bg-[var(--card)]/90 md:mx-[12%]">
-      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-[var(--foreground)]/85 marker:hidden">
-        <Activity size="0.875rem" className="text-blue-400" />
-        <span className="font-semibold">Agent activity</span>
-        <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem] text-[var(--muted-foreground)]">
-          {events.length} {events.length === 1 ? "event" : "events"}
+    <details className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--card)]/80 py-2 pl-2.5 pr-[calc(0.625rem+var(--mari-bubble-overlap))] text-xs shadow-sm backdrop-blur-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-[var(--muted-foreground)] marker:hidden">
+        <Sparkles size="0.8125rem" />
+        <span className="font-semibold">Tool details</span>
+        <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[0.625rem]">
+          {events.length}
         </span>
       </summary>
-      <div className="space-y-2 border-t border-[var(--border)]/70 p-3">
+      <div className="mt-3 space-y-1.5">
         {events.map((event, index) => (
-          <MariTraceEventItem key={`${event.type}-${index}`} event={event} />
+          <MariToolUpdate key={`${event.type}-${index}`} event={event} expandable />
         ))}
       </div>
     </details>
   );
 }
 
-function MariTraceEventItem({ event }: { event: MariTraceEvent }) {
+function MariToolUpdate({ event, active, expandable }: { event: MariTraceEvent; active?: boolean; expandable?: boolean }) {
+  const isTool = event.type === "tool_result";
   const isError = event.status === "error";
-  const Icon = event.type === "tool_result" ? Terminal : isError ? AlertTriangle : CheckCircle2;
-  const details = traceDetails(event);
+  const details = expandable ? traceDetails(event) : null;
+  const Icon = isTool ? Terminal : isError ? AlertTriangle : Wrench;
+  const summary = traceSummary(event);
   return (
-    <div className="rounded-lg border border-[var(--border)]/70 bg-[var(--secondary)]/35 p-2.5">
+    <div
+      className={cn(
+        "rounded-xl px-2.5 py-2",
+        active ? "bg-[var(--primary)]/10" : "bg-[var(--secondary)]/45",
+      )}
+    >
       <div className="flex items-start gap-2">
-        <Icon size="0.875rem" className={cn("mt-0.5 shrink-0", isError ? "text-red-400" : "text-emerald-400")} />
+        <Icon size="0.8125rem" className={cn("mt-0.5 shrink-0", isError ? "text-red-400" : active ? "text-[var(--primary)]" : "text-[var(--muted-foreground)]")} />
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-[var(--foreground)]/90">{event.label || event.tool || event.type}</span>
-            {event.status && (
-              <span className={cn("rounded-full px-1.5 py-0.5 text-[0.625rem]", isError ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400")}>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs font-semibold text-[var(--foreground)]/90">{traceLabel(event)}</span>
+            {active && <span className="rounded-full bg-[var(--primary)]/15 px-1.5 py-0.5 text-[0.625rem] font-semibold text-[var(--primary)]">now</span>}
+            {isTool && event.status && (
+              <span className={cn("rounded-full px-1.5 py-0.5 text-[0.625rem]", isError ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-500")}>
                 {event.status}
               </span>
             )}
           </div>
-          {event.summary && <p className="mt-0.5 text-[0.6875rem] text-[var(--muted-foreground)]">{event.summary}</p>}
+          {summary && <p className="mt-0.5 text-[0.6875rem] leading-5 text-[var(--muted-foreground)]">{summary}</p>}
           {details && (
-            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-md bg-black/20 p-2 text-[0.6875rem] text-[var(--foreground)]/75">
-              {details}
-            </pre>
+            <details className="mt-1.5">
+              <summary className="cursor-pointer text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">Details</summary>
+              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-[var(--background)] p-2 text-[0.6875rem] leading-5 text-[var(--foreground)]/75">
+                {details}
+              </pre>
+            </details>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function traceLabel(event: MariTraceEvent) {
+  if (event.type === "model_turn") return event.toolCalls?.length ? "Choosing tools" : "Reading the brief";
+  if (event.type === "tool_result") return event.label || event.tool || "Tool finished";
+  return event.label || "Workspace update";
+}
+
+function traceSummary(event: MariTraceEvent) {
+  if (event.summary) return event.summary;
+  if (event.type === "model_turn" && event.toolCalls?.length) return `${event.toolCalls.length} action${event.toolCalls.length === 1 ? "" : "s"} queued.`;
+  if (event.type === "model_turn") return "Planning the next step.";
+  if (event.error) return event.error;
+  return null;
+}
+
+function MariErrorMessage({ message, details }: { message: string; details: string | null }) {
+  return (
+    <div className="flex w-full items-start gap-2.5 sm:gap-3">
+      <MariAvatar />
+      <div className="min-w-0 flex-1">
+        <div className="w-full rounded-2xl rounded-tl-sm border border-red-500/25 bg-red-500/10 py-3 pl-3 pr-[calc(0.75rem+var(--mari-bubble-overlap))] text-sm text-red-400">
+          <div className="font-semibold">I hit a snag.</div>
+          <div className="mt-1">{message}</div>
+          {details && (
+            <details className="mt-2 text-[0.6875rem]">
+              <summary className="cursor-pointer font-semibold">Debug details</summary>
+              <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-[var(--background)] p-2">{details}</pre>
+            </details>
           )}
         </div>
       </div>
@@ -608,7 +804,7 @@ function MariTraceEventItem({ event }: { event: MariTraceEvent }) {
 
 function traceDetails(event: MariTraceEvent) {
   const payload: Record<string, unknown> = {};
-  if (event.content?.trim()) payload.content = event.content;
+  if (event.type !== "model_turn" && event.content?.trim()) payload.content = event.content;
   if (event.toolCalls?.length) payload.toolCalls = event.toolCalls;
   if (event.arguments !== undefined) payload.arguments = event.arguments;
   if (event.result !== undefined) payload.result = event.result;
@@ -621,138 +817,133 @@ function traceDetails(event: MariTraceEvent) {
   }
 }
 
-function MariContextMenu({
+function MariOptionPanel({
+  mode,
   connections,
   personas,
   selectedConnectionId,
   selectedPersonaId,
-  mode,
+  onModeChange,
   onSelectConnection,
   onSelectPersona,
 }: {
+  mode: MariOptionPanel;
   connections: MariConnection[];
   personas: MariPersona[];
   selectedConnectionId: string | null;
   selectedPersonaId: string | null;
-  mode: "connections" | "personas" | "both";
+  onModeChange: (mode: MariOptionPanel) => void;
   onSelectConnection: (id: string | null) => void;
   onSelectPersona: (id: string | null) => void;
 }) {
   return (
-    <div className="mx-auto mb-2 grid max-h-[min(26rem,48dvh)] max-w-3xl overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl backdrop-blur-xl sm:w-fit sm:min-w-[20rem]">
-      {(mode === "connections" || mode === "both") && (
-        <div className="min-w-0 border-b border-[var(--border)] last:border-b-0">
-          <div className="border-b border-[var(--border)] px-3 py-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
-            Connections
-          </div>
-          <div className="max-h-56 overflow-y-auto p-1">
-            <button
-              type="button"
-              onClick={() => onSelectConnection(null)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--accent)]",
-                selectedConnectionId === null && "font-semibold text-[var(--foreground)]",
-              )}
-            >
-              <span className="flex-1 truncate">No connection selected</span>
-              {selectedConnectionId === null && <Check size="0.75rem" />}
-            </button>
-            {connections.map((connection) => {
-              const active = connection.id === selectedConnectionId;
-              return (
-                <button
-                  key={connection.id}
-                  type="button"
-                  onClick={() => onSelectConnection(connection.id)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs transition-colors hover:bg-[var(--accent)]",
-                    active && "font-semibold text-[var(--foreground)]",
-                  )}
-                >
-                  <span className="min-w-0 flex-1 truncate">{connection.name || connection.id}</span>
-                  {connection.provider && (
-                    <span className="shrink-0 text-[0.625rem] text-[var(--muted-foreground)]">{connection.provider}</span>
-                  )}
-                  {active && <Check size="0.75rem" />}
-                </button>
-              );
-            })}
-            {connections.length === 0 && (
-              <div className="px-3 py-4 text-center text-[0.6875rem] italic text-[var(--muted-foreground)]">
-                No connections found.
-              </div>
-            )}
-          </div>
+    <div className="mb-2 w-full overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg backdrop-blur-sm sm:w-[22rem]">
+      <div className="flex gap-1 border-b border-[var(--border)] p-1">
+        <OptionTab active={mode === "connections"} onClick={() => onModeChange("connections")} icon={<Link size="0.8125rem" />}>
+          Model
+        </OptionTab>
+        <OptionTab active={mode === "personas"} onClick={() => onModeChange("personas")} icon={<CircleUser size="0.8125rem" />}>
+          Persona
+        </OptionTab>
+      </div>
+      {mode === "connections" ? (
+        <div className="max-h-[min(18rem,38dvh)] overflow-y-auto p-1.5">
+          <OptionRow active={selectedConnectionId === null} onClick={() => onSelectConnection(null)} title="Use default model" />
+          {connections.map((connection) => (
+            <OptionRow
+              key={connection.id}
+              active={connection.id === selectedConnectionId}
+              onClick={() => onSelectConnection(connection.id)}
+              title={connection.name || connection.id}
+              detail={connection.provider}
+            />
+          ))}
+          {connections.length === 0 && <EmptyOption>No models found.</EmptyOption>}
         </div>
-      )}
-
-      {(mode === "personas" || mode === "both") && (
-        <div className="min-w-0">
-          <div className="border-b border-[var(--border)] px-3 py-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
-            Personas
-          </div>
-          <div className="max-h-56 overflow-y-auto p-1">
-            <button
-              type="button"
-              onClick={() => onSelectPersona(null)}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--accent)]",
-                selectedPersonaId === null && "text-[var(--foreground)]",
-              )}
-            >
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary)] text-xs font-semibold text-[var(--muted-foreground)]">
-                ?
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-xs font-semibold">No persona selected</div>
-              </div>
-              {selectedPersonaId === null && <Check size="0.75rem" />}
-            </button>
-            {personas.map((persona) => {
-              const active = persona.id === selectedPersonaId;
-              return (
-                <button
-                  key={persona.id}
-                  type="button"
-                  onClick={() => onSelectPersona(persona.id)}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-[var(--accent)]",
-                    active && "text-[var(--foreground)]",
-                  )}
-                >
-                  {persona.avatarPath ? (
-                    <div className="h-8 w-8 shrink-0 overflow-hidden rounded-full border border-[var(--border)]">
-                      <img
-                        src={persona.avatarPath}
-                        alt=""
-                        className="h-full w-full object-cover"
-                        style={getAvatarCropStyle(parseAvatarCropJson(persona.avatarCrop))}
-                        draggable={false}
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary)] text-xs font-semibold text-[var(--muted-foreground)]">
-                      {(persona.name || "?")[0].toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-xs font-semibold">{persona.name || persona.id}</div>
-                    {persona.comment && (
-                      <div className="truncate text-[0.625rem] text-(--muted-foreground)">{persona.comment}</div>
-                    )}
-                  </div>
-                  {active && <Check size="0.75rem" />}
-                </button>
-              );
-            })}
-            {personas.length === 0 && (
-              <div className="px-3 py-4 text-center text-[0.6875rem] italic text-(--muted-foreground)">
-                No personas found.
-              </div>
-            )}
-          </div>
+      ) : (
+        <div className="max-h-[min(18rem,38dvh)] overflow-y-auto p-1.5">
+          <OptionRow active={selectedPersonaId === null} onClick={() => onSelectPersona(null)} title="No persona" avatar="?" />
+          {personas.map((persona) => (
+            <OptionRow
+              key={persona.id}
+              active={persona.id === selectedPersonaId}
+              onClick={() => onSelectPersona(persona.id)}
+              title={persona.name || persona.id}
+              detail={persona.comment ?? undefined}
+              avatar={persona.avatarPath ? { src: persona.avatarPath, crop: persona.avatarCrop } : (persona.name || "?")[0].toUpperCase()}
+            />
+          ))}
+          {personas.length === 0 && <EmptyOption>No personas found.</EmptyOption>}
         </div>
       )}
     </div>
   );
+}
+
+function OptionTab({ active, onClick, icon, children }: { active: boolean; onClick: () => void; icon: ReactNode; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex flex-1 items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors",
+        active ? "bg-[var(--primary)]/10 text-[var(--primary)]" : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+      )}
+    >
+      {icon}
+      {children}
+    </button>
+  );
+}
+
+function OptionRow({
+  active,
+  onClick,
+  title,
+  detail,
+  avatar,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  detail?: string;
+  avatar?: string | { src: string; crop?: string };
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left transition-colors hover:bg-[var(--accent)]",
+        active && "bg-[var(--primary)]/10 text-[var(--foreground)]",
+      )}
+    >
+      {avatar !== undefined && (
+        typeof avatar === "string" ? (
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--secondary)] text-xs font-semibold text-[var(--muted-foreground)]">
+            {avatar}
+          </span>
+        ) : (
+          <span className="h-8 w-8 shrink-0 overflow-hidden rounded-full border border-[var(--border)] bg-[var(--secondary)]">
+            <img
+              src={avatar.src}
+              alt=""
+              className="h-full w-full object-cover"
+              style={getAvatarCropStyle(parseAvatarCropJson(avatar.crop))}
+              draggable={false}
+            />
+          </span>
+        )
+      )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium">{title}</span>
+        {detail && <span className="block truncate text-[0.6875rem] text-[var(--muted-foreground)]">{detail}</span>}
+      </span>
+      {active && <Check size="0.875rem" className="shrink-0" />}
+    </button>
+  );
+}
+
+function EmptyOption({ children }: { children: ReactNode }) {
+  return <div className="px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">{children}</div>;
 }
