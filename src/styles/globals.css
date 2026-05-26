@@ -696,12 +696,14 @@ body {
   drop-shadow(0 0 0.28rem currentColor);
 }
 
-.mari-titlebar-action svg {
+.mari-titlebar-action svg,
+.mari-titlebar-action img {
   transform-origin: 50% 56%;
   transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.mari-titlebar-action:hover svg {
+.mari-titlebar-action:hover svg,
+.mari-titlebar-action:hover img {
   transform: translateY(-1px) rotate(-8deg) scale(1.12);
 }
 
@@ -709,8 +711,19 @@ body {
   filter: drop-shadow(0 0 0.12rem currentColor);
 }
 
-.mari-titlebar-action:active svg {
+.mari-titlebar-action:active svg,
+.mari-titlebar-action:active img {
   transform: translateY(0) rotate(-8deg) scale(0.98);
+}
+
+.mari-title-home-button {
+  -webkit-app-region: no-drag;
+  display: inline-flex;
+  width: 2.125rem;
+  height: 1.875rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
 }
 
 .mari-mobile-topbar-button,
@@ -1081,9 +1094,10 @@ body {
   color: color-mix(in srgb, var(--y2k-blue) 82%, var(--foreground));
 }
 
-.mari-title-brand-compact .mari-title-icon {
-  width: 1.25rem;
-  height: 1.25rem;
+.mari-title-brand-compact .mari-title-icon,
+.mari-title-home-button .mari-title-icon {
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 @media (max-width: 767px) {
