@@ -1,5 +1,6 @@
 export type MariTraceEvent = {
   type: string;
+  approvalId?: string;
   label?: string;
   summary?: string;
   tool?: string;
@@ -124,6 +125,27 @@ export const MARI_NO_CHANGES_ACTION: MariEntryAction = {
   approvalRequired: false,
 };
 
+export type MariApprovalRequest = {
+  id: string;
+  tool?: string;
+  label?: string;
+  requestedAt?: string;
+  action: Extract<MariEntryAction, { type: "staged_file_changes" }>;
+  result?: unknown;
+};
+
+export type MariApprovalOutcome = {
+  id: string;
+  status: "approved" | "rejected" | string;
+  approved: boolean;
+  changeCount: number;
+  storageActionCount: number;
+  unmappedChangeCount: number;
+  summary?: string;
+  applied?: MariApplyStagedChangesResult | null;
+  error?: string | null;
+};
+
 export type MariApplyStagedChangesResult = {
   applied: number;
   appliedAt?: string;
@@ -181,6 +203,7 @@ function normalizeMariTrace(value: unknown): MariTraceEvent[] {
     ...(typeof event.status === "string" ? { status: event.status } : {}),
     ...(typeof event.startedAt === "string" ? { startedAt: event.startedAt } : {}),
     ...(typeof event.finishedAt === "string" ? { finishedAt: event.finishedAt } : {}),
+    ...(typeof event.approvalId === "string" ? { approvalId: event.approvalId } : {}),
     ...(typeof event.content === "string" ? { content: event.content } : {}),
     ...("arguments" in event ? { arguments: event.arguments } : {}),
     ...("result" in event ? { result: event.result } : {}),
@@ -270,6 +293,39 @@ function normalizeMariFileChanges(value: unknown): MariFileChange[] {
       },
     ];
   });
+}
+
+export function normalizeMariApprovalRequest(value: unknown): MariApprovalRequest | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) return null;
+  const action = normalizeMariEntryAction(value.action);
+  if (!isMariStagedAction(action)) return null;
+  return {
+    id: value.id,
+    ...(typeof value.tool === "string" ? { tool: value.tool } : {}),
+    ...(typeof value.label === "string" ? { label: value.label } : {}),
+    ...(typeof value.requestedAt === "string" ? { requestedAt: value.requestedAt } : {}),
+    action,
+    ...("result" in value ? { result: value.result } : {}),
+  };
+}
+
+export function normalizeMariApprovalOutcome(value: unknown): MariApprovalOutcome | null {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id.trim()) return null;
+  return {
+    id: value.id,
+    status: typeof value.status === "string" ? value.status : value.approved === false ? "rejected" : "approved",
+    approved: value.approved !== false,
+    changeCount: typeof value.changeCount === "number" ? value.changeCount : 0,
+    storageActionCount: typeof value.storageActionCount === "number" ? value.storageActionCount : 0,
+    unmappedChangeCount: typeof value.unmappedChangeCount === "number" ? value.unmappedChangeCount : 0,
+    ...(typeof value.summary === "string" ? { summary: value.summary } : {}),
+    ...(isMariApplyStagedChangesResult(value.applied) ? { applied: value.applied } : {}),
+    ...(typeof value.error === "string" ? { error: value.error } : {}),
+  };
+}
+
+function isMariApplyStagedChangesResult(value: unknown): value is MariApplyStagedChangesResult {
+  return isRecord(value) && typeof value.applied === "number" && Array.isArray(value.results);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

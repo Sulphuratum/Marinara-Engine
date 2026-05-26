@@ -201,22 +201,34 @@ fn data_url_image(value: &str) -> Option<(&str, &str)> {
     Some((mime, data))
 }
 
-fn max_tokens(parameters: &Value, fallback: u64) -> u64 {
+fn requested_max_tokens(parameters: &Value) -> Option<u64> {
     parameters
         .get("maxTokens")
         .or_else(|| parameters.get("max_tokens"))
         .and_then(Value::as_u64)
-        .unwrap_or(fallback)
+        .filter(|value| *value > 0)
 }
 
 fn request_max_tokens(request: &LlmRequest, fallback: u64) -> u64 {
-    let value = max_tokens(&request.parameters, fallback);
+    let value = requested_max_tokens(&request.parameters).unwrap_or(fallback);
     request
         .connection
         .max_tokens_override
         .filter(|cap| *cap > 0)
         .map(|cap| value.min(cap))
         .unwrap_or(value)
+}
+
+fn optional_request_max_tokens(request: &LlmRequest) -> Option<u64> {
+    match (
+        requested_max_tokens(&request.parameters),
+        request.connection.max_tokens_override.filter(|cap| *cap > 0),
+    ) {
+        (Some(value), Some(cap)) => Some(value.min(cap)),
+        (Some(value), None) => Some(value),
+        (None, Some(cap)) => Some(cap),
+        (None, None) => None,
+    }
 }
 
 fn ensure_url_allowed(url: &str) -> AppResult<()> {
@@ -517,8 +529,10 @@ async fn complete_openai_compatible_rich(request: LlmRequest) -> AppResult<LlmCo
         "model": request.connection.model,
         "messages": messages,
         "stream": false,
-        "max_tokens": request_max_tokens(&request, 1024),
     });
+    if let Some(max_tokens) = optional_request_max_tokens(&request) {
+        body["max_tokens"] = json!(max_tokens);
+    }
     if !request.tools.is_empty() {
         body["tools"] = Value::Array(
             request
@@ -565,8 +579,10 @@ async fn stream_openai_compatible(
         "model": request.connection.model,
         "messages": messages,
         "stream": true,
-        "max_tokens": request_max_tokens(&request, 1024),
     });
+    if let Some(max_tokens) = optional_request_max_tokens(&request) {
+        body["max_tokens"] = json!(max_tokens);
+    }
     if let Some(temp) = temperature(&request.parameters) {
         body["temperature"] = json!(temp);
     }
@@ -643,8 +659,10 @@ fn build_openai_responses_body(request: &LlmRequest, stream: bool) -> Value {
         "model": request.connection.model,
         "input": responses_input(&messages),
         "stream": stream,
-        "max_output_tokens": request_max_tokens(request, 1024),
     });
+    if let Some(max_tokens) = optional_request_max_tokens(request) {
+        body["max_output_tokens"] = json!(max_tokens);
+    }
     if let Some(effort) = reasoning_effort(&request.parameters) {
         body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
     }
@@ -1356,9 +1374,11 @@ async fn complete_google(request: LlmRequest) -> AppResult<String> {
         "contents": contents,
         "generationConfig": {
             "temperature": temperature(&request.parameters).unwrap_or(0.7),
-            "maxOutputTokens": request_max_tokens(&request, 1024),
         }
     });
+    if let Some(max_tokens) = optional_request_max_tokens(&request) {
+        body["generationConfig"]["maxOutputTokens"] = json!(max_tokens);
+    }
     if let Some(top_p) = param_f64(&request.parameters, &["topP", "top_p"]) {
         body["generationConfig"]["topP"] = json!(top_p);
     }

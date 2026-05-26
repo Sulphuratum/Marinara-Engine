@@ -1,6 +1,6 @@
 use super::shell::MariShellSession;
 use super::util;
-use super::MARI_SYSTEM_PROMPT;
+use super::{MARI_MODEL_OUTPUT_TOKENS, MARI_SYSTEM_PROMPT};
 use autoagents::async_trait;
 use autoagents::core::agent::AgentDeriveT;
 use autoagents::core::tool::{shared_tools_to_boxes, ToolT};
@@ -322,14 +322,22 @@ fn tool_call_name(value: &Value) -> Option<&str> {
 fn sampling_parameters(sampling: Option<&SamplingOverrides>) -> Value {
     let mut params = json!({
         "temperature": 0.35,
-        "maxTokens": 2048,
     });
+    if MARI_MODEL_OUTPUT_TOKENS > 0 {
+        params["maxTokens"] = json!(MARI_MODEL_OUTPUT_TOKENS);
+    }
     if let Some(sampling) = sampling {
         if let Some(temperature) = sampling.temperature {
             params["temperature"] = json!(temperature);
         }
         if let Some(max_tokens) = sampling.max_tokens {
-            params["maxTokens"] = json!(max_tokens);
+            if max_tokens > 0 {
+                params["maxTokens"] = json!(max_tokens);
+            } else {
+                params
+                    .as_object_mut()
+                    .map(|object| object.remove("maxTokens"));
+            }
         }
         if let Some(top_p) = sampling.top_p {
             params["topP"] = json!(top_p);

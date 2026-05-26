@@ -6,7 +6,7 @@ use super::workspace::{MariWorkspaceBinding, MariWorkspaceSeed};
 use super::MARI_SYSTEM_PROMPT;
 use bashkit::{
     async_trait as bashkit_async_trait, Bash, DirEntry, FileSystem, FileSystemExt, FileType,
-    InMemoryFs, Metadata,
+    InMemoryFs, Metadata, VfsSnapshot,
 };
 use marinara_core::{AppError, AppResult};
 use serde_json::{json, Value};
@@ -22,9 +22,11 @@ pub(crate) struct MariShellSession {
     fs: Arc<TrackingFs>,
     bash: Arc<Mutex<Bash>>,
     initial_files: Arc<RwLock<BTreeMap<String, Vec<u8>>>>,
-    pub(crate) manifest: Arc<BTreeMap<String, MariWorkspaceBinding>>,
+    manifest: Arc<RwLock<BTreeMap<String, MariWorkspaceBinding>>>,
     trace: Arc<RwLock<Vec<Value>>>,
     trace_channel: tauri::ipc::Channel<Value>,
+    tool_review_lock: Arc<Mutex<()>>,
+    approval_sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl MariShellSession {
@@ -65,9 +67,11 @@ impl MariShellSession {
             fs,
             bash: Arc::new(Mutex::new(bash)),
             initial_files: Arc::new(RwLock::new(BTreeMap::new())),
-            manifest: Arc::new(workspace_seed.bindings),
+            manifest: Arc::new(RwLock::new(workspace_seed.bindings)),
             trace: Arc::new(RwLock::new(Vec::new())),
             trace_channel,
+            tool_review_lock: Arc::new(Mutex::new(())),
+            approval_sequence: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         });
         let initial = session.snapshot_review_files().await?;
         *session.initial_files.write().unwrap() = initial;
@@ -97,6 +101,27 @@ impl MariShellSession {
             .await
             .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?;
         Ok(String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    pub(crate) async fn read_for_tool(
+        &self,
+        path: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> AppResult<Value> {
+        let path = util::resolve_virtual_path(path);
+        let metadata = self
+            .fs
+            .stat(Path::new(&path))
+            .await
+            .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?;
+
+        if metadata.file_type == FileType::Directory {
+            return self.read_directory_for_tool(&path, offset, limit).await;
+        }
+
+        self.read_file_for_tool(&path, "file", None, offset, limit)
+            .await
     }
 
     pub(crate) async fn write_text(&self, path: &str, content: &str) -> AppResult<Value> {
@@ -133,6 +158,35 @@ impl MariShellSession {
         Ok(file_changes::diff_file_maps_full(&initial, &current))
     }
 
+    pub(crate) async fn review_files_snapshot(&self) -> AppResult<BTreeMap<String, Vec<u8>>> {
+        self.snapshot_review_files().await
+    }
+
+    pub(crate) fn vfs_snapshot(&self) -> AppResult<VfsSnapshot> {
+        self.fs.vfs_snapshot().ok_or_else(|| {
+            AppError::new(
+                "mari_workspace_snapshot_failed",
+                "Virtual workspace snapshots are not available",
+            )
+        })
+    }
+
+    pub(crate) fn restore_vfs_snapshot(&self, snapshot: &VfsSnapshot) -> AppResult<()> {
+        self.fs
+            .vfs_restore(snapshot)
+            .map_err(|error| AppError::new("mari_workspace_restore_failed", error.to_string()))
+    }
+
+    pub(crate) async fn accept_current_as_baseline(&self) -> AppResult<()> {
+        let current = self.snapshot_review_files().await?;
+        self.accept_files_as_baseline(current);
+        Ok(())
+    }
+
+    pub(crate) fn accept_files_as_baseline(&self, files: BTreeMap<String, Vec<u8>>) {
+        *self.initial_files.write().unwrap() = files;
+    }
+
     pub(crate) async fn pending_changes(&self) -> AppResult<Vec<Value>> {
         Ok(self
             .pending_file_changes()
@@ -156,7 +210,8 @@ impl MariShellSession {
     pub(crate) fn manifest_summary(&self) -> Value {
         let mut by_entity: BTreeMap<&str, usize> = BTreeMap::new();
         let mut text_field_bindings = 0usize;
-        for binding in self.manifest.values() {
+        let manifest = self.manifest.read().unwrap();
+        for binding in manifest.values() {
             *by_entity.entry(binding.entity.as_str()).or_default() += 1;
             if binding
                 .field
@@ -168,10 +223,144 @@ impl MariShellSession {
             let _ = binding.id.as_str();
         }
         json!({
-            "boundFiles": self.manifest.len(),
+            "boundFiles": manifest.len(),
             "textFieldBindings": text_field_bindings,
             "byEntity": by_entity,
         })
+    }
+
+    pub(crate) fn manifest_snapshot(&self) -> BTreeMap<String, MariWorkspaceBinding> {
+        self.manifest.read().unwrap().clone()
+    }
+
+    pub(crate) fn bind_workspace_file(
+        &self,
+        path: String,
+        entity: String,
+        id: String,
+        field: String,
+    ) {
+        self.manifest.write().unwrap().insert(
+            path,
+            MariWorkspaceBinding {
+                entity,
+                id,
+                field: Some(field),
+            },
+        );
+    }
+
+    pub(crate) async fn tool_review_guard(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.tool_review_lock.lock().await
+    }
+
+    pub(crate) fn next_approval_id(&self, tool_name: &str) -> String {
+        let sequence = self
+            .approval_sequence
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        format!(
+            "mari-approval-{}-{sequence}-{tool_name}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        )
+    }
+
+    pub(crate) fn send_stream_event(&self, event: Value) -> AppResult<()> {
+        self.trace_channel
+            .send(event)
+            .map_err(|error| AppError::new("mari_stream_event_failed", error.to_string()))
+    }
+
+    async fn read_directory_for_tool(
+        &self,
+        path: &str,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> AppResult<Value> {
+        let index_path = Path::new(path).join("index.md");
+        if self
+            .fs
+            .exists(&index_path)
+            .await
+            .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?
+            && self
+                .fs
+                .stat(&index_path)
+                .await
+                .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?
+                .file_type
+                == FileType::File
+        {
+            return self
+                .read_file_for_tool(
+                    &index_path.to_string_lossy(),
+                    "directory_index",
+                    Some(path),
+                    offset,
+                    limit,
+                )
+                .await;
+        }
+
+        let mut entries = self
+            .fs
+            .read_dir(Path::new(path))
+            .await
+            .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?;
+        entries.sort_by(|a, b| {
+            b.metadata
+                .file_type
+                .is_dir()
+                .cmp(&a.metadata.file_type.is_dir())
+                .then_with(|| {
+                    a.name
+                        .to_ascii_lowercase()
+                        .cmp(&b.name.to_ascii_lowercase())
+                })
+        });
+        let mut lines = vec![format!("Directory: {path}"), String::new()];
+        if entries.is_empty() {
+            lines.push("(empty directory)".to_string());
+        } else {
+            lines.extend(entries.into_iter().map(directory_entry_line));
+        }
+        let content = lines.join("\n");
+        let (selected, total_lines) = select_lines(&content, offset, limit);
+        Ok(json!({
+            "path": path,
+            "kind": "directory",
+            "content": util::truncate_tool_text(&selected),
+            "totalLines": total_lines,
+            "note": "Path is a directory; returned a directory listing because no index.md file exists.",
+        }))
+    }
+
+    async fn read_file_for_tool(
+        &self,
+        path: &str,
+        kind: &str,
+        directory_path: Option<&str>,
+        offset: usize,
+        limit: Option<usize>,
+    ) -> AppResult<Value> {
+        let bytes = self
+            .fs
+            .read_file(Path::new(path))
+            .await
+            .map_err(|error| AppError::new("mari_read_failed", error.to_string()))?;
+        let content = String::from_utf8_lossy(&bytes);
+        let (selected, total_lines) = select_lines(&content, offset, limit);
+        let mut value = json!({
+            "path": path,
+            "kind": kind,
+            "content": util::truncate_tool_text(&selected),
+            "totalLines": total_lines,
+        });
+        if let Some(directory_path) = directory_path {
+            value["directoryPath"] = json!(directory_path);
+            value["note"] = json!("Path is a directory; returned its index.md file.");
+        }
+        Ok(value)
     }
 
     async fn snapshot_review_files(&self) -> AppResult<BTreeMap<String, Vec<u8>>> {
@@ -181,7 +370,49 @@ impl MariShellSession {
     }
 }
 
-const PROF_MARI_WORKSPACE_README: &str = "# Prof Mari virtual workspace\n\nThis is an isolated bash workspace populated from the user's Marinara creative library. Start at `/workspace/index.md`, then inspect folders such as `characters/`, `personas/`, `lorebooks/`, and `prompts/`. Paths are descriptive and duplicate-safe; Marinara tracks hidden storage IDs internally. Changes remain staged for user review.\n\nTo create a new top-level character, persona, lorebook, prompt, or group, create a new folder under the matching collection and write `metadata.json` plus any supported text field files shown by nearby records. For characters, put the name in `metadata.json` under `data.name`; use files like `description.md`, `personality.md`, and `first_mes.md` for long text.\n";
+const PROF_MARI_WORKSPACE_README: &str = "# Prof Mari virtual workspace\n\nThis is an isolated bash workspace populated from the user's Marinara creative library. Start at `/workspace/index.md`, then inspect folders such as `characters/`, `personas/`, `lorebooks/`, and `prompts/`. Paths are descriptive and duplicate-safe; Marinara tracks hidden storage IDs internally. When a tool changes files, Marinara pauses for user approval before that tool result is returned.\n\nThe `read` tool accepts files and directories. Reading a directory returns its `index.md` when present, otherwise an ls-style listing. For file layout requirements, read `/workspace/FORMAT.md` and the nearest folder-level `FORMAT.md`.\n";
+
+fn directory_entry_line(entry: DirEntry) -> String {
+    let suffix = match entry.metadata.file_type {
+        FileType::Directory => "/",
+        FileType::Symlink => "@",
+        FileType::Fifo => "|",
+        FileType::File => "",
+    };
+    let size = if entry.metadata.file_type == FileType::File {
+        format!(", {} bytes", entry.metadata.size)
+    } else {
+        String::new()
+    };
+    format!(
+        "- {}{} ({}){}",
+        entry.name,
+        suffix,
+        file_type_label(entry.metadata.file_type),
+        size
+    )
+}
+
+fn file_type_label(file_type: FileType) -> &'static str {
+    match file_type {
+        FileType::File => "file",
+        FileType::Directory => "directory",
+        FileType::Symlink => "symlink",
+        FileType::Fifo => "fifo",
+    }
+}
+
+fn select_lines(content: &str, offset: usize, limit: Option<usize>) -> (String, usize) {
+    let lines = content.lines().collect::<Vec<_>>();
+    let selected = lines
+        .iter()
+        .skip(offset.saturating_sub(1))
+        .take(limit.unwrap_or(usize::MAX))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n");
+    (selected, lines.len())
+}
 
 struct TrackingFs {
     inner: InMemoryFs,
@@ -300,7 +531,10 @@ async fn collect_files_recursive(
             .read_file(path)
             .await
             .map_err(|error| AppError::new("mari_fs_failed", error.to_string()))?;
-        files.insert(path.to_string_lossy().to_string(), content);
+        files.insert(
+            util::normalize_virtual_path(&path.to_string_lossy()),
+            content,
+        );
         return Ok(());
     }
     if meta.file_type == FileType::Directory {

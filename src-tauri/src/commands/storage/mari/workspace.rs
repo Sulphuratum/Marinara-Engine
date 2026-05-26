@@ -61,6 +61,7 @@ pub(crate) fn build_mari_workspace_seed(state: &AppState) -> AppResult<MariWorks
     ] {
         allocator.used.insert(root.to_string());
     }
+    add_workspace_format_guides(&mut seed);
 
     let characters = list_storage_or_empty(state, "characters")?;
     add_flat_collection(
@@ -147,6 +148,209 @@ pub(crate) fn build_mari_workspace_seed(state: &AppState) -> AppResult<MariWorks
     Ok(seed)
 }
 
+fn add_workspace_format_guides(seed: &mut MariWorkspaceSeed) {
+    add_unbound_file(seed, "/workspace/FORMAT.md", root_format_guide());
+    for (path, entity) in [
+        ("/workspace/characters/FORMAT.md", "characters"),
+        ("/workspace/character-groups/FORMAT.md", "character-groups"),
+        ("/workspace/personas/FORMAT.md", "personas"),
+        ("/workspace/persona-groups/FORMAT.md", "persona-groups"),
+        ("/workspace/lorebooks/FORMAT.md", "lorebooks"),
+        ("/workspace/prompts/FORMAT.md", "prompts"),
+    ] {
+        add_unbound_file(seed, path, format_guide_for_entity(entity));
+    }
+}
+
+fn root_format_guide() -> String {
+    [
+        "# Workspace format guide",
+        "",
+        "Use the nearest `FORMAT.md` before creating or editing files. The root index is only navigation; file layout rules live here and in collection folders.",
+        "",
+        "## General rules",
+        "- Existing records are folders. Edit their existing `.md`, `.txt`, or `metadata.json` files.",
+        "- Long prose belongs in the named text files listed by the nearest format guide.",
+        "- Structured fields belong in `metadata.json`, which must be valid JSON.",
+        "- Do not add storage IDs. Marinara maps friendly paths back to records internally.",
+        "- Do not paste base64 images or binary blobs into workspace files.",
+        "- Deleting an existing text file clears that field. Deleting `metadata.json` or whole record folders is not an automatic record delete.",
+        "",
+        "## Creating top-level records",
+        "- Create a new folder under `characters/`, `personas/`, `lorebooks/`, `prompts/`, `character-groups/`, or `persona-groups/`.",
+        "- Use the exact file names shown in that folder's `FORMAT.md`.",
+        "- Include `metadata.json` when you need names, tags, flags, ordering, or other structured fields.",
+        "- For character names, set `data.name` in `metadata.json`. For most other records, set `name`.",
+    ]
+    .join("\n")
+}
+
+fn format_guide_for_entity(entity: &str) -> String {
+    match entity {
+        "characters" => [
+            "# Character folder format",
+            "",
+            "Create or edit one folder per character.",
+            "",
+            "## Required identity",
+            "- `metadata.json`: valid JSON. Set `data.name` to the character name. Optional useful fields: `comment`, `data.tags`, `data.creator`, `data.character_version`.",
+            "",
+            "## Text files",
+            "- `data.description.md`: appearance, role, and durable description.",
+            "- `data.personality.md`: personality traits, speaking style, motivations.",
+            "- `data.scenario.md`: default situation or setting.",
+            "- `data.first_mes.md`: opening message.",
+            "- `data.mes_example.md`: example dialogue.",
+            "- `data.creator_notes.md`: private notes for the user/creator.",
+            "- `data.system_prompt.md`: character-specific system guidance.",
+            "- `data.post_history_instructions.md`: instructions applied after chat history.",
+            "- `data.extensions.backstory.md`: longer backstory.",
+            "- `data.extensions.appearance.md`: detailed visual description.",
+        ]
+        .join("\n"),
+        "character-groups" => [
+            "# Character group folder format",
+            "",
+            "Create or edit one folder per character group.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Set `name` or `title`. Keep membership/order fields structured here if present.",
+            "",
+            "## Text files",
+            "- `description.md`: what this group is for.",
+            "- `notes.md`: private organization notes.",
+        ]
+        .join("\n"),
+        "personas" => [
+            "# Persona folder format",
+            "",
+            "Create or edit one folder per user persona.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Set `name`. Optional useful fields: `comment`, `tags`, `isActive`.",
+            "",
+            "## Text files",
+            "- `description.md`: concise persona description.",
+            "- `personality.md`: traits and behavior.",
+            "- `scenario.md`: default context.",
+            "- `backstory.md`: history.",
+            "- `appearance.md`: visual description.",
+            "- `first_message.md`: opening message.",
+            "- `greeting.md`: greeting text.",
+            "- `notes.md`: private user notes.",
+        ]
+        .join("\n"),
+        "persona-groups" => [
+            "# Persona group folder format",
+            "",
+            "Create or edit one folder per persona group.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Set `name` or `title`. Keep membership/order fields structured here if present.",
+            "",
+            "## Text files",
+            "- `description.md`: what this group is for.",
+            "- `notes.md`: private organization notes.",
+        ]
+        .join("\n"),
+        "lorebooks" => [
+            "# Lorebook folder format",
+            "",
+            "Create or edit one folder per lorebook. Lorebook entries live in that lorebook's `entries/` folder.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Set `name`. Optional useful fields: `description`, `tags`, `enabled`, `isGlobal`, `scanDepth`, `tokenBudget`, `recursiveScanning`.",
+            "",
+            "## Text files",
+            "- `description.md`: short purpose/summary.",
+            "- `content.md`: broad lorebook-level prose if the lorebook uses it.",
+            "- `notes.md`: private organization notes.",
+            "",
+            "## Entries",
+            "- Read `entries/FORMAT.md` inside a lorebook before editing or creating entries.",
+        ]
+        .join("\n"),
+        "lorebook-entries" => [
+            "# Lorebook entry folder format",
+            "",
+            "Edit one folder per existing lorebook entry inside this `entries/` folder. Creating brand-new entries from new folders is not applied automatically yet.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Useful fields include `enabled`, `insertionOrder`, `priority`, `position`, `constant`, `selective`, `secondaryKeys`, `caseSensitive`, `matchWholeWords`.",
+            "",
+            "## Text files",
+            "- `keys.txt`: one activation key per line.",
+            "- `content.md`: lore inserted when the entry activates.",
+            "- `comment.md`: short label or editor comment.",
+            "- `description.md`: optional explanation.",
+            "- `notes.md`: private organization notes.",
+        ]
+        .join("\n"),
+        "prompts" => [
+            "# Prompt preset folder format",
+            "",
+            "Create or edit one folder per prompt preset. Sections, groups, and variables live under their matching subfolders.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Set `name`. Optional useful fields: `description`, `isDefault`, `sectionOrder`, `groupOrder`, `variableOrder`, `parameters`, `variableValues`.",
+            "",
+            "## Text files",
+            "- `description.md`: short purpose/summary.",
+            "- `prompt.md`: preset prompt body when used by this record shape.",
+            "- `system_prompt.md`: preset-level system prompt.",
+            "- `notes.md`: private organization notes.",
+            "",
+            "## Nested folders",
+            "- Read `sections/FORMAT.md`, `groups/FORMAT.md`, or `variables/FORMAT.md` before editing those records.",
+        ]
+        .join("\n"),
+        "prompt-sections" => [
+            "# Prompt section folder format",
+            "",
+            "Edit one folder per existing prompt section inside this `sections/` folder. Creating brand-new sections from new folders is not applied automatically yet.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Useful fields include `name`, `role`, `type`, `enabled`, `groupId`, `sortOrder`, `markerConfig`.",
+            "",
+            "## Text files",
+            "- `prompt.md`: section prompt text.",
+            "- `content.md`: section content if this shape uses content instead of prompt.",
+            "- `text.md`: section text if this shape uses text instead of prompt/content.",
+            "- `description.md`: editor-facing explanation.",
+        ]
+        .join("\n"),
+        "prompt-groups" => [
+            "# Prompt group folder format",
+            "",
+            "Edit one folder per existing prompt group inside this `groups/` folder. Creating brand-new groups from new folders is not applied automatically yet.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Useful fields include `name`, `label`, `enabled`, `parentGroupId`, `sortOrder`.",
+            "",
+            "## Text files",
+            "- `description.md`: what this group controls.",
+            "- `notes.md`: private organization notes.",
+        ]
+        .join("\n"),
+        "prompt-variables" => [
+            "# Prompt variable folder format",
+            "",
+            "Edit one folder per existing prompt variable inside this `variables/` folder. Creating brand-new variables from new folders is not applied automatically yet.",
+            "",
+            "## Metadata",
+            "- `metadata.json`: valid JSON. Useful fields include `name`, `key`, `label`, `type`, `options`, `defaultValue`, `groupId`, `sortOrder`.",
+            "",
+            "## Text files",
+            "- `value.md`: default or current value.",
+            "- `content.md`: content value if this shape uses content.",
+            "- `text.md`: text value if this shape uses text.",
+            "- `description.md`: editor-facing explanation.",
+        ]
+        .join("\n"),
+        _ => "# Format guide\n\nUse `metadata.json` for structured fields and `.md` files for long text.".to_string(),
+    }
+}
+
 fn add_flat_collection(
     seed: &mut MariWorkspaceSeed,
     allocator: &mut PathAllocator,
@@ -215,6 +419,11 @@ fn add_lorebooks_to_workspace(
             &["description", "content", "notes"],
         )?;
         let entry_root = format!("{folder}/entries");
+        add_unbound_file(
+            seed,
+            format!("{entry_root}/FORMAT.md"),
+            format_guide_for_entity("lorebook-entries"),
+        );
         let mut entry_index = Vec::new();
         for entry in sorted_records(
             entries_by_lorebook
@@ -343,6 +552,11 @@ fn add_nested_prompt_records(
     text_fields: &[&str],
 ) -> AppResult<()> {
     let root = format!("{prompt_folder}/{folder_name}");
+    add_unbound_file(
+        seed,
+        format!("{root}/FORMAT.md"),
+        format_guide_for_entity(entity),
+    );
     let mut index = Vec::new();
     for record in sorted_records(&records) {
         let Some(id) = record_id(record) else {
@@ -415,6 +629,8 @@ fn add_workspace_index(seed: &mut MariWorkspaceSeed, counts: &[(&str, usize)]) {
         String::new(),
         "This virtual workspace contains your editable Marinara creative library.".to_string(),
         "Internal storage IDs are hidden from paths; Professor Mari should use the folders below."
+            .to_string(),
+        "Format requirements live in [FORMAT.md](FORMAT.md) and the nearest folder-level FORMAT.md files."
             .to_string(),
         String::new(),
     ];
@@ -711,7 +927,13 @@ fn sanitize_path_segment(value: &str) -> String {
 }
 
 fn collection_index_title(name: &str, entries: Vec<String>) -> String {
-    let mut lines = vec![format!("# {}", title_case(name)), String::new()];
+    let mut lines = vec![
+        format!("# {}", title_case(name)),
+        String::new(),
+        "Read [FORMAT.md](FORMAT.md) before changing records in this folder; it also notes what creation is supported."
+            .to_string(),
+        String::new(),
+    ];
     if entries.is_empty() {
         lines.push("No records found.".to_string());
     } else {

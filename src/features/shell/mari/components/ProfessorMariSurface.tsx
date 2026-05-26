@@ -5,6 +5,7 @@ import {
   Check,
   ChevronUp,
   CircleUser,
+  FileDiff,
   FileText,
   Link,
   Paperclip,
@@ -16,8 +17,12 @@ import {
 } from "lucide-react";
 import {
   isMariStagedAction,
+  normalizeMariApprovalOutcome,
+  normalizeMariApprovalRequest,
   runProfessorMariEntry,
+  type MariApprovalRequest,
   type MariEntryAction,
+  type MariFileChange,
   type MariMessage,
   type MariStorageAction,
   type MariTraceEvent,
@@ -115,6 +120,9 @@ export function ProfessorMariSurface() {
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendErrorDetails, setSendErrorDetails] = useState<string | null>(null);
   const [liveTrace, setLiveTrace] = useState<MariTraceEvent[]>([]);
+  const [pendingApproval, setPendingApproval] = useState<MariApprovalRequest | null>(null);
+  const [resolvingApproval, setResolvingApproval] = useState<"approve" | "reject" | null>(null);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<MariEntryAction | null>(null);
   const [applyingAction, setApplyingAction] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -124,7 +132,7 @@ export function ProfessorMariSurface() {
   const surfaceRef = useRef<HTMLElement>(null);
   const spriteMeasureRef = useRef<HTMLDivElement>(null);
   const [spriteSafeInset, setSpriteSafeInset] = useState(0);
-  const canSend = (draft.trim().length > 0 || attachments.length > 0) && !sending && !applyingAction;
+  const canSend = (draft.trim().length > 0 || attachments.length > 0) && !sending && !pendingApproval && !resolvingApproval && !applyingAction;
   const connections = useMemo(
     () =>
       filterLanguageGenerationConnections((rawConnections ?? []) as MariConnection[]).sort((a, b) =>
@@ -141,11 +149,13 @@ export function ProfessorMariSurface() {
   const hasToolActivity = liveTrace.some((event) => event.type === "tool_result" || !!event.tool || (Array.isArray(event.toolCalls) && event.toolCalls.length > 0));
   const mariStage = sendError
     ? { src: MARI_THINKING_URL, mood: "thinking" as const }
-    : sending
-      ? hasToolActivity
-        ? { src: MARI_WORKING_URL, mood: "working" as const }
-        : { src: MARI_THINKING_URL, mood: "thinking" as const }
-      : { src: MARI_WAVE_URL, mood: "idle" as const };
+    : pendingApproval
+      ? { src: MARI_WORKING_URL, mood: "working" as const }
+      : sending
+        ? hasToolActivity
+          ? { src: MARI_WORKING_URL, mood: "working" as const }
+          : { src: MARI_THINKING_URL, mood: "thinking" as const }
+        : { src: MARI_WAVE_URL, mood: "idle" as const };
   const gradientStyle = useMemo(() => {
     const gradient = convoGradient[theme];
     const isDefaultDark = convoGradient.dark.from === "#0a0a0e" && convoGradient.dark.to === "#1c2133";
@@ -197,7 +207,7 @@ export function ProfessorMariSurface() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages.length, liveTrace.length]);
+  }, [messages.length, liveTrace.length, pendingApproval?.id]);
 
   useEffect(() => {
     const input = inputRef.current;
@@ -253,6 +263,9 @@ export function ProfessorMariSurface() {
     setSendError(null);
     setSendErrorDetails(null);
     setActionError(null);
+    setApprovalError(null);
+    setResolvingApproval(null);
+    setPendingApproval(null);
     setPendingAction(null);
     setLiveTrace([]);
     setSending(true);
@@ -290,6 +303,30 @@ export function ProfessorMariSurface() {
             mariApi.prompt(request, (event) => {
               if (event.type === "trace") {
                 setLiveTrace((current) => [...current, event.event]);
+                return;
+              }
+              if (event.type === "approval_request") {
+                const approval = normalizeMariApprovalRequest(event.approval);
+                if (approval) {
+                  setPendingApproval(approval);
+                  setResolvingApproval(null);
+                  setApprovalError(null);
+                }
+                return;
+              }
+              if (event.type === "approval_resolved") {
+                const outcome = normalizeMariApprovalOutcome(event.outcome);
+                const applied = event.applied ?? outcome?.applied ?? null;
+                if (event.approved && applied && applied.applied > 0) {
+                  void queryClient.invalidateQueries();
+                }
+                setPendingApproval((current) => (current?.id === event.approvalId ? null : current));
+                setResolvingApproval(null);
+                if (event.error || outcome?.error) {
+                  setApprovalError(event.error ?? outcome?.error ?? null);
+                } else {
+                  setApprovalError(null);
+                }
               }
             }),
         },
@@ -298,6 +335,8 @@ export function ProfessorMariSurface() {
       console.error("Professor Mari failed to respond", error);
       setSendError(error instanceof Error ? error.message : "Professor Mari failed to respond.");
       setSendErrorDetails(formatErrorDetails(error));
+      setPendingApproval(null);
+      setResolvingApproval(null);
       setSending(false);
       return;
     }
@@ -309,10 +348,25 @@ export function ProfessorMariSurface() {
       trace: response.trace,
     };
     setMessages((current) => [...current, assistant]);
+    setPendingApproval(null);
+    setResolvingApproval(null);
     setPendingAction(isMariStagedAction(response.action) && response.action.changes.length > 0 ? response.action : null);
     setLiveTrace([]);
     setSending(false);
     requestAnimationFrame(() => inputRef.current?.focus());
+  };
+
+  const resolvePendingApproval = async (approved: boolean) => {
+    if (!pendingApproval || resolvingApproval) return;
+    setResolvingApproval(approved ? "approve" : "reject");
+    setApprovalError(null);
+    try {
+      await mariApi.resolveApproval(pendingApproval.id, approved);
+    } catch (error) {
+      console.error("Professor Mari failed to resolve approval", error);
+      setApprovalError(error instanceof Error ? error.message : "Professor Mari failed to resolve the approval.");
+      setResolvingApproval(null);
+    }
   };
 
   const approvePendingChanges = async () => {
@@ -359,6 +413,15 @@ export function ProfessorMariSurface() {
           <div className="flex-1 space-y-3 pb-32 sm:pb-40" style={{ width: "calc(100% - var(--mari-chat-gutter))", maxWidth: "100%" }}>
             <MariConversation messages={messages} persona={selectedPersona} />
             {sending && <MariLiveMessage events={liveTrace} />}
+            {pendingApproval && (
+              <MariApprovalPanel
+                approval={pendingApproval}
+                resolving={resolvingApproval}
+                error={approvalError}
+                onApprove={() => void resolvePendingApproval(true)}
+                onReject={() => void resolvePendingApproval(false)}
+              />
+            )}
             {pendingAction && (
               <MariStagedChangesPanel
                 action={pendingAction}
@@ -563,6 +626,37 @@ function MariChatMessage({ message, persona }: { message: MariMessage; persona: 
   );
 }
 
+function MariApprovalPanel({
+  approval,
+  resolving,
+  error,
+  onApprove,
+  onReject,
+}: {
+  approval: MariApprovalRequest;
+  resolving: "approve" | "reject" | null;
+  error: string | null;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  return (
+    <MariChangeReviewPanel
+      action={approval.action}
+      title="Review changes"
+      eyebrow="Checkpoint"
+      toolLabel={approval.label ?? approval.tool ?? "Tool"}
+      applying={!!resolving}
+      approveBusy={resolving === "approve"}
+      rejectBusy={resolving === "reject"}
+      error={error}
+      approveLabel="Approve"
+      rejectLabel="Reject"
+      onApprove={onApprove}
+      onReject={onReject}
+    />
+  );
+}
+
 function MariStagedChangesPanel({
   action,
   applying,
@@ -577,54 +671,77 @@ function MariStagedChangesPanel({
   onReject: () => void;
 }) {
   if (!isMariStagedAction(action)) return null;
-  const storageActions = action.storageActions;
-  const visibleActions = storageActions.slice(0, 4);
-  const hiddenActionCount = Math.max(0, storageActions.length - visibleActions.length);
-  const canApprove = storageActions.length > 0 && !applying;
+  return (
+    <MariChangeReviewPanel
+      action={action}
+      title="Review changes"
+      eyebrow="Staged"
+      applying={applying}
+      approveBusy={applying}
+      error={error}
+      approveLabel="Approve"
+      rejectLabel="Reject"
+      onApprove={onApprove}
+      onReject={onReject}
+    />
+  );
+}
+
+function MariChangeReviewPanel({
+  action,
+  title,
+  eyebrow,
+  toolLabel,
+  applying,
+  approveBusy,
+  rejectBusy,
+  error,
+  approveLabel,
+  rejectLabel,
+  onApprove,
+  onReject,
+}: {
+  action: Extract<MariEntryAction, { type: "staged_file_changes" }>;
+  title: string;
+  eyebrow: string;
+  toolLabel?: string;
+  applying: boolean;
+  approveBusy?: boolean;
+  rejectBusy?: boolean;
+  error: string | null;
+  approveLabel: string;
+  rejectLabel: string;
+  onApprove: () => void;
+  onReject: () => void;
+}) {
+  const canApprove = action.storageActions.length > 0 && action.unmappedChanges.length === 0 && !applying;
   return (
     <div className="flex w-full items-start gap-2.5 sm:gap-3">
       <MariAvatar />
       <div className="min-w-0 flex-1">
-        <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--card)]/92 py-3 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] text-sm leading-6 shadow-sm ring-1 ring-[var(--primary)]/35 sm:pl-4 sm:pr-[calc(1rem+var(--mari-bubble-overlap))]">
-          <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--primary)]/35 bg-[var(--card)]/92" />
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex h-7 w-7 items-center justify-center rounded-xl bg-[var(--primary)]/12 text-[var(--primary)]">
-              <FileText size="0.9rem" />
+        <div className="relative w-full rounded-2xl rounded-tl-sm bg-[var(--card)]/95 py-3 pl-3.5 pr-[calc(0.875rem+var(--mari-bubble-overlap))] text-sm leading-6 shadow-sm ring-1 ring-[var(--primary)]/35 sm:pl-4 sm:pr-[calc(1rem+var(--mari-bubble-overlap))]">
+          <span className="absolute -left-1 top-3 h-3 w-3 rotate-45 border-b border-l border-[var(--primary)]/35 bg-[var(--card)]/95" />
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)]/12 text-[var(--primary)]">
+              <FileDiff size="0.95rem" />
             </span>
             <div className="min-w-0 flex-1">
-              <div className="font-semibold text-[var(--foreground)]">Review Mari's staged changes</div>
-              <div className="text-xs text-[var(--muted-foreground)]">
-                {storageActions.length} storage action{storageActions.length === 1 ? "" : "s"} from {action.changes.length} file change
-                {action.changes.length === 1 ? "" : "s"}
+              <div className="flex flex-wrap items-center gap-2 text-[0.625rem] font-bold uppercase tracking-[0.14em] text-[var(--primary)]">
+                <span>{eyebrow}</span>
+                {toolLabel && <span className="font-semibold normal-case tracking-normal text-[var(--muted-foreground)]">{toolLabel}</span>}
               </div>
+              <div className="text-base font-semibold leading-6 text-[var(--foreground)]">{title}</div>
             </div>
+            <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+              {action.changes.length} file{action.changes.length === 1 ? "" : "s"}
+            </span>
           </div>
 
-          <div className="mt-3 space-y-1.5">
-            {visibleActions.map((item, index) => (
-              <div key={`${item.type}-${item.entity}-${index}`} className="rounded-xl bg-[var(--secondary)]/45 px-2.5 py-2">
-                <div className="font-semibold text-[var(--foreground)]/90">{describeStorageAction(item)}</div>
-                {item.paths?.length ? <div className="mt-0.5 truncate text-[0.6875rem] text-[var(--muted-foreground)]">{item.paths[0]}</div> : null}
-              </div>
+          <div className="mt-3 space-y-2">
+            {action.changes.map((change) => (
+              <MariDiffCard key={`${change.op}-${change.path}`} change={change} action={storageActionForChange(change, action.storageActions)} />
             ))}
-            {hiddenActionCount > 0 && (
-              <div className="px-2.5 text-[0.6875rem] font-medium text-[var(--muted-foreground)]">+{hiddenActionCount} more</div>
-            )}
-            {action.unmappedChanges.length > 0 && (
-              <details className="rounded-xl bg-amber-500/10 px-2.5 py-2 text-[0.6875rem] text-amber-600 dark:text-amber-300">
-                <summary className="cursor-pointer font-semibold">
-                  {action.unmappedChanges.length} file change{action.unmappedChanges.length === 1 ? "" : "s"} cannot be applied automatically
-                </summary>
-                <div className="mt-2 space-y-1">
-                  {action.unmappedChanges.slice(0, 4).map((change) => (
-                    <div key={change.path} className="break-words">
-                      <span className="font-semibold">{change.path}</span>
-                      {change.reason ? <span>: {change.reason}</span> : null}
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
           </div>
 
           {error && <div className="mt-3 rounded-xl bg-red-500/10 px-2.5 py-2 text-[0.75rem] text-red-400">{error}</div>}
@@ -635,23 +752,23 @@ function MariStagedChangesPanel({
               onClick={onApprove}
               disabled={!canApprove}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-xl border border-[var(--border)] px-3 py-1.5 text-xs font-semibold transition",
+                "inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition",
                 canApprove
                   ? "bg-[var(--foreground)] text-[var(--background)] hover:opacity-90 active:scale-95"
                   : "cursor-not-allowed bg-[var(--secondary)] text-[var(--muted-foreground)] opacity-60",
               )}
             >
               <Check size="0.8rem" />
-              {applying ? "Saving" : "Approve"}
+              {approveBusy ? "Saving" : approveLabel}
             </button>
             <button
               type="button"
               onClick={onReject}
               disabled={applying}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-[var(--border)] bg-transparent px-3 py-1.5 text-xs font-semibold text-[var(--muted-foreground)] transition hover:text-[var(--foreground)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-[var(--muted-foreground)] transition hover:bg-[var(--secondary)] hover:text-[var(--foreground)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <X size="0.8rem" />
-              Reject
+              {rejectBusy ? "Wait" : rejectLabel}
             </button>
           </div>
         </div>
@@ -660,11 +777,184 @@ function MariStagedChangesPanel({
   );
 }
 
-function describeStorageAction(action: MariStorageAction) {
-  if (action.label) return action.label;
-  const entity = action.entity.replace(/-/g, " ");
-  if (action.type === "create_record") return `Create ${entity}`;
-  return `Edit ${entity}`;
+function MariDiffCard({ change, action }: { change: MariFileChange; action?: MariStorageAction }) {
+  const entity = change.binding?.entity ?? action?.entity;
+  const isMetadata = change.path.endsWith("metadata.json");
+  return (
+    <section className="rounded-xl bg-[var(--secondary)]/38 p-2.5">
+      <div className="mb-2 flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className={cn("rounded-full px-1.5 py-0.5 text-[0.58rem] font-bold uppercase", changeToneClass(change.op))}>{changeOperationLabel(change.op)}</span>
+        {entity && <span className="rounded-full bg-[var(--background)]/60 px-1.5 py-0.5 text-[0.625rem] font-semibold text-[var(--muted-foreground)]">{entityDisplayName(entity, false)}</span>}
+        <span className="min-w-0 flex-1 truncate text-[0.75rem] font-semibold text-[var(--foreground)]/90">{shortPath(change.path)}</span>
+      </div>
+      {isMetadata ? <JsonDiffBody change={change} /> : <TextDiffBody change={change} />}
+    </section>
+  );
+}
+
+function TextDiffBody({ change }: { change: MariFileChange }) {
+  if (change.op === "create") {
+    return <DiffBlock label="New" value={change.after} empty="Empty file" tone="after" />;
+  }
+  if (change.op === "delete") {
+    return <DiffBlock label="Deleted" value={change.before} empty="Empty file" tone="before" />;
+  }
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      <DiffBlock label="Before" value={change.before} empty="Empty" tone="before" />
+      <DiffBlock label="After" value={change.after} empty="Empty" tone="after" />
+    </div>
+  );
+}
+
+function DiffBlock({ label, value, empty, tone }: { label: string; value?: string; empty: string; tone: "before" | "after" }) {
+  return (
+    <div className={cn("min-w-0 rounded-lg px-2.5 py-2", tone === "after" ? "bg-emerald-500/10" : "bg-[var(--background)]/58")}>
+      <div className="mb-1 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">{label}</div>
+      <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[0.72rem] leading-5 text-[var(--foreground)]/82">
+        {value?.trim() ? truncateBlock(value.trim(), 900) : empty}
+      </pre>
+    </div>
+  );
+}
+
+function JsonDiffBody({ change }: { change: MariFileChange }) {
+  const rows = jsonDiffRows(change).slice(0, 10);
+  if (!rows.length) {
+    return <div className="rounded-lg bg-[var(--background)]/58 px-2.5 py-2 text-[0.72rem] text-[var(--muted-foreground)]">Metadata changed.</div>;
+  }
+  return (
+    <div className="space-y-1.5">
+      {rows.map((row) => (
+        <div key={row.path} className="rounded-lg bg-[var(--background)]/58 px-2.5 py-2">
+          <div className="mb-1 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">{fieldLabel(row.path)}</div>
+          {change.op === "create" ? (
+            <div className="text-[0.72rem] leading-5 text-[var(--foreground)]/84">{formatDiffValue(row.after)}</div>
+          ) : change.op === "delete" ? (
+            <div className="text-[0.72rem] leading-5 text-[var(--foreground)]/84">{formatDiffValue(row.before)}</div>
+          ) : (
+            <div className="grid gap-1.5 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+              <div className="truncate text-[0.72rem] text-[var(--muted-foreground)]">{formatDiffValue(row.before)}</div>
+              <div className="hidden text-[var(--muted-foreground)] sm:block">→</div>
+              <div className="truncate text-[0.72rem] text-[var(--foreground)]/86">{formatDiffValue(row.after)}</div>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function jsonDiffRows(change: MariFileChange) {
+  const before = flattenJsonForDiff(parseJsonObject(change.before));
+  const after = flattenJsonForDiff(parseJsonObject(change.after));
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+  return [...keys]
+    .filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]))
+    .map((key) => ({ path: key, before: before[key], after: after[key] }));
+}
+
+function flattenJsonForDiff(value: unknown, prefix = "", depth = 0): Record<string, unknown> {
+  if (!isPlainRecord(value)) return prefix ? { [prefix]: value } : {};
+  const out: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (["id", "createdAt", "updatedAt"].includes(key)) continue;
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (isPlainRecord(nested) && depth < 2) {
+      Object.assign(out, flattenJsonForDiff(nested, path, depth + 1));
+    } else if (!isEmptyPreviewValue(nested)) {
+      out[path] = nested;
+    }
+  }
+  return out;
+}
+
+function storageActionForChange(change: MariFileChange, actions: MariStorageAction[]) {
+  return actions.find((action) => action.paths?.includes(change.path));
+}
+
+function changeOperationLabel(op: string) {
+  if (op === "create") return "Add";
+  if (op === "delete") return "Delete";
+  return "Edit";
+}
+
+function parseJsonObject(value?: string) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return isPlainRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatDiffValue(value: unknown) {
+  if (typeof value === "string") return value.trim() ? truncateInline(value.trim(), 140) : "Empty";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) {
+    if (value.every((item) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")) {
+      return truncateInline(value.join(", "), 140);
+    }
+    return `${value.length} item${value.length === 1 ? "" : "s"}`;
+  }
+  if (isPlainRecord(value)) return `${Object.keys(value).length} field${Object.keys(value).length === 1 ? "" : "s"}`;
+  if (value === null || value === undefined) return "Empty";
+  return truncateInline(String(value), 140);
+}
+
+function isEmptyPreviewValue(value: unknown) {
+  return value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function entityDisplayName(entity: string, plural: boolean) {
+  const singular: Record<string, string> = {
+    characters: "Character",
+    "character-groups": "Character group",
+    personas: "Persona",
+    "persona-groups": "Persona group",
+    lorebooks: "Lorebook",
+    "lorebook-entries": "Lorebook entry",
+    prompts: "Prompt preset",
+    "prompt-sections": "Prompt section",
+    "prompt-groups": "Prompt group",
+    "prompt-variables": "Prompt variable",
+  };
+  const base = singular[entity] ?? entity.replace(/-/g, " ");
+  if (!plural) return base;
+  if (base.endsWith("y")) return `${base.slice(0, -1)}ies`;
+  return `${base}s`;
+}
+
+function changeToneClass(op: string) {
+  if (op === "create") return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300";
+  if (op === "delete") return "bg-red-500/10 text-red-500";
+  return "bg-[var(--primary)]/10 text-[var(--primary)]";
+}
+
+function fieldLabel(field: string) {
+  return field
+    .replace(/^data\./, "")
+    .replace(/^extensions\./, "")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[._-]/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function shortPath(path: string) {
+  return path.replace(/^\/workspace\//, "");
+}
+
+function truncateInline(value: string, limit: number) {
+  return value.length > limit ? `${value.slice(0, limit).trimEnd()}…` : value;
+}
+
+function truncateBlock(value: string, limit: number) {
+  return value.length > limit ? `${value.slice(0, limit).trimEnd()}\n…` : value;
 }
 
 function PersonaAvatar({ persona }: { persona: MariPersona | null }) {

@@ -20,3 +20,12 @@ pub fn professor_mari_apply_staged_changes(
 ) -> Result<Value, AppError> {
     mari::professor_mari_apply_staged_changes(&state, action)
 }
+
+#[tauri::command]
+pub fn professor_mari_resolve_approval(
+    state: State<'_, AppState>,
+    approval_id: String,
+    approved: bool,
+) -> Result<Value, AppError> {
+    mari::professor_mari_resolve_approval(&state, approval_id, approved)
+}

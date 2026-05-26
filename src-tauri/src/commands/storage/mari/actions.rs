@@ -156,12 +156,13 @@ fn staged_storage_actions(
     session: &MariShellSession,
     changes: &[MariFileChange],
 ) -> AppResult<(Vec<Value>, Vec<Value>)> {
+    let manifest = session.manifest_snapshot();
     let mut existing_drafts: BTreeMap<(String, String), MariExistingRecordDraft> = BTreeMap::new();
     let mut new_drafts: BTreeMap<String, MariNewRecordDraft> = BTreeMap::new();
     let mut issues = Vec::new();
 
     for change in changes {
-        if let Some(binding) = session.manifest.get(&change.path) {
+        if let Some(binding) = manifest.get(&change.path) {
             match apply_bound_change(state, &mut existing_drafts, binding, change)? {
                 Ok(()) => {}
                 Err(reason) => issues.push(change_issue(change, Some(binding), reason)),
@@ -170,7 +171,7 @@ fn staged_storage_actions(
         }
 
         if let Some(target) = new_record_target(&change.path) {
-            if let Some(folder_binding) = existing_folder_binding(session, &target.folder_path) {
+            if let Some(folder_binding) = existing_folder_binding(&manifest, &target.folder_path) {
                 let inferred_binding = MariWorkspaceBinding {
                     entity: folder_binding.entity.clone(),
                     id: folder_binding.id.clone(),
@@ -454,20 +455,18 @@ fn new_record_target(path: &str) -> Option<MariNewRecordTarget> {
 }
 
 fn existing_folder_binding<'a>(
-    session: &'a MariShellSession,
+    manifest: &'a BTreeMap<String, MariWorkspaceBinding>,
     folder_path: &str,
 ) -> Option<&'a MariWorkspaceBinding> {
     let prefix = format!("{}/", folder_path.trim_end_matches('/'));
-    session
-        .manifest
+    manifest
         .iter()
         .find(|(path, binding)| {
             path.starts_with(&prefix) && binding.field.as_deref() == Some("metadata")
         })
         .map(|(_, binding)| binding)
         .or_else(|| {
-            session
-                .manifest
+            manifest
                 .iter()
                 .find(|(path, _)| path.starts_with(&prefix))
                 .map(|(_, binding)| binding)
@@ -607,9 +606,10 @@ pub(crate) async fn staged_mari_action_contract(
 ) -> AppResult<Value> {
     let changes = session.pending_file_changes().await?;
     let (storage_actions, unmapped_changes) = staged_storage_actions(state, session, &changes)?;
+    let manifest = session.manifest_snapshot();
     let change_summaries = changes
         .iter()
-        .map(|change| file_change_summary_with_binding(change, session.manifest.get(&change.path)))
+        .map(|change| file_change_summary_with_binding(change, manifest.get(&change.path)))
         .collect::<Vec<_>>();
     Ok(json!({
         "type": if changes.is_empty() { "none" } else { "staged_file_changes" },
@@ -618,6 +618,6 @@ pub(crate) async fn staged_mari_action_contract(
         "storageActions": storage_actions,
         "unmappedChanges": unmapped_changes,
         "workspaceManifest": session.manifest_summary(),
-        "approvalRequired": !storage_actions.is_empty(),
+        "approvalRequired": !storage_actions.is_empty() && unmapped_changes.is_empty(),
     }))
 }

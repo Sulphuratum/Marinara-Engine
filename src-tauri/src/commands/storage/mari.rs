@@ -37,7 +37,9 @@ use workspace::build_mari_workspace_seed;
 pub(crate) const MARI_TEXT_ATTACHMENT_CHAR_LIMIT: usize = 60_000;
 pub(crate) const MARI_TOOL_TEXT_LIMIT: usize = 32_000;
 pub(crate) const MARI_METADATA_STRING_LIMIT: usize = 4_000;
-pub(crate) const MARI_SYSTEM_PROMPT: &str = "You are Professor Mari, a coding-style agent inside a virtual Marinara workspace containing the user's creative library. Reply plainly and helpfully. Use tools to inspect /workspace/index.md and folders like /workspace/characters, /workspace/personas, /workspace/lorebooks, and /workspace/prompts before answering questions about the user's data. Visible paths use descriptive names; internal storage IDs are hidden and tracked by Marinara. File changes are staged for user review after your commands; do not ask for approval before making staged edits.";
+pub(crate) const MARI_MODEL_OUTPUT_TOKENS: u64 = 0;
+pub(crate) const MARI_AGENT_MAX_TURNS: usize = 16;
+pub(crate) const MARI_SYSTEM_PROMPT: &str = "You are Professor Mari, a coding-style agent inside a virtual Marinara workspace containing the user's creative library. Reply plainly and helpfully. Use tools to inspect /workspace/index.md and folders like /workspace/characters, /workspace/personas, /workspace/lorebooks, and /workspace/prompts before answering questions about the user's data. The read tool can read files and directories; directory reads return index.md when present, otherwise a listing. Read /workspace/FORMAT.md and the nearest folder-level FORMAT.md before creating or restructuring records. Visible paths use descriptive names; internal storage IDs are hidden and tracked by Marinara. When a modifying tool changes files, Marinara pauses and asks the user to approve or reject before the tool result is returned to you. Do not ask for approval before making edits.";
 pub(crate) const MARI_STORAGE_ACTION_ENTITIES: &[&str] = &[
     "characters",
     "character-groups",
@@ -82,6 +84,19 @@ pub(crate) fn professor_mari_apply_staged_changes(
     actions::professor_mari_apply_staged_changes(state, action)
 }
 
+pub(crate) fn professor_mari_resolve_approval(
+    state: &AppState,
+    approval_id: String,
+    approved: bool,
+) -> AppResult<Value> {
+    state.resolve_mari_approval(&approval_id, approved)?;
+    Ok(json!({
+        "resolved": true,
+        "approvalId": approval_id,
+        "approved": approved,
+    }))
+}
+
 async fn run_mari_agent(
     state: &AppState,
     connection: marinara_llm::LlmConnection,
@@ -90,9 +105,9 @@ async fn run_mari_agent(
 ) -> AppResult<(String, Value, Vec<Value>)> {
     let workspace_seed = build_mari_workspace_seed(state)?;
     let session = MariShellSession::new(input, workspace_seed, trace_channel).await?;
-    let tools = build_pi_like_tools(session.clone());
+    let tools = build_pi_like_tools(state.clone(), session.clone());
     let llm: Arc<dyn LLMProvider> = Arc::new(MarinaraLlmProvider::new(connection, session.clone()));
-    let agent = ReActAgent::with_max_turns(ProfessorMariAgent { tools }, 8);
+    let agent = ReActAgent::with_max_turns(ProfessorMariAgent { tools }, MARI_AGENT_MAX_TURNS);
     let agent_handle = AgentBuilder::<_, DirectAgent>::new(agent)
         .llm(llm)
         .memory(Box::new(SlidingWindowMemory::new(12)))

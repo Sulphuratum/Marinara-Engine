@@ -12,8 +12,9 @@ pub(crate) fn resolve_virtual_path(path: &str) -> String {
 }
 
 pub(crate) fn normalize_virtual_path(path: &str) -> String {
+    let normalized_separators = path.replace('\\', "/");
     let mut parts = Vec::new();
-    for part in path.split('/') {
+    for part in normalized_separators.split('/') {
         match part {
             "" | "." => {}
             ".." => {
