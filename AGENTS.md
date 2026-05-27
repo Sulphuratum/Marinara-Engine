@@ -9,9 +9,8 @@
 
 ## Graphify
 
-- On the `refactor` branch, keep Graphify installed and available before codebase-navigation or implementation work.
-- This repository has a persistent `graphify-out/` map. Read `graphify-out/GRAPH_REPORT.md` or the wiki before broad architecture, file-relationship, or unfamiliar-area exploration, then verify claims against source files.
-- After every code change, run `graphify update .` from the repository root so the map stays current. Do not hand-edit generated `graphify-out/` files.
+- Read `GRAPHIFY.md` for the `refactor` branch's persistent Graphify install, usage, report-reading, and map-refresh instructions.
+- Keep Graphify installed and run `graphify update .` from the repository root after every code change.
 
 ## Verification
 
