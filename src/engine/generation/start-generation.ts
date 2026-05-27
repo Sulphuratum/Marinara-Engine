@@ -33,6 +33,7 @@ import {
   applyGenerationReplayToRegenerateInput,
   buildGenerationReplay,
   normalizeGenerationReplay,
+  type GenerationReplay,
 } from "./generation-replay";
 import { assembleGenerationPrompt, chatSummaryForGeneration } from "./prompt-assembly";
 import type { GenerationCharacterContext, GenerationPersonaContext } from "./prompt-assembly";
@@ -584,9 +585,7 @@ async function saveAssistantMessage(args: {
   if (args.input.impersonate === true) {
     if (regenerateMessageId) {
       await args.storage.addChatMessageSwipe(args.input.chatId, regenerateMessageId, args.content);
-      const extraPatch: Record<string, unknown> = {};
-      if (generationReplay) extraPatch.generationReplay = generationReplay;
-      extraPatch.chatSummaryFingerprint = args.chatSummaryFingerprint;
+      const extraPatch = generationReplayExtraPatch(generationReplay, args.chatSummaryFingerprint);
       return args.storage.patchChatMessageExtra(regenerateMessageId, extraPatch);
     }
 
@@ -604,9 +603,7 @@ async function saveAssistantMessage(args: {
 
   if (regenerateMessageId) {
     await args.storage.addChatMessageSwipe(args.input.chatId, regenerateMessageId, args.content);
-    const extraPatch: Record<string, unknown> = {};
-    if (generationReplay) extraPatch.generationReplay = generationReplay;
-    extraPatch.chatSummaryFingerprint = args.chatSummaryFingerprint;
+    const extraPatch = generationReplayExtraPatch(generationReplay, args.chatSummaryFingerprint);
     return args.storage.patchChatMessageExtra(regenerateMessageId, extraPatch);
   }
 
@@ -637,6 +634,16 @@ async function saveAssistantMessage(args: {
       usage: args.usage ?? null,
     },
   });
+}
+
+function generationReplayExtraPatch(
+  generationReplay: GenerationReplay | null,
+  chatSummaryFingerprint: string | null,
+): Record<string, unknown> {
+  const extraPatch: Record<string, unknown> = {};
+  if (generationReplay) extraPatch.generationReplay = generationReplay;
+  extraPatch.chatSummaryFingerprint = chatSummaryFingerprint;
+  return extraPatch;
 }
 
 function savedGenerationEventType(input: StartGenerationInput): "assistant_message" | "user_message" {
