@@ -580,13 +580,6 @@ async function saveAssistantMessage(args: {
 }): Promise<unknown | null> {
   const regenerateMessageId = readString(args.input.regenerateMessageId).trim();
   const generationReplay = buildGenerationReplay(args.input);
-  const generationInfo = {
-    connectionId: readString(args.connection.id) || null,
-    model: readString(args.connection.model) || null,
-    agentResults: args.agentResults.length,
-    notes: args.noteCount,
-    usage: args.usage ?? null,
-  };
 
   if (args.input.impersonate === true) {
     if (regenerateMessageId) {
@@ -606,7 +599,6 @@ async function saveAssistantMessage(args: {
         ...(generationReplay ? { generationReplay } : {}),
         chatSummaryFingerprint: args.chatSummaryFingerprint,
       },
-      generationInfo,
     });
   }
 
@@ -637,7 +629,13 @@ async function saveAssistantMessage(args: {
       ...(generationReplay ? { generationReplay } : {}),
       chatSummaryFingerprint: args.chatSummaryFingerprint,
     },
-    generationInfo,
+    generationInfo: {
+      connectionId: readString(args.connection.id) || null,
+      model: readString(args.connection.model) || null,
+      agentResults: args.agentResults.length,
+      notes: args.noteCount,
+      usage: args.usage ?? null,
+    },
   });
 }
 

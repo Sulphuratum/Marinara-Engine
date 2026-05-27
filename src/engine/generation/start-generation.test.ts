@@ -517,10 +517,6 @@ describe("startGeneration generation replay metadata", () => {
           impersonateBlockAgents: true,
         },
       },
-      generationInfo: {
-        connectionId: "connection-1",
-        model: "test-model",
-      },
     });
     expect(createChatMessage.mock.calls.some(([, value]) => value.role === "assistant")).toBe(false);
     expect((streamedRequests[0] as { messages: Array<{ role: string; content: string }> }).messages).toEqual(
