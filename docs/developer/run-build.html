@@ -218,7 +218,9 @@ MARINARA_DATA_DIR=/path/to/data</code></pre>
           <code>ALLOW_UNAUTHENTICATED_PRIVATE_NETWORK=true</code> for trusted
           LAN/private-network access. Set <code>CORS_ORIGINS</code> or
           <code>CSRF_TRUSTED_ORIGINS</code> if your desktop client origin is not
-          one of the runtime defaults.
+          one of the runtime defaults. Use exact origins;
+          <code>CORS_ORIGINS=*</code> does not grant browser-origin trust for
+          mutating API requests.
         </p>
         <div class="callout">
           Remote-capable features must use the shared API HTTP pipeline:

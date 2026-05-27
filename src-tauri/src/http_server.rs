@@ -689,11 +689,17 @@ impl SecurityConfig {
         self.cors_wildcard || self.cors_origins.iter().any(|allowed| allowed == origin)
     }
 
+    fn is_exact_cors_origin_allowed(&self, origin: &str) -> bool {
+        self.cors_origins.iter().any(|allowed| {
+            allowed != "*" && normalize_origin(allowed).as_deref() == Some(origin)
+        })
+    }
+
     fn is_origin_trusted(&self, origin_or_referer: &str) -> bool {
         let Some(origin) = normalize_origin(origin_or_referer) else {
             return false;
         };
-        self.is_cors_origin_allowed(&origin)
+        self.is_exact_cors_origin_allowed(&origin)
             || self.csrf_trusted_origins.iter().any(|trusted| {
                 trusted == "*" || normalize_origin(trusted).as_deref() == Some(origin.as_str())
             })
@@ -1224,6 +1230,29 @@ mod tests {
         let rejection = security
             .evaluate_request(&request)
             .expect_err("untrusted browser origin should not pass with only the header");
+        assert_eq!(rejection.status, StatusCode::FORBIDDEN);
+        assert_eq!(rejection.code, "csrf_origin_not_trusted");
+    }
+
+    #[test]
+    fn hostable_security_requires_exact_origin_for_browser_write_trust() {
+        let mut security = test_security();
+        security.cors_wildcard = true;
+        security.cors_origins = vec!["*".to_string()];
+
+        let request = request(
+            Method::POST,
+            "/api/invoke",
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            &[
+                ("origin", "https://untrusted.example"),
+                (CSRF_HEADER_NAME, CSRF_HEADER_VALUE),
+            ],
+        );
+
+        let rejection = security
+            .evaluate_request(&request)
+            .expect_err("wildcard CORS should not grant browser-origin trust");
         assert_eq!(rejection.status, StatusCode::FORBIDDEN);
         assert_eq!(rejection.code, "csrf_origin_not_trusted");
     }
