@@ -60,8 +60,10 @@ export interface GameSetupRememberedText {
   preferences: string;
 }
 
-export const SIDEBAR_WIDTH_MIN = 240;
-export const SIDEBAR_WIDTH_MAX = 480;
+export const SIDEBAR_WIDTH_DEFAULT = 320;
+export const RIGHT_PANEL_WIDTH_DEFAULT = 320;
+export const SIDEBAR_WIDTH_MIN = 280;
+export const SIDEBAR_WIDTH_MAX = 520;
 export const RIGHT_PANEL_WIDTH_MIN = 280;
 export const RIGHT_PANEL_WIDTH_MAX = 520;
 export const TRACKER_PANEL_SIZE_PROFILE_WIDTHS: Record<TrackerPanelSizeProfile, number> = {

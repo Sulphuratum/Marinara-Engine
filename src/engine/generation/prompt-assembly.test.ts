@@ -639,6 +639,39 @@ describe("assembleGenerationPrompt inactive chat characters", () => {
 });
 
 describe("assembleGenerationPrompt chat summary fingerprints", () => {
+  it("appends roleplay summaries to the system prompt when a preset has no summary marker", async () => {
+    const summary = "The party escaped the greenhouse and Nia still has the brass key.";
+    const assembly = await assembleGenerationPrompt(
+      storageWithSections([
+        section({
+          id: "main",
+          name: "Main",
+          role: "system",
+          content: "Continue the roleplay with careful continuity.",
+          sortOrder: 0,
+        }),
+      ]),
+      {
+        chat: {
+          id: "roleplay-chat",
+          mode: "roleplay",
+          characterIds: [],
+          metadata: { summary },
+        },
+        storedMessages: [],
+        connection: {},
+        request,
+        latestUserInput: "continue",
+      },
+    );
+
+    expect(assembly.messages[0]?.role).toBe("system");
+    expect(assembly.messages[0]?.content).toContain("Continue the roleplay with careful continuity.");
+    expect(assembly.messages[0]?.content).toContain("<chat_summary>");
+    expect(assembly.messages[0]?.content).toContain(summary);
+    expect(assembly.chatSummaryFingerprint).toBe(fingerprintChatSummary(summary));
+  });
+
   it("fingerprints the current summary even when prompt regex scripts transform the final prompt text", async () => {
     const summary = "The user met Nia at the market.";
     const assembly = await assembleGenerationPrompt(

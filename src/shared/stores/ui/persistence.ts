@@ -1,6 +1,12 @@
 import { createJSONStorage } from "zustand/middleware";
 import { normalizeQuoteFormat } from "../../lib/dialogue-quotes";
 import {
+  RIGHT_PANEL_WIDTH_DEFAULT,
+  RIGHT_PANEL_WIDTH_MAX,
+  RIGHT_PANEL_WIDTH_MIN,
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MAX,
+  SIDEBAR_WIDTH_MIN,
   normalizeTrackerPanelSectionOrder,
   normalizeTrackerPanelSizeProfile,
   normalizeSummaryPopoverSettings,
@@ -10,11 +16,18 @@ import {
 import type { UIState } from "./model";
 
 export const UI_STORE_NAME = "marinara-engine-ui-tauri";
-export const UI_STORE_VERSION = 4;
+export const UI_STORE_VERSION = 5;
+
+const LEGACY_SIDEBAR_WIDTH_DEFAULT = 280;
 
 type PersistedUiState = Partial<UIState> & {
   trackerPanelWidth?: unknown;
 };
+
+function normalizePersistedWidth(value: unknown, fallback: number, min: number, max: number): number {
+  const width = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.max(min, Math.min(max, width));
+}
 
 export function createDebouncedUiStorage() {
   return createJSONStorage(() => {
@@ -167,6 +180,18 @@ export function migrateUiState(persistedState: unknown): Partial<UIState> {
       : {};
 
   const legacyWidth = persisted.trackerPanelWidth;
+  persisted.sidebarWidth = normalizePersistedWidth(
+    persisted.sidebarWidth === LEGACY_SIDEBAR_WIDTH_DEFAULT ? SIDEBAR_WIDTH_DEFAULT : persisted.sidebarWidth,
+    SIDEBAR_WIDTH_DEFAULT,
+    SIDEBAR_WIDTH_MIN,
+    SIDEBAR_WIDTH_MAX,
+  );
+  persisted.rightPanelWidth = normalizePersistedWidth(
+    persisted.rightPanelWidth,
+    RIGHT_PANEL_WIDTH_DEFAULT,
+    RIGHT_PANEL_WIDTH_MIN,
+    RIGHT_PANEL_WIDTH_MAX,
+  );
   persisted.trackerPanelThoughtBubbleDisplay = normalizeTrackerThoughtBubbleDisplay(
     persisted.trackerPanelThoughtBubbleDisplay,
   );

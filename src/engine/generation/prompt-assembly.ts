@@ -796,6 +796,44 @@ function fallbackSystemPrompt(input: PromptAssemblyInput, args: {
     .join("\n\n");
 }
 
+function shouldForceRoleplaySummaryIntoSystem(chat: JsonRecord): boolean {
+  const meta = parseRecord(chat.metadata);
+  const mode = readString(chat.mode || chat.chatMode, "conversation");
+  return mode === "roleplay" || meta.sceneStatus === "active";
+}
+
+function appendSummaryToSystemPrompt(messages: ChatMLMessage[], summary: string | null, wrapFormat: WrapFormat): boolean {
+  const trimmed = summary?.trim();
+  if (!trimmed) return false;
+
+  const summaryBlock = wrapContent(trimmed, "chat_summary", wrapFormat);
+  const firstHistoryIndex = messages.findIndex((message) => message.contextKind === "history");
+  const promptEnd = firstHistoryIndex >= 0 ? firstHistoryIndex : messages.length;
+  let systemIndex = -1;
+
+  for (let index = promptEnd - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "system" || message.contextKind !== "prompt") continue;
+    systemIndex = index;
+    break;
+  }
+
+  if (systemIndex >= 0) {
+    messages[systemIndex] = {
+      ...messages[systemIndex]!,
+      content: `${messages[systemIndex]!.content.trim()}\n\n${summaryBlock}`,
+    };
+    return true;
+  }
+
+  messages.unshift({
+    role: "system",
+    content: summaryBlock,
+    contextKind: "prompt",
+  });
+  return true;
+}
+
 function buildRoleplayScenePromptBlock(
   chat: JsonRecord,
   characters: GenerationCharacterContext[],
@@ -1409,6 +1447,8 @@ export async function assembleGenerationPrompt(
   const agentData = input.agentData ?? {};
   let messages: ChatMLMessage[] = [];
   let insertedHistory = false;
+  let insertedSummary = false;
+  let usedFallbackSystemPrompt = false;
 
   if (selectedPreset) {
     for (const section of selectedPreset.sections) {
@@ -1431,6 +1471,7 @@ export async function assembleGenerationPrompt(
       });
       const resolved = resolveMacros(rawContent, macros);
       if (!resolved.trim()) continue;
+      if (marker?.type === "chat_summary" && summary?.trim()) insertedSummary = true;
       const name = readString(section.name) || readString(section.identifier) || marker?.type || "Prompt";
       messages.push({
         role: normalizeRole(section.role),
@@ -1441,6 +1482,7 @@ export async function assembleGenerationPrompt(
   }
 
   if (messages.length === 0) {
+    usedFallbackSystemPrompt = true;
     messages.push({
       role: "system",
       content: fallbackSystemPrompt(input, {
@@ -1452,6 +1494,10 @@ export async function assembleGenerationPrompt(
       }),
       contextKind: "prompt",
     });
+  }
+
+  if (!usedFallbackSystemPrompt && !insertedSummary && shouldForceRoleplaySummaryIntoSystem(input.chat)) {
+    appendSummaryToSystemPrompt(messages, summary, wrapFormat);
   }
 
   if (!insertedHistory) {
