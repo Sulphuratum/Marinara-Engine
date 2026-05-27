@@ -1,6 +1,8 @@
 import {
   BUILT_IN_AGENTS,
   BUILT_IN_AGENT_RUN_INTERVAL_DEFAULTS,
+  DEFAULT_AGENT_TOOLS,
+  getDefaultBuiltInAgentSettings,
   type AgentContext,
   type AgentResult,
 } from "../contracts/types/agent";
@@ -200,6 +202,34 @@ function isBuiltInAgent(agent: JsonRecord): boolean {
   return BUILT_IN_AGENT_TYPES.has(type);
 }
 
+function builtInAgentType(agent: JsonRecord): string {
+  return readString(agent.type || agent.agentType).trim();
+}
+
+function builtInAgentMeta(type: string) {
+  return BUILT_IN_AGENTS.find((agent) => agent.id === type) ?? null;
+}
+
+function builtInAgentFallback(type: string): JsonRecord | null {
+  const meta = builtInAgentMeta(type);
+  if (!meta) return null;
+  const settings = {
+    ...getDefaultBuiltInAgentSettings(type),
+    enabledTools: DEFAULT_AGENT_TOOLS[type] ?? [],
+  };
+  return {
+    id: `builtin:${type}`,
+    type,
+    name: meta.name,
+    description: meta.description,
+    enabled: true,
+    phase: meta.phase,
+    connectionId: null,
+    promptTemplate: "",
+    settings,
+  };
+}
+
 function positiveInteger(value: unknown, fallback: number, max: number): number {
   const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
   if (!Number.isFinite(parsed) || parsed < 1) return fallback;
@@ -364,7 +394,7 @@ function buildAgentToolContext(
       if (BUILT_IN_TOOL_MAP.has(toolName)) {
         return stringifyToolResult(await executeBuiltInTool(deps, input, agent, call));
       }
-      return customToolExecutor(deps.integrations, call);
+      return customToolExecutor(deps.integrations, call, customTools.get(toolName));
     },
   };
 }
@@ -400,16 +430,28 @@ async function resolveAgents(deps: AgentDeps, input: GenerationAgentRuntimeInput
   if (!chatAgentsEnabled(input)) return { agents: [], skippedResults: [] };
   const scopedAgentIds = chatActiveAgentIds(input);
   const activationMessages = activationScanMessages(input);
-  const rows = (await deps.storage.list<JsonRecord>("agents"))
-    .filter((agent) => boolish(agent.enabled, false))
-    .filter((agent) => {
-      const type = readString(agent.type || agent.agentType);
-      const id = readString(agent.id);
-      if ((!input.agentTypes || input.agentTypes.size === 0) && type === "lorebook-keeper") return false;
-      if (scopedAgentIds.size > 0 && !scopedAgentIds.has(type) && !scopedAgentIds.has(id)) return false;
-      if (!input.agentTypes || input.agentTypes.size === 0) return true;
-      return input.agentTypes.has(type);
-    });
+  const requestedAgentTypes = input.agentTypes ?? null;
+  const explicitAgentTypes = requestedAgentTypes ?? scopedAgentIds;
+  const rows = (await deps.storage.list<JsonRecord>("agents")).filter((agent) => {
+    const type = builtInAgentType(agent);
+    const id = readString(agent.id);
+    const requestedExplicitly = requestedAgentTypes && (requestedAgentTypes.has(type) || requestedAgentTypes.has(id));
+    const scopedToChat = scopedAgentIds.size > 0 && (scopedAgentIds.has(type) || scopedAgentIds.has(id));
+    if (!requestedExplicitly && (!requestedAgentTypes || requestedAgentTypes.size === 0) && type === "lorebook-keeper") {
+      return false;
+    }
+    if (requestedAgentTypes && requestedAgentTypes.size > 0) return Boolean(requestedExplicitly);
+    if (scopedAgentIds.size > 0) return scopedToChat;
+    return boolish(agent.enabled, false);
+  });
+  const resolvedBuiltInTypes = new Set(rows.map(builtInAgentType).filter((type) => BUILT_IN_AGENT_TYPES.has(type)));
+  const fallbackRows = [...explicitAgentTypes]
+    .filter((type) => BUILT_IN_AGENT_TYPES.has(type))
+    .filter((type) => !resolvedBuiltInTypes.has(type))
+    .filter((type) => requestedAgentTypes || type !== "lorebook-keeper")
+    .map(builtInAgentFallback)
+    .filter((agent): agent is JsonRecord => !!agent);
+  rows.push(...fallbackRows);
   let customTools: Map<string, CustomToolRecord> | null = null;
   const resolved: ResolvedAgent[] = [];
   const skippedResults: AgentResult[] = [];

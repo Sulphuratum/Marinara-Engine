@@ -117,6 +117,109 @@ describe("createGenerationAgentRuntime", () => {
     expect(results).toEqual(runtime.preResults);
   });
 
+  it("runs chat-scoped built-in agents even before a config row exists", async () => {
+    const results: unknown[] = [];
+    const runtime = await createGenerationAgentRuntime(
+      {
+        storage: storage([]),
+        llm,
+        integrations,
+      },
+      {
+        chat: { id: "chat-a", metadata: { enableAgents: true, activeAgentIds: ["prose-guardian"] } },
+        connection: { id: "chat-connection", model: "chat-model" },
+        storedMessages: [],
+        characters: [],
+        persona: null,
+        activatedLorebookEntries: [],
+        chatSummary: null,
+      },
+      (result) => results.push(result),
+    );
+
+    expect(runtime.preResults).toHaveLength(1);
+    expect(runtime.preResults[0]).toMatchObject({
+      agentId: "builtin:prose-guardian",
+      agentType: "prose-guardian",
+      success: true,
+    });
+    expect(runtime.preInjections).toEqual([
+      expect.objectContaining({
+        agentType: "prose-guardian",
+        agentName: "Prose Guardian",
+        text: "ok",
+      }),
+    ]);
+    expect(results).toEqual(runtime.preResults);
+  });
+
+  it("lets a per-chat active agent override a disabled global config row", async () => {
+    const results: unknown[] = [];
+    const runtime = await createGenerationAgentRuntime(
+      {
+        storage: storage([
+          {
+            id: "agent-a",
+            type: "director",
+            name: "Director",
+            enabled: false,
+            phase: "pre_generation",
+            connectionId: null,
+            model: "agent-model",
+            promptTemplate: "Direct the scene.",
+          },
+        ]),
+        llm,
+        integrations,
+      },
+      {
+        chat: { id: "chat-a", metadata: { enableAgents: true, activeAgentIds: ["director"] } },
+        connection: { id: "chat-connection", model: "chat-model" },
+        storedMessages: [],
+        characters: [],
+        persona: null,
+        activatedLorebookEntries: [],
+        chatSummary: null,
+      },
+      (result) => results.push(result),
+    );
+
+    expect(runtime.preResults).toHaveLength(1);
+    expect(runtime.preResults[0]).toMatchObject({
+      agentId: "agent-a",
+      agentType: "director",
+      success: true,
+    });
+    expect(results).toEqual(runtime.preResults);
+  });
+
+  it("uses built-in fallbacks for manual agent retries", async () => {
+    const runtime = await createGenerationAgentRuntime(
+      {
+        storage: storage([]),
+        llm,
+        integrations,
+      },
+      {
+        chat: { id: "chat-a", metadata: {} },
+        connection: { id: "chat-connection", model: "chat-model" },
+        storedMessages: [],
+        characters: [],
+        persona: null,
+        activatedLorebookEntries: [],
+        chatSummary: null,
+        agentTypes: new Set(["prose-guardian"]),
+      },
+    );
+
+    expect(runtime.preResults).toHaveLength(1);
+    expect(runtime.preResults[0]).toMatchObject({
+      agentId: "builtin:prose-guardian",
+      agentType: "prose-guardian",
+      success: true,
+    });
+  });
+
   it("skips agents with dangling connection ids instead of falling back to the chat connection", async () => {
     const results: unknown[] = [];
     const runtime = await createGenerationAgentRuntime(
