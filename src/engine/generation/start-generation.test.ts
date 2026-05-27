@@ -760,6 +760,63 @@ describe("startGeneration agent runtime parity", () => {
     expect(mainPrompt).toContain("Done.");
   });
 
+  it("persists secret plot agent output into agent memory", async () => {
+    const plotData = {
+      overarchingArc: { description: "Recover the anchor", completed: false },
+      sceneDirections: [
+        { direction: "Send a coded invitation", fulfilled: false },
+        { direction: "Retire the decoy", fulfilled: true },
+      ],
+      pacing: "mounting-pressure",
+      staleDetected: true,
+    };
+    let turn = 0;
+    const stream: LlmGateway["stream"] = vi.fn(async function* () {
+      if (turn === 0) {
+        turn += 1;
+        yield { type: "token" as const, text: JSON.stringify(plotData) };
+        return;
+      }
+      turn += 1;
+      yield { type: "token" as const, text: "Main response." };
+    });
+    const { deps } = generationDepsForChat({
+      chatPatch: { mode: "roleplay" },
+      chatMetadata: { enableAgents: true, activeAgentIds: ["secret-agent"] },
+      agents: [
+        {
+          id: "secret-agent",
+          type: "secret-plot-driver",
+          name: "Secret Plot Driver",
+          enabled: true,
+          phase: "pre_generation",
+          connectionId: null,
+          model: "agent-model",
+          promptTemplate: "Plan the hidden arc.",
+        },
+      ],
+    });
+    deps.llm = { ...deps.llm, stream };
+
+    await drainGeneration(startGeneration(deps, { chatId: "chat-1", userMessage: "hello" }));
+
+    const createMock = deps.storage.create as unknown as {
+      mock: { calls: Array<[string, Record<string, unknown>]> };
+    };
+    const memoryWrites = createMock.mock.calls
+      .filter(([entity]) => entity === "agent-memory")
+      .map(([, value]) => value);
+    const memoryByKey = new Map(memoryWrites.map((value) => [String(value.key), value]));
+
+    expect(JSON.parse(String(memoryByKey.get("overarchingArc")?.value))).toEqual(plotData.overarchingArc);
+    expect(JSON.parse(String(memoryByKey.get("sceneDirections")?.value))).toEqual([
+      { direction: "Send a coded invitation", fulfilled: false },
+    ]);
+    expect(JSON.parse(String(memoryByKey.get("recentlyFulfilled")?.value))).toEqual(["Retire the decoy"]);
+    expect(memoryByKey.get("pacing")?.value).toBe("mounting-pressure");
+    expect(JSON.parse(String(memoryByKey.get("staleDetected")?.value))).toBe(true);
+  });
+
   it("does not duplicate parallel agent results from callback and return paths", async () => {
     const events: unknown[] = [];
     const { deps, createChatMessage } = generationDepsForChat({

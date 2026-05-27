@@ -400,6 +400,71 @@ describe("createGenerationAgentRuntime", () => {
     expect(toolMessages[0]!.content).toBe("Forecast for Gdansk: cloudy");
   });
 
+  it("injects persisted secret plot memory into the secret plot agent prompt", async () => {
+    const calls: LlmRequest[] = [];
+    await createGenerationAgentRuntime(
+      {
+        storage: storage(
+          [
+            {
+              id: "secret-agent",
+              type: "secret-plot-driver",
+              name: "Secret Plot Driver",
+              enabled: true,
+              phase: "pre_generation",
+              connectionId: null,
+              model: "agent-model",
+              promptTemplate: "Plan the hidden arc.",
+            },
+          ],
+          {
+            "agent-memory": [
+              {
+                id: "memory-arc",
+                agentConfigId: "secret-agent",
+                chatId: "chat-a",
+                key: "overarchingArc",
+                value: JSON.stringify({ description: "Recover the anchor", completed: false }),
+              },
+              {
+                id: "memory-directions",
+                agentConfigId: "secret-agent",
+                chatId: "chat-a",
+                key: "sceneDirections",
+                value: JSON.stringify([{ direction: "Send a coded invitation", fulfilled: false }]),
+              },
+              {
+                id: "memory-fulfilled",
+                agentConfigId: "secret-agent",
+                chatId: "chat-a",
+                key: "recentlyFulfilled",
+                value: JSON.stringify(["Close the old lead"]),
+              },
+            ],
+          },
+        ),
+        llm: countingLlm(calls, JSON.stringify({ sceneDirections: [] })),
+        integrations,
+      },
+      {
+        chat: { id: "chat-a", metadata: { enableAgents: true, activeAgentIds: ["secret-agent"] } },
+        connection: { id: "chat-connection", model: "chat-model" },
+        storedMessages: [],
+        characters: [],
+        persona: null,
+        activatedLorebookEntries: [],
+        chatSummary: null,
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    const promptText = calls[0]!.messages.map((message) => message.content).join("\n");
+    expect(promptText).toContain("<secret_plot_state>");
+    expect(promptText).toContain("Recover the anchor");
+    expect(promptText).toContain("Send a coded invitation");
+    expect(promptText).toContain("Close the old lead");
+  });
+
   it("runs chat-scoped built-in agents even before a config row exists", async () => {
     const results: unknown[] = [];
     const runtime = await createGenerationAgentRuntime(

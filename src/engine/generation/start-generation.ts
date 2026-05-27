@@ -6,6 +6,7 @@ import type { LlmGateway, LlmMessage } from "../capabilities/llm";
 import type { StorageGateway } from "../capabilities/storage";
 import type { GenerationGuideSource } from "../shared/text/generation-guide";
 import { activeCharacterIds, assertChatHasActiveCharacters, assertRequestedCharacterIsActive } from "./active-characters";
+import { persistSecretPlotAgentMemory } from "./agent-memory-runtime";
 import { createGenerationAgentRuntime } from "./agent-runner";
 import { consumePendingConnectedInfluences, persistConnectedCommandTags } from "./connected-commands";
 import type { LLMToolCall } from "../generation-core/llm/base-provider";
@@ -503,6 +504,18 @@ async function persistAgentResults(
   }
 }
 
+async function persistSecretPlotAgentMemorySafely(
+  storage: StorageGateway,
+  chatId: string,
+  results: AgentResult[],
+): Promise<void> {
+  try {
+    await persistSecretPlotAgentMemory(storage, chatId, results);
+  } catch (error) {
+    console.warn("[generation] secret plot memory persist failed", error);
+  }
+}
+
 async function persistTrackerSnapshotSafely(
   storage: StorageGateway,
   chatId: string,
@@ -801,6 +814,7 @@ async function runGenerationAgentsForTarget(args: {
   if (target) {
     await persistTrackerSnapshotSafely(deps.storage, chatId, target, finalResults, retryBaseline);
   }
+  await persistSecretPlotAgentMemorySafely(deps.storage, chatId, finalResults);
   await persistAgentResults(deps.storage, chatId, target ? readString(target.id) || null : null, finalResults);
   return finalResults;
 }
@@ -1037,6 +1051,7 @@ export async function* startGeneration(
       });
     }
     if (saved) await persistTrackerSnapshotSafely(deps.storage, chatId, saved, allAgentResults, generationTrackerBaseline);
+    await persistSecretPlotAgentMemorySafely(deps.storage, chatId, allAgentResults);
     await persistAgentResults(deps.storage, chatId, messageId(saved), allAgentResults);
     if (saved) {
       const autoLorebookResults = await runLorebookKeeperBackfill(
