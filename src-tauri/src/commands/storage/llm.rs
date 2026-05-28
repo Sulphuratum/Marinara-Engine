@@ -1,6 +1,6 @@
+use super::prompts;
 use super::shared::*;
 use super::*;
-use super::prompts;
 use marinara_security::is_allowed_outbound_url;
 
 pub(crate) fn resolve_llm_connection_for_request(
@@ -1082,14 +1082,36 @@ fn connection_base_url(connection: &Value) -> String {
         .get("provider")
         .and_then(Value::as_str)
         .unwrap_or("openai");
-    connection
+    let base = connection
         .get("baseUrl")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| provider_default_base_url(provider))
         .trim_end_matches('/')
-        .to_string()
+        .to_string();
+    if provider == "google" {
+        normalize_google_base_url(base)
+    } else {
+        base
+    }
+}
+
+fn normalize_google_base_url(base: String) -> String {
+    let lower = base.to_ascii_lowercase();
+    let prefix = [
+        "https://home.linkapi.ai",
+        "https://www.linkapi.ai",
+        "https://linkapi.ai",
+    ]
+    .into_iter()
+    .find(|prefix| lower == *prefix || lower.starts_with(&format!("{prefix}/")));
+    if let Some(prefix) = prefix {
+        let suffix = &base[prefix.len()..];
+        format!("https://api.linkapi.ai{suffix}")
+    } else {
+        base
+    }
 }
 
 fn provider_default_base_url(provider: &str) -> &'static str {
@@ -1197,6 +1219,31 @@ mod tests {
                 &json!({}),
             ),
             "https://us-central1-aiplatform.googleapis.com/v1/projects/demo/locations/us-central1/publishers/google/models"
+        );
+    }
+
+    #[test]
+    fn google_connection_base_normalizes_linkapi_console_hosts() {
+        assert_eq!(
+            connection_base_url(&json!({
+                "provider": "google",
+                "baseUrl": "https://home.linkapi.ai"
+            })),
+            "https://api.linkapi.ai"
+        );
+        assert_eq!(
+            connection_base_url(&json!({
+                "provider": "google",
+                "baseUrl": "https://www.linkapi.ai/v1beta"
+            })),
+            "https://api.linkapi.ai/v1beta"
+        );
+        assert_eq!(
+            connection_base_url(&json!({
+                "provider": "openai",
+                "baseUrl": "https://home.linkapi.ai"
+            })),
+            "https://home.linkapi.ai"
         );
     }
 

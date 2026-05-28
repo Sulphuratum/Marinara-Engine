@@ -175,8 +175,8 @@
     "semantic_hash": ""
   },
   "src-tauri/crates/llm/src/lib.rs": {
-    "mtime": 1779967487.65232,
-    "ast_hash": "26eb642c0c0ba60287e84ce936c3c2e4",
+    "mtime": 1779968245.821077,
+    "ast_hash": "8627440068ad01073d57579d0afe9fd9",
     "semantic_hash": ""
   },
   "src-tauri/crates/core/src/lib.rs": {
@@ -345,8 +345,8 @@
     "semantic_hash": ""
   },
   "src-tauri/src/commands/storage/llm.rs": {
-    "mtime": 1779966352.986997,
-    "ast_hash": "b095a6af3eb62f3ea125e32a0b45b982",
+    "mtime": 1779968228.7589793,
+    "ast_hash": "638c02d8324dc721dfa73c8db40d4c3c",
     "semantic_hash": ""
   },
   "src-tauri/src/commands/storage/agents.rs": {

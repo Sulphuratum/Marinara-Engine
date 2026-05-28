@@ -506,6 +506,24 @@ fn provider_http_error(status: reqwest::StatusCode, details: Value) -> AppError 
     AppError::with_details("llm_provider_error", message, details)
 }
 
+fn sanitize_provider_error_text(text: &str) -> String {
+    let trimmed = text.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.contains("<html") || lower.contains("<!doctype") {
+        return "Provider returned HTML instead of JSON".to_string();
+    }
+    trimmed.chars().take(500).collect()
+}
+
+fn provider_error_details_from_text(text: &str) -> Value {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return json!({});
+    }
+    serde_json::from_str::<Value>(trimmed)
+        .unwrap_or_else(|_| json!({ "message": sanitize_provider_error_text(trimmed) }))
+}
+
 fn assistant_prefill(parameters: &Value) -> Option<String> {
     param_string(parameters, &["assistantPrefill", "assistant_prefill"])
 }
@@ -937,11 +955,7 @@ async fn openai_responses_request(
 async fn complete_openai_responses_rich(request: LlmRequest) -> AppResult<LlmCompletion> {
     let body = build_openai_responses_body(&request, false);
     let response = openai_responses_request(&request, &body).await?;
-    let status = response.status();
-    let json: Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::new("llm_response_error", error.to_string()))?;
+    let (status, json) = read_json_response(response).await?;
     if !status.is_success() {
         return Err(provider_http_error(status, json));
     }
@@ -1004,7 +1018,7 @@ async fn stream_openai_responses(
     let response = openai_responses_request(&request, &body).await?;
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.json::<Value>().await.unwrap_or_else(|_| json!({}));
+        let error_body = read_error_response_details(response).await?;
         return Err(provider_http_error(status, error_body));
     }
     let mut stream = response.bytes_stream();
@@ -2090,7 +2104,6 @@ async fn stream_google(
         .map_err(|error| AppError::new("llm_network_error", error.to_string()))?;
     let status = response.status();
     if !status.is_success() {
-        let error_body = response.json::<Value>().await.unwrap_or_else(|_| json!({}));
         if should_fallback_google_stream_status(status) {
             let content = complete_google(request).await?;
             if !content.is_empty() {
@@ -2098,6 +2111,7 @@ async fn stream_google(
             }
             return Ok(());
         }
+        let error_body = read_error_response_details(response).await?;
         return Err(provider_http_error(status, error_body));
     }
 
@@ -2176,15 +2190,40 @@ fn process_google_sse_block(
     Ok(())
 }
 
+async fn read_error_response_details(response: reqwest::Response) -> AppResult<Value> {
+    let text = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("llm_response_error", error.to_string()))?;
+    Ok(provider_error_details_from_text(&text))
+}
+
+async fn read_json_response(
+    response: reqwest::Response,
+) -> AppResult<(reqwest::StatusCode, Value)> {
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|error| AppError::new("llm_response_error", error.to_string()))?;
+    if !status.is_success() {
+        return Ok((status, provider_error_details_from_text(&text)));
+    }
+    let json = serde_json::from_str::<Value>(&text).map_err(|error| {
+        AppError::with_details(
+            "llm_response_error",
+            format!("Provider response was not valid JSON: {error}"),
+            json!({ "body": sanitize_provider_error_text(&text) }),
+        )
+    })?;
+    Ok((status, json))
+}
+
 async fn parse_json_response<F>(response: reqwest::Response, extract: F) -> AppResult<String>
 where
     F: Fn(&Value) -> Option<String>,
 {
-    let status = response.status();
-    let json: Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::new("llm_response_error", error.to_string()))?;
+    let (status, json) = read_json_response(response).await?;
     if !status.is_success() {
         return Err(provider_http_error(status, json));
     }
@@ -2245,11 +2284,7 @@ fn response_reasoning_text(choice: &Value, message: &Value) -> String {
 }
 
 async fn parse_json_response_rich(response: reqwest::Response) -> AppResult<LlmCompletion> {
-    let status = response.status();
-    let json: Value = response
-        .json()
-        .await
-        .map_err(|error| AppError::new("llm_response_error", error.to_string()))?;
+    let (status, json) = read_json_response(response).await?;
     if !status.is_success() {
         return Err(provider_http_error(status, json));
     }
@@ -2480,6 +2515,18 @@ mod tests {
         assert!(!should_fallback_google_stream_status(
             reqwest::StatusCode::UNAUTHORIZED
         ));
+    }
+
+    #[test]
+    fn provider_http_error_preserves_text_error_body() {
+        let details = provider_error_details_from_text("error code: 1033");
+        let error = provider_http_error(
+            reqwest::StatusCode::from_u16(530).expect("530 should be a valid status"),
+            details,
+        );
+
+        assert_eq!(error.code, "llm_provider_error");
+        assert!(error.message.contains("error code: 1033"));
     }
 
     #[test]
