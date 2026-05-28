@@ -237,6 +237,14 @@ function setChatCacheRecord(
   }
 }
 
+function cancelChatCacheQueries(qc: QueryClient, id: string) {
+  // Tauri-backed reads are not abortable, so awaiting broad cache cancellation
+  // can make optimistic chat-setting toggles wait behind large startup loads.
+  void qc.cancelQueries({ queryKey: chatKeys.detail(id) }).catch(() => undefined);
+  void qc.cancelQueries({ queryKey: chatKeys.list() }).catch(() => undefined);
+  void qc.cancelQueries({ queryKey: [...chatKeys.all, "group"] }).catch(() => undefined);
+}
+
 function patchAffectsActiveLorebooks(patch: Record<string, unknown>): boolean {
   return [
     "activeLorebookIds",
@@ -584,11 +592,8 @@ export function useUpdateChat() {
       personaId?: string | null;
       characterIds?: string[];
     }) => storageApi.update<Chat>("chats", id, data),
-    onMutate: async ({ id, ...data }) => {
-      await qc.cancelQueries({ queryKey: chatKeys.detail(id) });
-      await qc.cancelQueries({ queryKey: chatKeys.list() });
-      await qc.cancelQueries({ queryKey: [...chatKeys.all, "group"] });
-
+    onMutate: ({ id, ...data }) => {
+      cancelChatCacheQueries(qc, id);
       const previousDetail = qc.getQueryData<ChatCacheRecord>(chatKeys.detail(id));
       const previousListQueries = qc.getQueriesData<ChatCacheRecord[]>({ queryKey: chatKeys.list() });
       const previousGroupQueries = qc.getQueriesData<ChatCacheRecord[]>({ queryKey: [...chatKeys.all, "group"] });
@@ -636,11 +641,8 @@ export function useUpdateChatMetadata() {
   return useMutation({
     mutationFn: ({ id, ...metadata }: { id: string; [key: string]: unknown }) =>
       storageApi.patchChatMetadata<Chat>(id, metadata),
-    onMutate: async ({ id, ...metadata }) => {
-      await qc.cancelQueries({ queryKey: chatKeys.detail(id) });
-      await qc.cancelQueries({ queryKey: chatKeys.list() });
-      await qc.cancelQueries({ queryKey: [...chatKeys.all, "group"] });
-
+    onMutate: ({ id, ...metadata }) => {
+      cancelChatCacheQueries(qc, id);
       const previousDetail = qc.getQueryData<ChatCacheRecord>(chatKeys.detail(id));
       const previousListQueries = qc.getQueriesData<ChatCacheRecord[]>({ queryKey: chatKeys.list() });
       const previousGroupQueries = qc.getQueriesData<ChatCacheRecord[]>({ queryKey: [...chatKeys.all, "group"] });
@@ -1081,8 +1083,9 @@ async function generateLlmChatSummary(input: GenerateSummaryInput): Promise<Gene
 /** Peek at the assembled prompt for a chat */
 export function usePeekPrompt() {
   return useMutation({
-    mutationFn: (chatId: string) =>
-      previewGenerationPrompt(storageApi, { chatId }) as Promise<{
+    mutationFn: (input: string | { chatId: string; forCharacterId?: string | null }) => {
+      const request = typeof input === "string" ? { chatId: input } : input;
+      return previewGenerationPrompt(storageApi, request) as Promise<{
         messages: Array<{ role: string; content: string }>;
         parameters: unknown;
         generationInfo: {
@@ -1102,7 +1105,8 @@ export function usePeekPrompt() {
           durationMs?: number | null;
           finishReason?: string | null;
         } | null;
-      }>,
+      }>;
+    },
   });
 }
 

@@ -283,7 +283,7 @@ interface ConversationMessageProps {
   forceShowActions?: boolean;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
-  onEdit?: (messageId: string, content: string) => void;
+  onEdit?: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onPeekPrompt?: () => void;
   onToggleHiddenFromAI?: (messageId: string, current: boolean) => void;
@@ -328,6 +328,8 @@ export const ConversationMessage = memo(function ConversationMessage({
 }: ConversationMessageProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   const [showActions, setShowActions] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showThinking, setShowThinking] = useState(false);
@@ -577,6 +579,8 @@ export const ConversationMessage = memo(function ConversationMessage({
   }, [renderedContent]);
 
   const startEditing = useCallback(() => {
+    setEditError(null);
+    setEditSaving(false);
     setEditing(true);
     setEditValue(message.content);
     requestAnimationFrame(() => {
@@ -661,13 +665,22 @@ export const ConversationMessage = memo(function ConversationMessage({
   const editValueRef = useRef(editValue);
   editValueRef.current = editValue;
 
-  const handleSaveEdit = useCallback(() => {
+  const handleSaveEdit = useCallback(async () => {
+    if (editSaving) return;
     const val = editValueRef.current.trim();
-    if (val !== message.content) {
-      onEdit?.(message.id, val);
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      if (val !== message.content) {
+        await onEdit?.(message.id, val);
+      }
+      setEditing(false);
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : "Could not save edit.");
+    } finally {
+      setEditSaving(false);
     }
-    setEditing(false);
-  }, [message.content, message.id, onEdit]);
+  }, [editSaving, message.content, message.id, onEdit]);
 
   // System messages — minimal display
   if (isSystem) {
@@ -1105,20 +1118,29 @@ export const ConversationMessage = memo(function ConversationMessage({
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
                   e.preventDefault();
-                  setEditing(false);
+                  if (!editSaving) setEditing(false);
                 }
               }}
+              disabled={editSaving}
             />
+            {editError && <div className="text-[0.6875rem] text-red-300/90">{editError}</div>}
             <div className="flex items-center gap-2 text-[0.6875rem] text-[var(--muted-foreground)]">
               <button
-                onClick={() => setEditing(false)}
+                onClick={() => {
+                  if (!editSaving) setEditing(false);
+                }}
+                disabled={editSaving}
                 className="text-foreground/70 hover:underline hover:text-foreground"
               >
                 cancel
               </button>
               <span>·</span>
-              <button onClick={handleSaveEdit} className="text-foreground/70 hover:underline hover:text-foreground">
-                save
+              <button
+                onClick={() => void handleSaveEdit()}
+                disabled={editSaving}
+                className="text-foreground/70 hover:underline hover:text-foreground"
+              >
+                {editSaving ? "saving" : "save"}
               </button>
             </div>
           </div>

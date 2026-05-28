@@ -63,7 +63,7 @@ interface ConversationViewProps {
   chatCharIds: string[];
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, content: string) => void;
+  onEdit: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onPeekPrompt: () => void;
   onToggleHiddenFromAI?: (messageId: string, current: boolean) => void;

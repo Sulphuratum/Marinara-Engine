@@ -10,6 +10,34 @@ pub(crate) mod storage_commands;
 
 use tauri::Manager;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn center_main_window_on_primary_monitor(app: &tauri::App) {
+    use tauri::{PhysicalPosition, Position};
+
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_maximized().unwrap_or(false) || window.is_fullscreen().unwrap_or(false) {
+        return;
+    }
+    let Ok(Some(monitor)) = window.primary_monitor() else {
+        return;
+    };
+    let Ok(window_size) = window.outer_size() else {
+        return;
+    };
+
+    let monitor_position = monitor.position();
+    let monitor_size = monitor.size();
+    let x =
+        monitor_position.x + ((monitor_size.width as i32 - window_size.width as i32) / 2).max(0);
+    let y =
+        monitor_position.y + ((monitor_size.height as i32 - window_size.height as i32) / 2).max(0);
+    if let Err(error) = window.set_position(Position::Physical(PhysicalPosition { x, y })) {
+        eprintln!("failed to center main window on primary monitor: {error}");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default();
@@ -35,6 +63,8 @@ pub fn run() {
             let state = app::build_state(app.handle())
                 .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })?;
             app.manage(state);
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            center_main_window_on_primary_monitor(app);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

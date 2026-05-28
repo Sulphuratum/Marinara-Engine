@@ -22,6 +22,7 @@ import {
   Flag,
   Eye,
   EyeOff,
+  Search,
   ChevronRight,
   ScrollText,
   Brain,
@@ -71,7 +72,7 @@ import {
   type QuoteFormat,
 } from "../../../../../shared/lib/dialogue-quotes";
 import DOMPurify from "dompurify";
-import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PersonaInfo } from "../types";
+import type { CharacterMap, ExpressionAvatarResolver, MessageSelectionToggle, PeekPromptOptions, PersonaInfo } from "../types";
 import { GenerationReplayDetailsModal, hasGenerationReplayDetails } from "./GenerationReplayDetailsModal";
 import { ImagePromptPanel } from "./ImagePromptPanel";
 import { SwipeJumpControl } from "./SwipeJumpControl";
@@ -132,10 +133,12 @@ const EditTextarea = memo(function EditTextarea({
 }: {
   initialContent: string;
   fontSize: string | number | undefined;
-  onSave: (content: string) => void;
+  onSave: (content: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const autoResize = useCallback(() => {
     const el = ref.current;
@@ -156,9 +159,18 @@ const EditTextarea = memo(function EditTextarea({
     }
   }, [autoResize]);
 
-  const handleSave = useCallback(() => {
-    if (ref.current) onSave(normalizeEditableQuotes(ref.current.value));
-  }, [onSave]);
+  const handleSave = useCallback(async () => {
+    if (!ref.current || saving) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(normalizeEditableQuotes(ref.current.value));
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Could not save edit.");
+    } finally {
+      setSaving(false);
+    }
+  }, [onSave, saving]);
 
   const handleInput = useCallback(
     (event: FormEvent<HTMLTextAreaElement>) => {
@@ -185,17 +197,20 @@ const EditTextarea = memo(function EditTextarea({
         rows={1}
         onInput={handleInput}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSave();
-          if (e.key === "Escape") onCancel();
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void handleSave();
+          if (e.key === "Escape" && !saving) onCancel();
         }}
+        disabled={saving}
         className="w-full resize-none overflow-y-hidden rounded-lg bg-black/30 px-3 py-2 text-white outline-none ring-1 ring-white/20 focus:ring-blue-400/50"
         style={{ fontSize, lineHeight: 1.5 }}
       />
+      {error && <div className="text-[0.6875rem] text-red-300/90">{error}</div>}
       <div className="flex items-center gap-1.5 justify-end">
         <button
           type="button"
           onClick={onCancel}
           aria-label="Cancel edit"
+          disabled={saving}
           className="rounded-md p-1 text-white/40 hover:bg-white/10 hover:text-white/70"
           title="Cancel (Esc)"
         >
@@ -203,12 +218,13 @@ const EditTextarea = memo(function EditTextarea({
         </button>
         <button
           type="button"
-          onClick={handleSave}
+          onClick={() => void handleSave()}
           aria-label="Save edit"
+          disabled={saving}
           className="rounded-md p-1 text-emerald-400/70 hover:bg-emerald-400/10 hover:text-emerald-400"
           title="Save (Cmd+Enter)"
         >
-          <Check size="0.8125rem" />
+          {saving ? <Loader2 size="0.8125rem" className="animate-spin" /> : <Check size="0.8125rem" />}
         </button>
       </div>
     </div>
@@ -221,11 +237,11 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
-  onEdit?: (messageId: string, content: string) => void;
+  onEdit?: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onToggleConversationStart?: (messageId: string, current: boolean) => void;
   onToggleHiddenFromAI?: (messageId: string, current: boolean) => void;
-  onPeekPrompt?: () => void;
+  onPeekPrompt?: (options?: PeekPromptOptions) => void;
   onBranch?: (messageId: string) => void;
   onCloneSceneFromHere?: (messageId: string) => void;
   isCloneSceneFromHereDisabled?: boolean;
@@ -1064,9 +1080,10 @@ export const ChatMessage = memo(function ChatMessage({
   }, [message.id, onEdit, startEditing]);
 
   const handleSaveEdit = useCallback(
-    (content: string) => {
-      if (content.trim() !== message.content) {
-        onEdit?.(message.id, content.trim());
+    async (content: string) => {
+      const nextContent = content.trim();
+      if (nextContent !== message.content) {
+        await onEdit?.(message.id, nextContent);
       }
       setEditing(false);
     },
@@ -1921,8 +1938,8 @@ export const ChatMessage = memo(function ChatMessage({
               )}
               {isLastAssistantMessage && !isUser && (
                 <ActionBtn
-                  icon={<Eye size={MESSAGE_ACTION_ICON_SIZE} />}
-                  onClick={() => onPeekPrompt?.()}
+                  icon={<Search size={MESSAGE_ACTION_ICON_SIZE} />}
+                  onClick={() => onPeekPrompt?.({ forCharacterId: message.characterId ?? null })}
                   title="Peek prompt"
                   dark
                 />
@@ -2342,8 +2359,8 @@ export const ChatMessage = memo(function ChatMessage({
             />
             {isLastAssistantMessage && !isUser && (
               <ActionBtn
-                icon={<Eye size={MESSAGE_ACTION_ICON_SIZE} />}
-                onClick={() => onPeekPrompt?.()}
+                icon={<Search size={MESSAGE_ACTION_ICON_SIZE} />}
+                onClick={() => onPeekPrompt?.({ forCharacterId: message.characterId ?? null })}
                 title="Peek prompt"
               />
             )}

@@ -19,14 +19,12 @@ import {
   Image,
   Loader2,
   MoreHorizontal,
-  Move,
   PenLine,
   ScrollText,
   Settings2,
   Swords,
   ChevronUp,
   ArrowRightLeft,
-  FlipHorizontal2,
 } from "lucide-react";
 import { cn } from "../../../../shared/lib/utils";
 import { getConnectedChatDisplayName } from "../../../../shared/lib/chat-display";
@@ -48,6 +46,7 @@ import type {
   MessageSelectionToggle,
   MessageWithSwipes,
   PeekPromptData,
+  PeekPromptOptions,
   PersonaInfo,
 } from "../../shared/chat-ui/types";
 
@@ -518,7 +517,6 @@ type RoleplaySurfaceProps = {
   spritePlacements: Record<string, SpritePlacement>;
   spriteScale: number;
   spriteOpacity: number;
-  hasCustomSpritePlacements: boolean;
   spriteArrangeMode: boolean;
   enabledAgentTypes: Set<string>;
   chatCharIds: string[];
@@ -553,11 +551,11 @@ type RoleplaySurfaceProps = {
   onLoadMore: () => void;
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
-  onEdit: (messageId: string, content: string) => void;
+  onEdit: (messageId: string, content: string) => void | Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (messageId: string, current: boolean) => void;
   onToggleHiddenFromAI: (messageId: string, current: boolean) => void;
-  onPeekPrompt: () => void;
+  onPeekPrompt: (options?: PeekPromptOptions) => void;
   onBranch?: (messageId: string) => void;
   onCloneSceneFromHere?: (messageId: string) => void;
   isCloneSceneFromHereDisabled?: boolean;
@@ -583,7 +581,6 @@ type RoleplaySurfaceProps = {
   onResetSpritePlacements: () => void;
   onSpriteSideChange: (side: SpriteSide) => void;
   onToggleSpriteArrange: () => void;
-  onToggleSpritePosition: () => void;
   onExpressionChange: (characterId: string, expression: string, options?: { immediate?: boolean }) => void;
   onSpritePlacementChange: (characterId: string, placement: SpritePlacement) => void;
   onDeleteConfirm: () => void;
@@ -621,7 +618,6 @@ export function ChatRoleplaySurface({
   spritePlacements,
   spriteScale,
   spriteOpacity,
-  hasCustomSpritePlacements,
   spriteArrangeMode,
   enabledAgentTypes,
   chatCharIds,
@@ -685,7 +681,6 @@ export function ChatRoleplaySurface({
   onResetSpritePlacements,
   onSpriteSideChange,
   onToggleSpriteArrange,
-  onToggleSpritePosition,
   onExpressionChange,
   onSpritePlacementChange,
   onDeleteConfirm,
@@ -843,24 +838,6 @@ export function ChatRoleplaySurface({
                       title="Manage Chat Files"
                       onClick={onOpenFiles}
                     />
-                    {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
-                      <RpToolbarButton
-                        icon={<Move size="0.875rem" />}
-                        title={spriteArrangeMode ? "Finish arranging sprites" : "Arrange sprites"}
-                        onClick={onToggleSpriteArrange}
-                      />
-                    )}
-                    {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
-                      <RpToolbarButton
-                        icon={<FlipHorizontal2 size="0.875rem" />}
-                        title={
-                          hasCustomSpritePlacements
-                            ? `Mirror sprites to the ${spritePosition === "left" ? "right" : "left"}`
-                            : `Sprite default side: ${spritePosition}`
-                        }
-                        onClick={onToggleSpritePosition}
-                      />
-                    )}
                     <RpToolbarButton icon={<Image size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
                     {chat?.connectedChatId && (
                       <RpToolbarButton
@@ -930,24 +907,6 @@ export function ChatRoleplaySurface({
                           title="Manage Chat Files"
                           onClick={onOpenFiles}
                         />
-                        {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
-                          <RpToolbarButton
-                            icon={<Move size="0.875rem" />}
-                            title={spriteArrangeMode ? "Finish arranging sprites" : "Arrange sprites"}
-                            onClick={onToggleSpriteArrange}
-                          />
-                        )}
-                        {expressionAgentEnabled && spriteCharacterIds.length > 0 && (
-                          <RpToolbarButton
-                            icon={<FlipHorizontal2 size="0.875rem" />}
-                            title={
-                              hasCustomSpritePlacements
-                                ? `Mirror sprites to the ${spritePosition === "left" ? "right" : "left"}`
-                                : `Sprite default side: ${spritePosition}`
-                            }
-                            onClick={onToggleSpritePosition}
-                          />
-                        )}
                         <RpToolbarButton icon={<Image size="0.875rem" />} title="Gallery" onClick={onOpenGallery} />
                         {chat?.connectedChatId && (
                           <RpToolbarButton

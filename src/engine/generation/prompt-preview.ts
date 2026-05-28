@@ -8,6 +8,7 @@ export interface PromptPreviewInput {
   chatId: string;
   presetId?: string | null;
   choices?: Record<string, string> | null;
+  forCharacterId?: string | null;
 }
 
 export interface PromptPreviewResult {
@@ -42,6 +43,7 @@ export async function previewGenerationPrompt(
   const storedMessages = await loadChatMessages(storage, input.chatId);
   const request = {
     promptPresetId: input.presetId ?? (readString(chat.promptPresetId) || null),
+    forCharacterId: input.forCharacterId ?? null,
   };
   const previewChat = {
     ...chat,

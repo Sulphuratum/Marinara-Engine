@@ -69,6 +69,26 @@ function storageWithPreset(preset: Row, sections: Row[], variables: Row[] = []):
   };
 }
 
+function storageWithPrompts(prompts: Row[], sections: Row[], variables: Row[] = []): StorageGateway {
+  return {
+    ...storageWithSections(sections),
+    get: async <T,>(entity: string, id: string) => {
+      if (entity === "prompts") return (prompts.find((prompt) => prompt.id === id) as T) ?? null;
+      return null;
+    },
+    list: async <T,>(entity: string, options?: { filters?: Record<string, unknown> }) => {
+      if (entity === "prompts") return prompts as T[];
+      if (entity === "prompt-sections") {
+        return sections.filter((row) => row.presetId === options?.filters?.presetId) as T[];
+      }
+      if (entity === "prompt-variables") {
+        return variables.filter((row) => row.presetId === options?.filters?.presetId) as T[];
+      }
+      return [] as T[];
+    },
+  };
+}
+
 function storageWithSectionsAndRegex(sections: Row[], regexScripts: Row[]): StorageGateway {
   const base = storageWithSections(sections);
   return {
@@ -221,6 +241,69 @@ describe("assembleGenerationPrompt macro parity", () => {
     expect(prompt).not.toContain("{{POV}}");
     expect(prompt).not.toContain("{{TAGS}}");
   });
+
+  it("falls back to the chat preset when a connection override points at a missing preset", async () => {
+    const assembly = await assembleGenerationPrompt(
+      storageWithPrompts(
+        [{ id: "chat-preset", isDefault: false, wrapFormat: "xml", parameters: {} }],
+        [
+          section({
+            id: "main",
+            presetId: "chat-preset",
+            name: "Main Prompt",
+            role: "system",
+            content: "Use the Dottore XML format.",
+            sortOrder: 0,
+          }),
+        ],
+      ),
+      {
+        chat: { id: "chat", mode: "roleplay", promptPresetId: "chat-preset" },
+        storedMessages: [],
+        connection: { promptPresetId: "missing-connection-preset" },
+        request: { ...request, promptPresetId: "" },
+        latestUserInput: "",
+      },
+    );
+
+    expect(assembly.promptPresetId).toBe("chat-preset");
+    expect(assembly.messages[0]?.content).toContain("<main_prompt>");
+    expect(assembly.messages[0]?.content).toContain("Use the Dottore XML format.");
+  });
+
+  it("collapses excessive blank lines in preset sections and history messages", async () => {
+    const assembly = await assembleGenerationPrompt(
+      storageWithPreset(
+        {
+          id: "preset",
+          isDefault: false,
+          wrapFormat: "xml",
+          parameters: {},
+        },
+        [
+          section({
+            id: "main",
+            name: "Main",
+            role: "system",
+            content: "Rules.\n\n\n\nKeep prose tight.",
+            sortOrder: 0,
+          }),
+        ],
+      ),
+      {
+        chat: { id: "chat", mode: "roleplay", promptPresetId: "preset" },
+        storedMessages: [{ role: "user", content: "Hello.\n\n\n\nContinue.", contextKind: "history" }],
+        connection: {},
+        request,
+        latestUserInput: "Continue.",
+      },
+    );
+
+    const prompt = assembly.messages.map((message) => message.content).join("\n\n");
+    expect(prompt).toMatch(/Rules\.\n\n\s+Keep prose tight\./);
+    expect(prompt).toContain("Hello.\n\nContinue.");
+    expect(prompt).not.toMatch(/\n{3,}/);
+  });
 });
 
 describe("assembleGenerationPrompt preset parameters", () => {
@@ -264,7 +347,7 @@ describe("assembleGenerationPrompt preset parameters", () => {
 });
 
 describe("assembleGenerationPrompt strict roles", () => {
-  it("preserves preset chat history roles when history begins with an assistant greeting", async () => {
+  it("forces preset chat history into strict user/assistant order when history begins with an assistant greeting", async () => {
     const assembly = await assembleGenerationPrompt(
       storageWithSections([
         section({ id: "main", name: "main", role: "system", content: "Main rules.", sortOrder: 0 }),
@@ -290,12 +373,11 @@ describe("assembleGenerationPrompt strict roles", () => {
 
     const history = assembly.messages.filter((message) => message.contextKind === "history");
     expect(history.map((message) => [message.role, message.content])).toEqual([
-      ["assistant", "Welcome back."],
-      ["user", "I missed you."],
+      ["user", "Welcome back.\n\nI missed you."],
     ]);
   });
 
-  it("preserves fallback chat history roles when no preset is active", async () => {
+  it("forces fallback chat history into strict user/assistant order when no preset is active", async () => {
     const assembly = await assembleGenerationPrompt(storageWithSections([]), {
       chat: { id: "chat", mode: "roleplay" },
       storedMessages: [
@@ -309,8 +391,52 @@ describe("assembleGenerationPrompt strict roles", () => {
 
     const history = assembly.messages.filter((message) => message.contextKind === "history");
     expect(history.map((message) => [message.role, message.content])).toEqual([
-      ["assistant", "Welcome back."],
-      ["user", "I missed you."],
+      ["user", "Welcome back.\n\nI missed you."],
+    ]);
+  });
+
+  it("scopes individual group history around the responding character before enforcing strict roles", async () => {
+    const assembly = await assembleGenerationPrompt(
+      storageWithSectionsAndCharacters(
+        [
+          section({ id: "main", name: "main", role: "system", content: "Main rules.", sortOrder: 0 }),
+          section({
+            id: "history",
+            name: "chat_history",
+            role: "user",
+            markerConfig: { type: "chat_history" },
+            sortOrder: 1,
+          }),
+        ],
+        [
+          { id: "char-a", name: "Ada", description: "Target character." },
+          { id: "char-b", name: "Bryn", description: "Other character." },
+        ],
+      ),
+      {
+        chat: {
+          id: "chat",
+          mode: "roleplay",
+          characterIds: ["char-a", "char-b"],
+          metadata: { groupChatMode: "individual" },
+        },
+        storedMessages: [
+          { role: "user", content: "User opens.", contextKind: "history" },
+          { role: "assistant", characterId: "char-b", content: "Bryn reacts.", contextKind: "history" },
+          { role: "assistant", characterId: "char-a", content: "Ada answers.", contextKind: "history" },
+          { role: "assistant", characterId: "char-b", content: "Bryn follows up.", contextKind: "history" },
+        ],
+        connection: {},
+        request: { ...request, forCharacterId: "char-a" },
+        latestUserInput: "User opens.",
+      },
+    );
+
+    const history = assembly.messages.filter((message) => message.contextKind === "history");
+    expect(history.map((message) => [message.role, message.content])).toEqual([
+      ["user", "User opens.\n\nBryn reacts."],
+      ["assistant", "Ada answers."],
+      ["user", "Bryn follows up."],
     ]);
   });
 

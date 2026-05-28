@@ -198,6 +198,39 @@ describe("startGeneration concluded roleplay guard", () => {
 });
 
 describe("startGeneration chat message loading", () => {
+  it("does not save an assistant message when generation is stopped after tokens arrive", async () => {
+    const controller = new AbortController();
+    const { deps, createChatMessage } = generationDepsForChat();
+    deps.llm.stream = vi.fn(async function* () {
+      yield { type: "token" as const, text: "Partial reply." };
+      controller.abort();
+    });
+
+    const events: Array<{ type: string; data?: unknown }> = [];
+    let thrown: unknown = null;
+    try {
+      for await (const event of startGeneration(
+        deps,
+        {
+          chatId: "chat-1",
+          userMessage: "hello",
+          impersonateBlockAgents: true,
+        },
+        controller.signal,
+      )) {
+        events.push(event);
+      }
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toMatchObject({ name: "AbortError" });
+    expect(events.some((event) => event.type === "token")).toBe(true);
+    expect(createChatMessage).toHaveBeenCalledTimes(1);
+    expect(createChatMessage.mock.calls[0]?.[1]).toMatchObject({ role: "user" });
+    expect(createChatMessage.mock.calls.some(([, value]) => value.role === "assistant")).toBe(false);
+  });
+
   it("reuses the pre-commit messages and appends the saved user message for normal sends", async () => {
     const { deps, listChatMessages, streamedRequests } = generationDepsForChat();
 
@@ -210,11 +243,63 @@ describe("startGeneration chat message loading", () => {
     );
 
     expect(listChatMessages).toHaveBeenCalledTimes(1);
-    expect(listChatMessages).toHaveBeenCalledWith("chat-1", { limit: 100 });
+    expect(listChatMessages).toHaveBeenCalledWith("chat-1", undefined);
     expect(streamedRequests).toHaveLength(1);
     expect(streamedRequests[0]).toMatchObject({
       messages: expect.arrayContaining([expect.objectContaining({ role: "user", content: "hello" })]),
     });
+  });
+
+  it("uses the chat context message limit when assembling roleplay history", async () => {
+    const { deps, listChatMessages, streamedRequests } = generationDepsForChat({
+      chatPatch: { mode: "roleplay" },
+      chatMetadata: { contextMessageLimit: 1 },
+      initialMessages: [
+        { id: "old-1", chatId: "chat-1", role: "assistant", content: "Old context should stay out." },
+      ],
+    });
+
+    await drainGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "fresh turn",
+        impersonateBlockAgents: true,
+      }),
+    );
+
+    expect(listChatMessages).toHaveBeenCalledWith("chat-1", { limit: 40 });
+    const prompt = JSON.stringify(streamedRequests[0]);
+    expect(prompt).toContain("fresh turn");
+    expect(prompt).not.toContain("Old context should stay out.");
+  });
+
+  it("removes oldest history messages when the prompt exceeds the model context window", async () => {
+    const { deps, streamedRequests } = generationDepsForChat({
+      connectionPatch: {
+        defaultParameters: { maxContext: 420, maxTokens: 80 },
+      },
+      initialMessages: [
+        {
+          id: "old-1",
+          chatId: "chat-1",
+          role: "assistant",
+          content: `OLD_CONTEXT ${"x".repeat(2400)}`,
+        },
+        { id: "recent-1", chatId: "chat-1", role: "assistant", content: "Recent context." },
+      ],
+    });
+
+    await drainGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "new turn",
+        impersonateBlockAgents: true,
+      }),
+    );
+
+    const prompt = JSON.stringify(streamedRequests[0]);
+    expect(prompt).not.toContain("OLD_CONTEXT");
+    expect(prompt).toContain("new turn");
   });
 
   it("reloads messages after saving when the storage adapter does not return a saved message record", async () => {

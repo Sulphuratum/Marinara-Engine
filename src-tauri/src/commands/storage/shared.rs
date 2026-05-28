@@ -129,6 +129,54 @@ pub(crate) fn swipe_index_value(message: &Value) -> i64 {
     non_negative_i64_value(message.get("activeSwipeIndex")).unwrap_or(fallback)
 }
 
+pub(crate) fn collapse_excess_blank_lines(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut newline_run = 0usize;
+    let mut pending_blank_space = String::new();
+
+    for ch in input.chars() {
+        if ch == '\r' {
+            continue;
+        }
+        if ch == '\n' {
+            newline_run += 1;
+            if newline_run <= 2 {
+                output.push_str(&pending_blank_space);
+                output.push('\n');
+            }
+            pending_blank_space.clear();
+            continue;
+        }
+        if newline_run > 0 && (ch == ' ' || ch == '\t') {
+            pending_blank_space.push(ch);
+            continue;
+        }
+        output.push_str(&pending_blank_space);
+        pending_blank_space.clear();
+        output.push(ch);
+        newline_run = 0;
+    }
+
+    output
+}
+
+fn normalize_message_text_fields(object: &mut Map<String, Value>) {
+    if let Some(Value::String(content)) = object.get_mut("content") {
+        *content = collapse_excess_blank_lines(content);
+    }
+    let Some(swipes) = object.get_mut("swipes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for swipe in swipes {
+        let Some(swipe) = swipe.as_object_mut() else {
+            continue;
+        };
+        if let Some(Value::String(content)) = swipe.get_mut("content") {
+            *content = collapse_excess_blank_lines(content);
+        }
+    }
+}
+
 pub(crate) fn normalize_character_data_for_storage(data: &Value) -> AppResult<Value> {
     match data {
         Value::Object(_) => Ok(data.clone()),
@@ -226,6 +274,7 @@ pub(crate) fn normalize_typed_json_fields(
         "messages" => {
             normalize_json_array_fields(object, &["swipes", "images", "attachments"])?;
             normalize_nullable_json_object_fields(object, &["extra"])?;
+            normalize_message_text_fields(object);
         }
         "character-groups" => {
             normalize_json_array_fields(object, &["characterIds"])?;
@@ -649,6 +698,41 @@ mod tests {
         assert_eq!(updated["activeSwipeIndex"], json!(1));
         assert_eq!(updated["swipes"][0]["content"], json!("first swipe"));
         assert_eq!(updated["swipes"][1]["content"], json!("edited active"));
+    }
+
+    #[test]
+    fn message_content_update_patch_collapses_excess_blank_lines() {
+        let root = temp_root("message-edit-collapse-blank-lines");
+        let state = AppState::from_data_dir(&root.0, Vec::new()).expect("state should initialize");
+        state
+            .storage
+            .create(
+                "messages",
+                with_entity_defaults(
+                    "messages",
+                    json!({
+                        "id": "message-1",
+                        "chatId": "chat-1",
+                        "role": "user",
+                        "content": "original",
+                        "activeSwipeIndex": 0,
+                        "swipes": [{ "content": "original" }]
+                    }),
+                )
+                .expect("message defaults should apply"),
+            )
+            .expect("message should be created");
+
+        let mut updated = patch_message_update(
+            &state,
+            "message-1",
+            json!({ "content": "first\n\n\n\nsecond" }),
+        )
+        .expect("message should update");
+        materialize_message_swipe_fields(&mut updated);
+
+        assert_eq!(updated["content"], json!("first\n\nsecond"));
+        assert_eq!(updated["swipes"][0]["content"], json!("first\n\nsecond"));
     }
 
     #[test]

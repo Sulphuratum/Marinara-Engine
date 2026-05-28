@@ -35,13 +35,15 @@ export function useTrackerCardColorManager() {
   const queryClient = useQueryClient();
   const activeChatId = useChatStore((s) => s.activeChatId);
   const settingsTab = useUIStore((s) => s.settingsTab);
-  const { data: activeChat } = useChat(activeChatId);
+  const shouldLoadTargets = !!activeChatId && settingsTab === "appearance";
+  const { data: activeChat } = useChat(shouldLoadTargets ? activeChatId : null);
   const { gameState: currentGameState, isLoadingGameState } = useTrackerStateController(
     activeChatId,
     "settings-tracker-card-colors",
+    shouldLoadTargets,
   );
-  const { data: personasData } = usePersonas(!!activeChatId);
-  const { data: charactersData } = useCharacters(!!activeChatId);
+  const { data: personasData } = usePersonas(shouldLoadTargets);
+  const { data: charactersData } = useCharacters(shouldLoadTargets);
   const updatePersona = useUpdatePersona();
   const updateCharacter = useUpdateCharacter();
   const [selectedTargetKey, setSelectedTargetKey] = useState("");

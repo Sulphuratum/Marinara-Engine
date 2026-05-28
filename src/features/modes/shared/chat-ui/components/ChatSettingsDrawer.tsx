@@ -68,9 +68,14 @@ import {
 } from "../../../../../shared/components/ui/GenerationParametersEditor";
 import { ChoiceSelectionModal } from "../../../../catalog/presets/index";
 import { SummariesEditorModal } from "./SummariesEditorModal";
-import { useCharacters, usePersonas, useCharacterGroups, type SpriteInfo } from "../../../../catalog/characters/index";
+import {
+  useCharacters,
+  usePersonaSummaries,
+  useCharacterGroups,
+  type SpriteInfo,
+} from "../../../../catalog/characters/index";
 import { useLorebooks } from "../../../../catalog/lorebooks/index";
-import { usePresetFull, usePresets } from "../../../../catalog/presets/index";
+import { usePresetFull, usePresetSummaries } from "../../../../catalog/presets/index";
 import { useConnections, useSaveConnectionDefaults } from "../../../../catalog/connections/index";
 import { useGenerate } from "../../../../runtime/generation/index";
 import {
@@ -297,7 +302,7 @@ export function ChatSettingsDrawer({
   const { data: allCharacters } = useCharacters();
   const { data: characterGroups } = useCharacterGroups();
   const { data: lorebooks } = useLorebooks();
-  const { data: presets } = usePresets();
+  const { data: presets } = usePresetSummaries();
   const chatMode: ChatMode =
     chat.mode === "conversation" || chat.mode === "roleplay" || chat.mode === "game" ? chat.mode : "roleplay";
   const isConversation = chatMode === "conversation";
@@ -319,7 +324,7 @@ export function ChatSettingsDrawer({
       ),
     [connections],
   );
-  const { data: allPersonas } = usePersonas();
+  const { data: allPersonas } = usePersonaSummaries();
   const { data: agentConfigs } = useAgentConfigs();
   const { data: customTools } = useCustomTools();
   const { data: customToolCapabilities } = useCustomToolCapabilities();

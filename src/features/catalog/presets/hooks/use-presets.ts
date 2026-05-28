@@ -25,6 +25,14 @@ export const presetKeys = {
 
 type PromptNestedKind = "groups" | "sections" | "variables";
 
+export type PromptPresetSummary = Pick<PromptPreset, "id" | "name" | "isDefault"> & {
+  default?: boolean | string;
+};
+
+const PRESET_SUMMARY_OPTIONS = {
+  fields: ["id", "name", "isDefault", "default"],
+};
+
 const promptNestedEntity: Record<PromptNestedKind, string> = {
   groups: "prompt-groups",
   sections: "prompt-sections",
@@ -133,6 +141,15 @@ export function usePresets() {
   return useQuery({
     queryKey: presetKeys.list(),
     queryFn: () => storageApi.list<PromptPreset>("prompts"),
+    staleTime: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function usePresetSummaries() {
+  return useQuery({
+    queryKey: [...presetKeys.list(), "summaries"],
+    queryFn: () => storageApi.list<PromptPresetSummary>("prompts", PRESET_SUMMARY_OPTIONS),
     staleTime: 5 * 60_000,
     refetchOnWindowFocus: false,
   });

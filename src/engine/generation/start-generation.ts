@@ -5,10 +5,13 @@ import type { IntegrationGateway } from "../capabilities/integrations";
 import type { LlmGateway, LlmMessage } from "../capabilities/llm";
 import type { StorageGateway } from "../capabilities/storage";
 import type { GenerationGuideSource } from "../shared/text/generation-guide";
+import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../shared/text/chat-summary-fingerprint";
+import { collapseExcessBlankLines } from "../shared/text/newlines";
 import { activeCharacterIds, assertChatHasActiveCharacters, assertRequestedCharacterIsActive } from "./active-characters";
 import { persistSecretPlotAgentMemory } from "./agent-memory-runtime";
 import { createGenerationAgentRuntime } from "./agent-runner";
 import { consumePendingConnectedInfluences, persistConnectedCommandTags } from "./connected-commands";
+import { fitMessagesToContextWindow } from "./context-window";
 import type { LLMToolCall } from "../generation-core/llm/base-provider";
 import {
   buildMainToolDefinitions,
@@ -37,7 +40,6 @@ import {
 } from "./generation-replay";
 import { assembleGenerationPrompt, chatSummaryForGeneration } from "./prompt-assembly";
 import type { GenerationCharacterContext, GenerationPersonaContext } from "./prompt-assembly";
-import { chatSummaryFingerprintMatches, fingerprintChatSummary } from "../shared/text/chat-summary-fingerprint";
 import { applyRuntimeRegexScripts } from "./regex-runtime";
 import {
   boolish,
@@ -121,8 +123,16 @@ const DEFAULT_LOREBOOK_KEEPER_RUN_INTERVAL = BUILT_IN_AGENT_RUN_INTERVAL_DEFAULT
 const CONTINUE_ASSISTANT_RESPONSE_INSTRUCTION =
   "[Generation instruction: continue from the latest assistant message. Do not repeat or summarize the previous response; pick up naturally from where it stopped.]";
 
+function abortGenerationError(): Error {
+  return Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortGenerationError();
+}
+
 function inputUserMessage(input: StartGenerationInput): string {
-  return readString(input.message) || readString(input.userMessage);
+  return collapseExcessBlankLines(readString(input.message) || readString(input.userMessage));
 }
 
 function generationEmbeddingSource(llm: LlmGateway, connection: JsonRecord) {
@@ -170,7 +180,9 @@ async function prepareUserInput(storage: StorageGateway, input: StartGenerationI
   const withReadableAttachments = appendReadableAttachmentsToContent(regexed, attachments);
   const imageNotes = imageAttachmentNotes(attachments);
   return {
-    content: [withReadableAttachments, imageNotes].filter((part) => part.trim().length > 0).join("\n\n"),
+    content: collapseExcessBlankLines(
+      [withReadableAttachments, imageNotes].filter((part) => part.trim().length > 0).join("\n\n"),
+    ),
     attachments,
     images,
     mentionedCharacterNames,
@@ -363,9 +375,14 @@ function requestMessages(input: StartGenerationInput): LlmMessage[] | null {
     .filter((message) => message.content.length > 0);
 }
 
-function generationMessageLoadOptions(input: StartGenerationInput): Parameters<StorageGateway["listChatMessages"]>[1] {
+function generationMessageLoadOptions(
+  chat: JsonRecord,
+  input: StartGenerationInput,
+): Parameters<StorageGateway["listChatMessages"]>[1] {
   if (readString(input.regenerateMessageId).trim()) return undefined;
-  const historyLimit = Math.max(1, Math.min(300, readNumber(input.historyLimit, 80)));
+  const chatLimit = readNumber(parseRecord(chat.metadata).contextMessageLimit, 0);
+  if (chatLimit <= 0 && !Number.isFinite(Number(input.historyLimit))) return undefined;
+  const historyLimit = Math.max(1, Math.min(9999, chatLimit || readNumber(input.historyLimit, 300)));
   return { limit: Math.max(40, Math.min(340, historyLimit + 20)) };
 }
 
@@ -581,6 +598,7 @@ async function saveAssistantMessage(args: {
 }): Promise<unknown | null> {
   const regenerateMessageId = readString(args.input.regenerateMessageId).trim();
   const generationReplay = buildGenerationReplay(args.input);
+  const content = collapseExcessBlankLines(args.content);
 
   if (args.input.impersonate === true) {
     if (regenerateMessageId) {
@@ -588,7 +606,7 @@ async function saveAssistantMessage(args: {
         storage: args.storage,
         chatId: args.input.chatId,
         messageId: regenerateMessageId,
-        content: args.content,
+        content,
         generationReplay,
         chatSummaryFingerprint: args.chatSummaryFingerprint,
       });
@@ -597,7 +615,7 @@ async function saveAssistantMessage(args: {
     return args.storage.createChatMessage(args.input.chatId, {
       role: "user",
       characterId: null,
-      content: args.content,
+      content,
       extra: {
         isGenerated: true,
         ...(generationReplay ? { generationReplay } : {}),
@@ -611,7 +629,7 @@ async function saveAssistantMessage(args: {
       storage: args.storage,
       chatId: args.input.chatId,
       messageId: regenerateMessageId,
-      content: args.content,
+      content,
       generationReplay,
       chatSummaryFingerprint: args.chatSummaryFingerprint,
     });
@@ -630,7 +648,7 @@ async function saveAssistantMessage(args: {
   return args.storage.createChatMessage(args.input.chatId, {
     role: "assistant",
     characterId,
-    content: args.content,
+    content,
     extra: {
       ...(args.attachments?.length ? { attachments: args.attachments } : {}),
       ...(generationReplay ? { generationReplay } : {}),
@@ -654,7 +672,7 @@ async function saveRegeneratedMessage(args: {
   generationReplay: GenerationReplay | null;
   chatSummaryFingerprint: string | null;
 }): Promise<unknown | null> {
-  await args.storage.addChatMessageSwipe(args.chatId, args.messageId, args.content);
+  await args.storage.addChatMessageSwipe(args.chatId, args.messageId, collapseExcessBlankLines(args.content));
   const extraPatch = generationReplayExtraPatch(args.generationReplay, args.chatSummaryFingerprint);
   return args.storage.patchChatMessageExtra(args.messageId, extraPatch);
 }
@@ -977,22 +995,30 @@ export async function* startGeneration(
 ): AsyncGenerator<GenerationEvent> {
   const chatId = readString(input.chatId).trim();
   if (!chatId) throw new Error("chatId is required");
+  throwIfAborted(signal);
   const chat = requireRecord(await deps.storage.get("chats", chatId), "Chat");
+  throwIfAborted(signal);
   input = await inputWithStoredGenerationReplay(deps.storage, chat, chatId, input);
+  throwIfAborted(signal);
   assertChatCanGenerate(chat, input);
 
   yield { type: "phase", data: "Saving message..." };
   const preparedUserInput = await prepareUserInput(deps.storage, input);
+  throwIfAborted(signal);
   const savesUserMessage = shouldSaveUserMessage(input, preparedUserInput);
-  const messageLoadOptions = generationMessageLoadOptions(input);
+  const messageLoadOptions = generationMessageLoadOptions(chat, input);
   let storedMessages: JsonRecord[] | null = null;
   if (savesUserMessage) {
     storedMessages = await loadChatMessages(deps.storage, chatId, messageLoadOptions);
+    throwIfAborted(signal);
     await commitVisibleTrackerSnapshotSafely(deps.storage, chatId, storedMessages);
+    throwIfAborted(signal);
   }
   const savedUserMessage = await saveUserMessage(deps.storage, input, preparedUserInput);
+  throwIfAborted(signal);
   if (savedUserMessage) yield { type: "user_message", data: savedUserMessage };
   const connection = await resolveGenerationConnection(deps.storage, chat, input);
+  throwIfAborted(signal);
   if (savesUserMessage) {
     const savedTimelineMessage = savedUserMessageForTimeline(savedUserMessage, chatId);
     storedMessages = savedTimelineMessage
@@ -1024,6 +1050,7 @@ export async function* startGeneration(
     latestUserInput: preparedUserInput.content || inputUserMessage(input),
     embeddingSource: generationEmbeddingSource(deps.llm, connection),
   });
+  throwIfAborted(signal);
   mirrorSavedUserMessageToDiscord({ deps, chat, input, prepared: preparedUserInput, persona: assembly.persona });
 
   if (!directMessages) {
@@ -1048,6 +1075,7 @@ export async function* startGeneration(
           (result) => agentEvents.push(result),
         )
       : null;
+    throwIfAborted(signal);
     for (const result of agentEvents) {
       yield { type: "agent_result", data: result };
     }
@@ -1062,7 +1090,9 @@ export async function* startGeneration(
       agentData: runtime?.agentData,
       embeddingSource: generationEmbeddingSource(deps.llm, connection),
     });
+    throwIfAborted(signal);
     await consumePendingConnectedInfluences(deps.storage, chatForGeneration);
+    throwIfAborted(signal);
     prompt = withImageAttachments(
       [
         ...assembly.messages,
@@ -1097,10 +1127,13 @@ export async function* startGeneration(
       toolRuntimeInput,
       signal,
     });
+    throwIfAborted(signal);
     let content = streamedContent;
 
     const parallelResults = await parallelAgents;
+    throwIfAborted(signal);
     const postResults = runtime ? await runtime.runPost(content) : [];
+    throwIfAborted(signal);
     const emittedAgentResults = uniqueAgentResults([...parallelResults, ...postResults, ...agentEvents]);
     for (const result of emittedAgentResults) {
       yield { type: "agent_result", data: result };
@@ -1108,6 +1141,7 @@ export async function* startGeneration(
     agentEvents.length = 0;
     const allAgentResults = uniqueAgentResults([...(runtime?.preResults ?? []), ...emittedAgentResults]);
     content = await applyRuntimeRegexScripts(deps.storage, "ai_output", content);
+    throwIfAborted(signal);
     const connected = await persistConnectedCommandTags(
       deps.storage,
       chat,
@@ -1117,6 +1151,7 @@ export async function* startGeneration(
       readString(connection.id) || input.connectionId || null,
       input.imagePromptSettings,
     );
+    throwIfAborted(signal);
     for (const event of connected.events) yield event;
     const saved = connected.suppressAssistantMessage
       ? null
@@ -1143,8 +1178,12 @@ export async function* startGeneration(
       });
       await persistTrackerSnapshotSafely(deps.storage, chatId, saved, allAgentResults, generationTrackerBaseline);
     }
+    if (saved) yield { type: savedGenerationEventType(input), data: saved };
+    throwIfAborted(signal);
     await persistSecretPlotAgentMemorySafely(deps.storage, chatId, allAgentResults);
+    throwIfAborted(signal);
     await persistAgentResults(deps.storage, chatId, messageId(saved), allAgentResults);
+    throwIfAborted(signal);
     if (saved && input.impersonate !== true) {
       const autoLorebookResults = await runLorebookKeeperBackfill(
         deps,
@@ -1160,7 +1199,6 @@ export async function* startGeneration(
         yield { type: "agent_result", data: result };
       }
     }
-    if (saved) yield { type: savedGenerationEventType(input), data: saved };
     yield { type: "done", data: { transcript: visibleTranscript(generationMessages) } };
     return;
   }
@@ -1194,8 +1232,10 @@ export async function* startGeneration(
     toolRuntimeInput: toolRuntimeInputDirect,
     signal,
   });
+  throwIfAborted(signal);
   let content = streamedContentDirect;
   content = await applyRuntimeRegexScripts(deps.storage, "ai_output", content);
+  throwIfAborted(signal);
   const connected = await persistConnectedCommandTags(
     deps.storage,
     chat,
@@ -1205,6 +1245,7 @@ export async function* startGeneration(
     readString(connection.id) || input.connectionId || null,
     input.imagePromptSettings,
   );
+  throwIfAborted(signal);
   for (const event of connected.events) yield event;
   const saved = connected.suppressAssistantMessage
     ? null
@@ -1230,6 +1271,8 @@ export async function* startGeneration(
       characters: assembly.characters,
     });
   }
+  if (saved) yield { type: savedGenerationEventType(input), data: saved };
+  throwIfAborted(signal);
   if (saved && input.impersonate !== true) {
     const autoLorebookResults = await runLorebookKeeperBackfill(
       deps,
@@ -1245,7 +1288,6 @@ export async function* startGeneration(
       yield { type: "agent_result", data: result };
     }
   }
-  if (saved) yield { type: savedGenerationEventType(input), data: saved };
   yield { type: "done" };
 }
 
@@ -1314,6 +1356,7 @@ async function* streamMainGenerationLoop(args: {
   let iteration = 0;
 
   while (true) {
+    throwIfAborted(signal);
     iteration++;
     const pendingToolCalls: LLMToolCall[] = [];
     let turnContent = "";
@@ -1322,12 +1365,13 @@ async function* streamMainGenerationLoop(args: {
       {
         connectionId: readString(connection.id) || input.connectionId,
         model: readString(connection.model) || undefined,
-        messages: conversation,
+        messages: fitMessagesToContextWindow(conversation, parameters),
         parameters: runtimeLlmParameters(connection, input, chat, parameters),
         tools: mainTools?.toolDefs,
       },
       signal,
     )) {
+      throwIfAborted(signal);
       if (chunk.type === "token" && chunk.text) {
         turnContent += chunk.text;
         yield { type: "token", data: chunk.text };
@@ -1341,6 +1385,7 @@ async function* streamMainGenerationLoop(args: {
       }
     }
 
+    throwIfAborted(signal);
     content += turnContent;
 
     if (!mainTools || pendingToolCalls.length === 0) break;
@@ -1359,6 +1404,7 @@ async function* streamMainGenerationLoop(args: {
     });
 
     for (const call of pendingToolCalls) {
+      throwIfAborted(signal);
       const toolName = call.function?.name || call.name;
       const toolArgs = call.function?.arguments || call.arguments || "{}";
       yield { type: "tool_call", data: { id: call.id, name: toolName, arguments: toolArgs } };
@@ -1376,6 +1422,7 @@ async function* streamMainGenerationLoop(args: {
         success = false;
         resultText = err instanceof Error ? err.message : String(err);
       }
+      throwIfAborted(signal);
       yield {
         type: "tool_result",
         data: { toolCallId: call.id, name: toolName, result: resultText, success },

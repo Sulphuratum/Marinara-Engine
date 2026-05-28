@@ -313,10 +313,20 @@ export const useChatStore = create<ChatState>()(
         return { abortControllers: m };
       }),
     stopGeneration: () => {
-      const { streamingChatId, abortControllers } = useChatStore.getState();
-      if (streamingChatId) {
-        const ctrl = abortControllers.get(streamingChatId);
-        if (ctrl) ctrl.abort();
+      const { activeChatId, streamingChatId, abortControllers } = useChatStore.getState();
+      const targetChatId = streamingChatId ?? activeChatId;
+      if (targetChatId) {
+        const ctrl = abortControllers.get(targetChatId);
+        if (ctrl) {
+          ctrl.abort();
+          return;
+        }
+      }
+      for (const ctrl of abortControllers.values()) {
+        if (!ctrl.signal.aborted) {
+          ctrl.abort();
+          return;
+        }
       }
     },
     appendStreamBuffer: (text, chatId) =>

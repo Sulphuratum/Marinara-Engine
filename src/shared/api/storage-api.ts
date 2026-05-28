@@ -1,4 +1,5 @@
 import type { StorageGateway, StorageListOptions } from "../../engine/capabilities/storage";
+import { collapseExcessBlankLines } from "../../engine/shared/text/newlines";
 import { ApiError } from "./api-errors";
 import { invokeTauri } from "./tauri-client";
 import { trackerSnapshotApi, type TrackerSnapshotInput } from "./tracker-snapshot-api";
@@ -76,13 +77,37 @@ function normalizeStorageRecord(entity: string, value: unknown): unknown {
   return record;
 }
 
+function normalizeSwipeContent(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const swipe = { ...(value as Record<string, unknown>) };
+  if (typeof swipe.content === "string") {
+    swipe.content = collapseExcessBlankLines(swipe.content);
+  }
+  return swipe;
+}
+
+function normalizeMessageWrite(value: Record<string, unknown>): Record<string, unknown> {
+  const next = { ...value };
+  if (typeof next.content === "string") {
+    next.content = collapseExcessBlankLines(next.content);
+  }
+  if (Array.isArray(next.swipes)) {
+    next.swipes = next.swipes.map(normalizeSwipeContent);
+  }
+  return next;
+}
+
+function normalizeStorageWrite(entity: string, value: Record<string, unknown>): Record<string, unknown> {
+  return entity === "messages" ? normalizeMessageWrite(value) : value;
+}
+
 function normalizeStorageReadResult(entity: string, value: unknown): unknown {
   if (Array.isArray(value)) return value.map((item) => normalizeStorageRecord(entity, item));
   return normalizeStorageRecord(entity, value);
 }
 
 function chatMessageDefaults(chatId: string, value: Record<string, unknown>): Record<string, unknown> {
-  const content = typeof value.content === "string" ? value.content : "";
+  const content = typeof value.content === "string" ? collapseExcessBlankLines(value.content) : "";
   return {
     ...value,
     chatId,
@@ -95,7 +120,7 @@ function chatMessageDefaults(chatId: string, value: Record<string, unknown>): Re
 }
 
 async function patchChatObjectField<T>(chatId: string, field: string, patch: Record<string, unknown>): Promise<T> {
-  const chat = await storageApi.get<Record<string, unknown>>("chats", chatId);
+  const chat = await storageApi.get<Record<string, unknown>>("chats", chatId, { fields: [field] });
   if (!chat) throw new ApiError(`Chat ${chatId} was not found`, 404);
   const current = asRecord(chat[field]);
   return storageApi.update<T>("chats", chatId, { [field]: { ...current, ...patch } });
@@ -124,7 +149,7 @@ export const storageApi: StorageGateway = {
       entity,
       await invokeTauri("storage_create", {
       entity,
-      value,
+      value: normalizeStorageWrite(entity, value),
     }),
     ) as never,
   update: async (entity: string, id: string, patch: Record<string, unknown>) =>
@@ -133,7 +158,7 @@ export const storageApi: StorageGateway = {
       await invokeTauri("storage_update", {
       entity,
       id,
-      patch,
+      patch: normalizeStorageWrite(entity, patch),
     }),
     ) as never,
   delete: (entity: string, id: string) =>
@@ -147,7 +172,7 @@ export const storageApi: StorageGateway = {
       filters: { chatId },
     }),
   createChatMessage: (chatId, value) => storageApi.create("messages", chatMessageDefaults(chatId, value)),
-  updateChatMessage: (messageId, patch) => storageApi.update("messages", messageId, patch),
+  updateChatMessage: (messageId, patch) => storageApi.update("messages", messageId, normalizeMessageWrite(patch)),
   deleteChatMessage: (messageId) => storageApi.delete("messages", messageId),
   patchChatMessageExtra: async (messageId, patch) => {
     const message = await storageApi.get<Record<string, unknown>>("messages", messageId);
@@ -160,7 +185,7 @@ export const storageApi: StorageGateway = {
     invokeTauri("chat_message_add_swipe", {
       chatId,
       messageId,
-      body: { content },
+      body: { content: collapseExcessBlankLines(content) },
     }),
   patchChatMetadata: (chatId, patch) => patchChatObjectField(chatId, "metadata", patch),
   patchChatSummaries: (chatId, patch) => patchChatObjectField(chatId, "metadata", patch),

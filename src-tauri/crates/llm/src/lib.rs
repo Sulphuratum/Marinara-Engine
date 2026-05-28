@@ -4,6 +4,7 @@ use marinara_security::is_allowed_outbound_url;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::Write,
     path::PathBuf,
@@ -106,7 +107,6 @@ pub async fn stream_events(
         && request.connection.provider != "google"
         && request.connection.provider != "google_vertex"
         && request.connection.provider != "claude_subscription"
-        && request.tools.is_empty()
     {
         stream_openai_compatible(request, &mut emit).await?;
     } else {
@@ -332,7 +332,7 @@ fn reasoning_effort(parameters: &Value) -> Option<String> {
     let effort = param_string(parameters, &["reasoningEffort", "reasoning_effort"])?;
     match effort.as_str() {
         "low" | "medium" | "high" => Some(effort),
-        "maximum" => Some("high".to_string()),
+        "maximum" | "xhigh" => Some("high".to_string()),
         _ => None,
     }
 }
@@ -355,6 +355,65 @@ fn is_openrouter_claude_reasoning_model(request: &LlmRequest) -> bool {
         || model.contains("claude-opus-4")
         || model.contains("claude-sonnet-4")
         || model.contains("claude-haiku-4")
+}
+
+fn claude_version_parts(model: &str, family: &str) -> Option<(u32, u32)> {
+    let normalized = model.to_ascii_lowercase();
+    let marker = format!("claude-{family}-");
+    let start = normalized.find(&marker)? + marker.len();
+    let tail = &normalized[start..];
+    let parts = tail
+        .split(|ch: char| !ch.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u32>().ok())
+        .take(2)
+        .collect::<Vec<_>>();
+    let major = *parts.first()?;
+    let minor = parts
+        .get(1)
+        .copied()
+        .filter(|value| *value <= 99)
+        .unwrap_or(0);
+    Some((major, minor))
+}
+
+fn claude_version_at_least(model: &str, family: &str, major: u32, minor: u32) -> bool {
+    let Some((model_major, model_minor)) = claude_version_parts(model, family) else {
+        return false;
+    };
+    model_major > major || (model_major == major && model_minor >= minor)
+}
+
+fn is_claude_opus_adaptive_only_model(model: &str) -> bool {
+    claude_version_at_least(model, "opus", 4, 7)
+}
+
+fn supports_anthropic_adaptive_thinking(model: &str) -> bool {
+    is_claude_opus_adaptive_only_model(model)
+        || claude_version_at_least(model, "sonnet", 4, 5)
+}
+
+fn should_send_openai_sampling_parameters(request: &LlmRequest) -> bool {
+    !is_claude_opus_adaptive_only_model(&request.connection.model)
+}
+
+fn should_send_temperature(request: &LlmRequest) -> bool {
+    should_send_openai_sampling_parameters(request)
+}
+
+fn is_sampling_parameter_key(key: &str) -> bool {
+    matches!(
+        key,
+        "temperature"
+            | "top_p"
+            | "topP"
+            | "top_k"
+            | "topK"
+            | "frequency_penalty"
+            | "frequencyPenalty"
+            | "presence_penalty"
+            | "presencePenalty"
+    )
 }
 
 fn is_gemini_3_model(model: &str) -> bool {
@@ -383,7 +442,8 @@ fn google_thinking_level(parameters: &Value) -> Option<&'static str> {
 
 fn google_thinking_config(model: &str, parameters: &Value) -> Option<Value> {
     if is_gemini_3_model(model) {
-        return google_thinking_level(parameters).map(|level| json!({ "thinkingLevel": level }));
+        return google_thinking_level(parameters)
+            .map(|level| json!({ "thinkingLevel": level, "includeThoughts": true }));
     }
 
     if is_gemini_25_model(model) {
@@ -398,6 +458,24 @@ fn google_thinking_config(model: &str, parameters: &Value) -> Option<Value> {
     }
 
     None
+}
+
+fn anthropic_thinking_effort(parameters: &Value) -> Option<&'static str> {
+    let effort = param_string(parameters, &["reasoningEffort", "reasoning_effort"])?;
+    match effort.as_str() {
+        "low" => Some("low"),
+        "medium" => Some("medium"),
+        "high" | "maximum" | "xhigh" => Some("high"),
+        _ => None,
+    }
+}
+
+fn anthropic_thinking_budget_tokens(effort: &str) -> u64 {
+    match effort {
+        "low" => 1024,
+        "medium" => 8192,
+        _ => 24576,
+    }
 }
 
 fn should_send_top_k(request: &LlmRequest) -> bool {
@@ -651,8 +729,10 @@ async fn complete_openai_compatible_rich(request: LlmRequest) -> AppResult<LlmCo
         );
         body["tool_choice"] = json!("auto");
     }
-    if let Some(temp) = temperature(&request.parameters) {
-        body["temperature"] = json!(temp);
+    if should_send_temperature(&request) {
+        if let Some(temp) = temperature(&request.parameters) {
+            body["temperature"] = json!(temp);
+        }
     }
     apply_openai_parameters(&mut body, &request);
     log_prompt_connection_request("openai.chat.completions", &url, &request, &body);
@@ -690,8 +770,20 @@ async fn stream_openai_compatible(
         "stream": true,
         "max_tokens": request_max_tokens(&request, 1024),
     });
-    if let Some(temp) = temperature(&request.parameters) {
-        body["temperature"] = json!(temp);
+    if !request.tools.is_empty() {
+        body["tools"] = Value::Array(
+            request
+                .tools
+                .iter()
+                .map(|tool| json!({ "type": "function", "function": tool }))
+                .collect(),
+        );
+        body["tool_choice"] = json!("auto");
+    }
+    if should_send_temperature(&request) {
+        if let Some(temp) = temperature(&request.parameters) {
+            body["temperature"] = json!(temp);
+        }
     }
     apply_openai_parameters(&mut body, &request);
     log_prompt_connection_request("openai.chat.completions.stream", &url, &request, &body);
@@ -717,17 +809,21 @@ async fn stream_openai_compatible(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut tool_calls = OpenAiToolCallAccumulator::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| AppError::new("llm_stream_error", error.to_string()))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(index) = buffer.find("\n\n") {
             let block = buffer[..index].to_string();
             buffer = buffer[index + 2..].to_string();
-            process_openai_sse_block(&block, emit)?;
+            process_openai_sse_block(&block, emit, &mut tool_calls)?;
         }
     }
     if !buffer.trim().is_empty() {
-        process_openai_sse_block(&buffer, emit)?;
+        process_openai_sse_block(&buffer, emit, &mut tool_calls)?;
+    }
+    for tool_call in tool_calls.into_tool_calls() {
+        emit(json!({ "type": "tool_call", "data": tool_call }))?;
     }
     Ok(())
 }
@@ -804,6 +900,11 @@ fn build_openai_responses_body(request: &LlmRequest, stream: bool) -> Value {
     {
         if let Some(entries) = extra.as_object() {
             for (key, value) in entries {
+                if !should_send_openai_sampling_parameters(request)
+                    && is_sampling_parameter_key(key)
+                {
+                    continue;
+                }
                 if body.get(key).is_none() {
                     body[key] = value.clone();
                 }
@@ -988,9 +1089,83 @@ fn process_openai_responses_sse_block(
     Ok(())
 }
 
+#[derive(Default)]
+struct OpenAiToolCallAccumulator {
+    calls: BTreeMap<u64, OpenAiToolCallParts>,
+}
+
+#[derive(Default)]
+struct OpenAiToolCallParts {
+    id: Option<String>,
+    name: Option<String>,
+    arguments: String,
+}
+
+impl OpenAiToolCallAccumulator {
+    fn ingest_delta(&mut self, delta: &Value) {
+        let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) else {
+            return;
+        };
+        for tool_call in tool_calls {
+            let index = tool_call
+                .get("index")
+                .and_then(Value::as_u64)
+                .unwrap_or(self.calls.len() as u64);
+            let parts = self.calls.entry(index).or_default();
+            if let Some(id) = tool_call
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
+                parts.id = Some(id.to_string());
+            }
+            let Some(function) = tool_call.get("function").and_then(Value::as_object) else {
+                continue;
+            };
+            if let Some(name) = function
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+            {
+                parts.name.get_or_insert_with(String::new).push_str(name);
+            }
+            if let Some(arguments) = function.get("arguments").and_then(Value::as_str) {
+                parts.arguments.push_str(arguments);
+            }
+        }
+    }
+
+    fn into_tool_calls(self) -> Vec<Value> {
+        self.calls
+            .into_iter()
+            .filter_map(|(index, parts)| {
+                let name = parts.name.unwrap_or_default();
+                if name.trim().is_empty() && parts.arguments.trim().is_empty() {
+                    return None;
+                }
+                let arguments = if parts.arguments.trim().is_empty() {
+                    "{}".to_string()
+                } else {
+                    parts.arguments
+                };
+                Some(json!({
+                    "id": parts.id.unwrap_or_else(|| format!("call-{index}")),
+                    "name": name.clone(),
+                    "arguments": arguments.clone(),
+                    "function": {
+                        "name": name,
+                        "arguments": arguments
+                    }
+                }))
+            })
+            .collect()
+    }
+}
+
 fn process_openai_sse_block(
     block: &str,
     emit: &mut (impl FnMut(Value) -> AppResult<()> + Send),
+    tool_calls: &mut OpenAiToolCallAccumulator,
 ) -> AppResult<()> {
     let payload = block
         .lines()
@@ -1011,6 +1186,7 @@ fn process_openai_sse_block(
     };
     for choice in choices {
         let delta = choice.get("delta").unwrap_or(choice);
+        tool_calls.ingest_delta(delta);
         for key in ["reasoning_content", "reasoning", "thinking"] {
             if let Some(thinking) = delta.get(key).and_then(Value::as_str) {
                 if !thinking.is_empty() {
@@ -1064,22 +1240,27 @@ fn openai_message(message: &LlmMessage) -> Value {
 
 fn apply_openai_parameters(body: &mut Value, request: &LlmRequest) {
     let parameters = &request.parameters;
-    if let Some(top_p) = param_f64(parameters, &["topP", "top_p"]) {
-        body["top_p"] = json!(top_p);
-    }
-    if should_send_top_k(request) {
-        if let Some(top_k) = param_i64(parameters, &["topK", "top_k"]).filter(|value| *value > 0) {
-            body["top_k"] = json!(top_k);
+    if should_send_openai_sampling_parameters(request) {
+        if let Some(top_p) = param_f64(parameters, &["topP", "top_p"]) {
+            body["top_p"] = json!(top_p);
         }
-    }
-    if let Some(frequency_penalty) =
-        param_f64(parameters, &["frequencyPenalty", "frequency_penalty"])
-    {
-        body["frequency_penalty"] = json!(frequency_penalty);
-    }
-    if let Some(presence_penalty) = param_f64(parameters, &["presencePenalty", "presence_penalty"])
-    {
-        body["presence_penalty"] = json!(presence_penalty);
+        if should_send_top_k(request) {
+            if let Some(top_k) =
+                param_i64(parameters, &["topK", "top_k"]).filter(|value| *value > 0)
+            {
+                body["top_k"] = json!(top_k);
+            }
+        }
+        if let Some(frequency_penalty) =
+            param_f64(parameters, &["frequencyPenalty", "frequency_penalty"])
+        {
+            body["frequency_penalty"] = json!(frequency_penalty);
+        }
+        if let Some(presence_penalty) =
+            param_f64(parameters, &["presencePenalty", "presence_penalty"])
+        {
+            body["presence_penalty"] = json!(presence_penalty);
+        }
     }
     if let Some(seed) = param_i64(parameters, &["seed"]) {
         body["seed"] = json!(seed);
@@ -1120,6 +1301,9 @@ fn apply_openai_parameters(body: &mut Value, request: &LlmRequest) {
     {
         if let Some(entries) = extra.as_object() {
             for (key, value) in entries {
+                if !should_send_openai_sampling_parameters(request) && is_sampling_parameter_key(key) {
+                    continue;
+                }
                 if body.get(key).is_none() {
                     body[key] = value.clone();
                 }
@@ -1649,14 +1833,29 @@ async fn complete_anthropic(request: LlmRequest) -> AppResult<String> {
     if !system.is_empty() {
         body["system"] = json!(system.join("\n\n"));
     }
-    if let Some(temp) = temperature(&request.parameters) {
-        body["temperature"] = json!(temp);
+    let adaptive_only = is_claude_opus_adaptive_only_model(&request.connection.model);
+    let thinking_effort = anthropic_thinking_effort(&request.parameters);
+    let adaptive_thinking =
+        thinking_effort.is_some() && supports_anthropic_adaptive_thinking(&request.connection.model);
+    if !adaptive_only && !adaptive_thinking {
+        if let Some(temp) = temperature(&request.parameters) {
+            body["temperature"] = json!(temp);
+        }
     }
-    if let Some(top_p) = param_f64(&request.parameters, &["topP", "top_p"]) {
-        body["top_p"] = json!(top_p);
+    if !adaptive_only {
+        if let Some(top_k) = param_i64(&request.parameters, &["topK", "top_k"]) {
+            body["top_k"] = json!(top_k);
+        }
     }
-    if let Some(top_k) = param_i64(&request.parameters, &["topK", "top_k"]) {
-        body["top_k"] = json!(top_k);
+    if let Some(effort) = thinking_effort {
+        if adaptive_thinking {
+            body["thinking"] = json!({ "type": "adaptive" });
+            body["output_config"] = json!({ "effort": effort });
+        } else {
+            let budget_tokens = anthropic_thinking_budget_tokens(effort);
+            body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget_tokens });
+            body["max_tokens"] = json!(request_max_tokens(&request, 1024) + budget_tokens);
+        }
     }
     if let Some(stop) = stop_sequences(&request.parameters) {
         body["stop_sequences"] = json!(stop);
@@ -1676,7 +1875,8 @@ async fn complete_anthropic(request: LlmRequest) -> AppResult<String> {
             .and_then(|items| {
                 items
                     .iter()
-                    .find_map(|item| item.get("text").and_then(Value::as_str))
+                    .filter_map(|item| item.get("text").and_then(Value::as_str))
+                    .find(|text| !text.trim().is_empty())
             })
             .map(ToOwned::to_owned)
     })
@@ -1969,6 +2169,25 @@ mod tests {
         }
     }
 
+    fn request_for(provider: &str, model: &str, parameters: Value) -> LlmRequest {
+        LlmRequest {
+            connection: LlmConnection {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                api_key: String::new(),
+                base_url: String::new(),
+                openrouter_provider: None,
+                enable_caching: false,
+                caching_at_depth: None,
+                max_tokens_override: None,
+                claude_fast_mode: false,
+            },
+            messages: Vec::new(),
+            parameters,
+            tools: Vec::new(),
+        }
+    }
+
     #[test]
     fn prompt_connection_diagnostics_follow_legacy_preset_and_explicit_flag() {
         assert!(is_prompt_connection_log_preset_value(Some(
@@ -2009,6 +2228,37 @@ mod tests {
     }
 
     #[test]
+    fn openai_chat_stream_accumulates_tool_call_deltas() {
+        let mut emitted = Vec::new();
+        let mut tool_calls = OpenAiToolCallAccumulator::default();
+        let mut emit = |value: Value| {
+            emitted.push(value);
+            Ok(())
+        };
+
+        process_openai_sse_block(
+            r#"data: {"choices":[{"delta":{"content":"Rolling...","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"roll_dice","arguments":"{\"notation\""}}]}}]}"#,
+            &mut emit,
+            &mut tool_calls,
+        )
+        .expect("first chunk should parse");
+        process_openai_sse_block(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"1d20\"}"}}]}}]}"#,
+            &mut emit,
+            &mut tool_calls,
+        )
+        .expect("second chunk should parse");
+
+        let calls = tool_calls.into_tool_calls();
+        assert_eq!(emitted[0]["type"], "token");
+        assert_eq!(emitted[0]["text"], "Rolling...");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "call_1");
+        assert_eq!(calls[0]["function"]["name"], "roll_dice");
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"notation":"1d20"}"#);
+    }
+
+    #[test]
     fn google_vertex_default_base_uses_aiplatform_endpoint() {
         assert_eq!(
             base_url("google_vertex", ""),
@@ -2026,29 +2276,57 @@ mod tests {
 
     #[test]
     fn google_top_k_zero_is_not_sent() {
-        let mut request = LlmRequest {
-            connection: LlmConnection {
-                provider: "google".to_string(),
-                model: "gemini-2.5-flash".to_string(),
-                api_key: String::new(),
-                base_url: String::new(),
-                openrouter_provider: None,
-                enable_caching: false,
-                caching_at_depth: None,
-                max_tokens_override: None,
-                claude_fast_mode: false,
-            },
-            messages: Vec::new(),
-            parameters: json!({ "topK": 0 }),
-            tools: Vec::new(),
-        };
+        let mut request = request_for("google", "gemini-2.5-flash", json!({ "topK": 0 }));
         assert!(should_send_top_k(&request));
-        assert!(param_i64(&request.parameters, &["topK", "top_k"]).filter(|value| *value > 0).is_none());
+        assert!(param_i64(&request.parameters, &["topK", "top_k"])
+            .filter(|value| *value > 0)
+            .is_none());
         request.parameters = json!({ "topK": 40 });
         assert_eq!(
             param_i64(&request.parameters, &["topK", "top_k"]).filter(|value| *value > 0),
             Some(40)
         );
+    }
+
+    #[test]
+    fn gemini_3_thinking_config_sends_thinking_only_shape() {
+        let config = google_thinking_config("gemini-3-pro", &json!({ "reasoningEffort": "medium" }))
+            .expect("Gemini 3 reasoning effort should create thinking config");
+        assert_eq!(config["thinkingLevel"], json!("medium"));
+        assert_eq!(config["includeThoughts"], json!(true));
+    }
+
+    #[test]
+    fn openrouter_claude_opus_adaptive_model_strips_sampling_parameters() {
+        let request = request_for(
+            "openrouter",
+            "anthropic/claude-opus-4-7",
+            json!({
+                "temperature": 0.8,
+                "topP": 0.9,
+                "topK": 40,
+                "frequencyPenalty": 0.2,
+                "presencePenalty": 0.3,
+                "customParameters": { "top_p": 0.5, "temperature": 0.4 }
+            }),
+        );
+        let mut body = json!({});
+        apply_openai_parameters(&mut body, &request);
+
+        assert!(!should_send_temperature(&request));
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("top_k").is_none());
+        assert!(body.get("frequency_penalty").is_none());
+        assert!(body.get("presence_penalty").is_none());
+        assert!(body.get("temperature").is_none());
+    }
+
+    #[test]
+    fn anthropic_adaptive_thinking_model_detection_matches_main_branch_rules() {
+        assert!(supports_anthropic_adaptive_thinking("claude-opus-4-7"));
+        assert!(supports_anthropic_adaptive_thinking("claude-opus-5-6"));
+        assert!(supports_anthropic_adaptive_thinking("claude-sonnet-4-5"));
+        assert!(!supports_anthropic_adaptive_thinking("claude-opus-4-20250514"));
     }
 
     #[test]

@@ -114,4 +114,5 @@ Use the report as a navigation map. Verify behavior claims against source files 
 - Code files are processed locally for AST extraction.
 - Docs, PDFs, images, and transcripts may be sent through the configured AI backend for semantic extraction.
 - Do not graph private chat transcripts, secrets, generated dependency/build output, provider caches, or unrelated workspace folders unless the user explicitly asks and the scope is safe.
+- Do not commit local absolute workspace paths in Graphify outputs; use repo-relative paths such as `src/...` and scrub machine-specific prefixes before sharing or committing `graphify-out/`.
 - Use Graphify to decide where to inspect, then cite and trust source files, tests, and project docs for behavior.

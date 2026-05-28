@@ -203,6 +203,10 @@ pub(crate) fn message_swipes(
         .get("content")
         .cloned()
         .unwrap_or_else(|| Value::String(String::new()));
+    let content = match content {
+        Value::String(content) => Value::String(collapse_excess_blank_lines(&content)),
+        value => value,
+    };
     let object = message
         .as_object_mut()
         .ok_or_else(|| AppError::invalid_input("Message is not an object"))?;

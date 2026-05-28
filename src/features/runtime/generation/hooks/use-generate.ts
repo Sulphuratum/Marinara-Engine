@@ -66,6 +66,10 @@ function errorMessage(error: unknown): string {
   return String(error ?? "Generation failed");
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 async function persistGenerationFailureNotice(
   queryClient: QueryClient,
   chatId: string,
@@ -891,6 +895,7 @@ export async function runGenerationWithUi(
   try {
     insertOptimisticUserMessage(queryClient, args);
     await options.beforeStart?.(args);
+    if (controller.signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
     for await (const event of streamFactory(args, controller.signal)) {
       switch (event.type) {
         case "phase":
@@ -972,7 +977,7 @@ export async function runGenerationWithUi(
     await queryClient.invalidateQueries({ queryKey: ["chats"] });
     return received.length > 0;
   } catch (error) {
-    if (!(error instanceof DOMException && error.name === "AbortError")) {
+    if (!isAbortError(error)) {
       const message = errorMessage(error);
       toast.error(message);
       await persistGenerationFailureNotice(queryClient, chatId, message);

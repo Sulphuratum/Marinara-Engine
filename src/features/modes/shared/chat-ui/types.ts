@@ -22,6 +22,12 @@ export type PeekPromptData = {
     finishReason?: string | null;
   } | null;
   agentNote?: string;
+  loading?: boolean;
+  error?: string;
+};
+
+export type PeekPromptOptions = {
+  forCharacterId?: string | null;
 };
 
 export type MessageWithSwipes = Message & {

@@ -2,7 +2,7 @@
 // Peek Prompt Modal — collapsible section viewer
 // ──────────────────────────────────────────────
 import { useState, useMemo } from "react";
-import { X, ChevronRight, ChevronDown } from "lucide-react";
+import { X, ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "../../../../../shared/lib/utils";
 
 function estimateTokens(text: string): number {
@@ -37,6 +37,8 @@ interface PeekPromptModalProps {
     parameters: unknown;
     generationInfo?: GenerationInfo | null;
     agentNote?: string;
+    loading?: boolean;
+    error?: string;
   };
   onClose: () => void;
 }
@@ -370,6 +372,7 @@ function ChatHistoryMessage({ entry, roleColor }: { entry: ChatHistoryEntry; rol
 export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
   const sections = useMemo(() => buildDisplaySections(data.messages), [data.messages]);
   const totalTokens = useMemo(() => estimateTokens(data.messages.map((m) => m.content).join("")), [data.messages]);
+  const isLoading = data.loading === true;
 
   const gen = data.generationInfo;
   const params = data.parameters as Record<string, unknown> | null;
@@ -425,7 +428,9 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
           <div className="flex items-center gap-3">
             <h3 className="text-sm font-bold">Assembled Prompt</h3>
             <span className="text-[0.625rem] text-[var(--muted-foreground)]">
-              {sections.length} section{sections.length !== 1 ? "s" : ""} &middot; ~{fmtTokens(totalTokens)} tokens
+              {isLoading
+                ? "assembling"
+                : `${sections.length} section${sections.length !== 1 ? "s" : ""} \u00b7 ~${fmtTokens(totalTokens)} tokens`}
             </span>
           </div>
           <button
@@ -436,8 +441,18 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
           </button>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-2">
+          {isLoading && (
+            <div className="flex min-h-48 items-center justify-center text-[var(--muted-foreground)]">
+              <Loader2 size="1.5rem" className="animate-spin" />
+            </div>
+          )}
+          {!isLoading && data.error && (
+            <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2 text-[0.75rem] text-red-300/90">
+              {data.error}
+            </div>
+          )}
           {/* Generation info panel */}
-          {(gen || paramPills.length > 0) && (
+          {!isLoading && !data.error && (gen || paramPills.length > 0) && (
             <div className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/30 px-4 py-3 space-y-2">
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[0.6875rem]">
                 {gen?.model && (
@@ -472,24 +487,26 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
               )}
             </div>
           )}
-          {data.agentNote && (
+          {!isLoading && !data.error && data.agentNote && (
             <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[0.6875rem] text-amber-300/80">
               ⚠ {data.agentNote}
             </div>
           )}
-          {sections.map((s, i) =>
-            s.kind === "chat-history" ? (
-              <ChatHistorySection key={i} entries={s.entries} rawContent={s.rawContent} />
-            ) : (
-              <CollapsibleBlock
-                key={i}
-                label={s.label}
-                content={s.content}
-                defaultOpen={false}
-                roleColor={sectionRoleColor(s.role, s.label)}
-              />
-            ),
-          )}
+          {!isLoading &&
+            !data.error &&
+            sections.map((s, i) =>
+              s.kind === "chat-history" ? (
+                <ChatHistorySection key={i} entries={s.entries} rawContent={s.rawContent} />
+              ) : (
+                <CollapsibleBlock
+                  key={i}
+                  label={s.label}
+                  content={s.content}
+                  defaultOpen={false}
+                  roleColor={sectionRoleColor(s.role, s.label)}
+                />
+              ),
+            )}
         </div>
       </div>
     </div>

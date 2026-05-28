@@ -8,6 +8,7 @@ import { mergeAdjacentMessages, squashLeadingSystemMessages } from "../generatio
 import { applyRegexScriptsToPromptMessages } from "../generation-core/regex/regex-application";
 import { stripConversationPromptTimestamps } from "../modes/chat/core/summaries/transcript-sanitize";
 import { resolveMacros, type MacroContext } from "../shared/macros/macro-engine";
+import { collapseExcessBlankLines } from "../shared/text/newlines";
 import { normalizeUserTimeZone } from "../shared/time/timezone";
 import type { GameActiveState, GameCampaignPlan, GameMap, GameNpc, HudWidget, SessionSummary } from "../contracts/types/game";
 import { buildGmFormatReminder, buildGmSystemPrompt, type GmPromptContext } from "../modes/game/prompts/gm-prompts";
@@ -518,7 +519,12 @@ async function buildGamePromptMessages(
   ];
 }
 
-function promptPresetId(chat: JsonRecord, connection: JsonRecord, request: JsonRecord, defaultPromptId: string | null) {
+function promptPresetCandidates(
+  chat: JsonRecord,
+  connection: JsonRecord,
+  request: JsonRecord,
+  defaultPromptId: string | null,
+) {
   const mode = readString(chat.mode || chat.chatMode, "conversation");
   const candidates = buildGenerationPromptPresetCandidates({
     chatMode: mode,
@@ -528,7 +534,10 @@ function promptPresetId(chat: JsonRecord, connection: JsonRecord, request: JsonR
     impersonatePromptPresetId: request.impersonatePresetId,
     requestPromptPresetId: readString(request.promptPresetId).trim() || readString(request.presetId).trim(),
   });
-  return candidates[0]?.id ?? (mode === "conversation" ? null : defaultPromptId);
+  if (mode !== "conversation" && defaultPromptId && !candidates.some((candidate) => candidate.id === defaultPromptId)) {
+    return [...candidates, { id: defaultPromptId }];
+  }
+  return candidates;
 }
 
 async function loadDefaultPromptId(storage: StorageGateway): Promise<string | null> {
@@ -567,38 +576,44 @@ async function loadSelectedPromptPreset(
   },
 ): Promise<SelectedPromptPreset | null> {
   const defaultPromptId = await loadDefaultPromptId(storage);
-  const presetId = promptPresetId(input.chat, input.connection, input.request, defaultPromptId);
-  if (!presetId) return null;
+  const candidates = promptPresetCandidates(input.chat, input.connection, input.request, defaultPromptId);
+  if (candidates.length === 0) return null;
 
-  const [preset, sections, choiceBlocks] = await Promise.all([
-    loadPromptPresetRecord(storage, presetId),
-    loadPromptSections(storage, presetId),
-    loadPromptChoiceBlocks(storage, presetId),
-  ]);
-  const blocksByName = new Map(
-    choiceBlocks
-      .map((block) => [readString(block.variableName).trim(), block] as const)
-      .filter(([name]) => name.length > 0),
-  );
-  const metadata = parseRecord(input.chat.metadata);
-  const explicitVariables = stringRecord(input.chat.promptVariables ?? input.chat.variableValues);
-  const chatPresetId = readString(input.chat.promptPresetId).trim();
-  const chatChoices = chatPresetId === presetId ? metadata.presetChoices ?? input.chat.presetChoices : null;
-  const mode = readString(input.chat.mode || input.chat.chatMode, "conversation");
+  for (const candidate of candidates) {
+    const presetId = candidate.id;
+    const preset = await loadPromptPresetRecord(storage, presetId);
+    if (!preset) continue;
 
-  return {
-    id: presetId,
-    preset,
-    sections,
-    variables: {
-      ...stringRecord(preset?.variableValues),
-      ...promptChoiceVariables(preset?.defaultChoices, blocksByName),
-      ...promptChoiceVariables(chatChoices, blocksByName),
-      ...explicitVariables,
-    },
-    parameters: mode === "game" ? null : mergeStoredGenerationParameters(preset?.parameters),
-    wrapFormat: normalizeWrapFormat(preset?.wrapFormat),
-  };
+    const [sections, choiceBlocks] = await Promise.all([
+      loadPromptSections(storage, presetId),
+      loadPromptChoiceBlocks(storage, presetId),
+    ]);
+    const blocksByName = new Map(
+      choiceBlocks
+        .map((block) => [readString(block.variableName).trim(), block] as const)
+        .filter(([name]) => name.length > 0),
+    );
+    const metadata = parseRecord(input.chat.metadata);
+    const explicitVariables = stringRecord(input.chat.promptVariables ?? input.chat.variableValues);
+    const chatPresetId = readString(input.chat.promptPresetId).trim();
+    const chatChoices = chatPresetId === presetId ? metadata.presetChoices ?? input.chat.presetChoices : null;
+    const mode = readString(input.chat.mode || input.chat.chatMode, "conversation");
+
+    return {
+      id: presetId,
+      preset,
+      sections,
+      variables: {
+        ...stringRecord(preset.variableValues),
+        ...promptChoiceVariables(preset.defaultChoices, blocksByName),
+        ...promptChoiceVariables(chatChoices, blocksByName),
+        ...explicitVariables,
+      },
+      parameters: mode === "game" ? null : mergeStoredGenerationParameters(preset.parameters),
+      wrapFormat: normalizeWrapFormat(preset.wrapFormat),
+    };
+  }
+  return null;
 }
 
 function markerConfig(section: PromptSectionRecord): MarkerConfig | null {
@@ -1117,7 +1132,7 @@ function messageStoredReasoning(message: JsonRecord): string {
 }
 
 function historyMessageContent(message: JsonRecord, includePastReasoning: boolean): string {
-  const content = readString(message.content).trim();
+  const content = collapseExcessBlankLines(readString(message.content).trim());
   if (!includePastReasoning || readString(message.role) !== "assistant") return content;
   const thinking = messageStoredReasoning(message);
   if (!thinking) return content;
@@ -1151,26 +1166,16 @@ function findHistoryBounds(messages: ChatMLMessage[]): { start: number; end: num
 
 function shouldMergeSameRolePromptMessage(
   previous: ChatMLMessage | undefined,
-  message: ChatMLMessage,
+  _message: ChatMLMessage,
   effectiveRole: "user" | "assistant",
 ): previous is ChatMLMessage {
   if (!previous || previous.role !== effectiveRole) return false;
-
-  const previousCharacterId = previous.characterId ?? null;
-  const messageCharacterId = message.characterId ?? null;
-  const bothCharacterHistory =
-    previous.contextKind === "history" &&
-    message.contextKind === "history" &&
-    previousCharacterId !== null &&
-    messageCharacterId !== null;
-
-  // Keep distinct group-chat speakers split until individual response scoping
-  // has decided which history turns belong to the active speaker.
-  return !(bothCharacterHistory && previousCharacterId !== messageCharacterId);
+  return true;
 }
 
 function mergeIntoPreviousPromptMessage(previous: ChatMLMessage, message: ChatMLMessage): void {
   previous.content += "\n\n" + message.content;
+  previous.content = collapseExcessBlankLines(previous.content);
   if (previous.contextKind !== message.contextKind) {
     delete previous.contextKind;
   }
@@ -1181,9 +1186,52 @@ function mergeIntoPreviousPromptMessage(previous: ChatMLMessage, message: ChatML
   if (message.images?.length) {
     previous.images = [...(previous.images ?? []), ...message.images];
   }
-  if (message.providerMetadata) {
+  if (previous.role === "assistant" && message.providerMetadata) {
     previous.providerMetadata = message.providerMetadata;
   }
+}
+
+function promptMessageWithRole(message: ChatMLMessage, role: "user" | "assistant"): ChatMLMessage {
+  const next = { ...message, role };
+  if (role !== "assistant") {
+    delete next.providerMetadata;
+  }
+  return next;
+}
+
+function scopedIndividualGroupTarget(input: PromptAssemblyInput, characters: GenerationCharacterContext[]): string | null {
+  const chatMode = readString(input.chat.mode || input.chat.chatMode);
+  if (chatMode === "conversation" || characters.length <= 1 || input.request.impersonate === true) return null;
+  const metadata = parseRecord(input.chat.metadata);
+  if (readString(metadata.groupChatMode, "merged") !== "individual") return null;
+  const requestedCharacterId = readString(input.request.forCharacterId).trim();
+  if (!requestedCharacterId) return null;
+  return characters.some((character) => character.id === requestedCharacterId) ? requestedCharacterId : null;
+}
+
+function isIndividualGroupHistoryMessage(message: ChatMLMessage): boolean {
+  return (
+    message.contextKind === "history" ||
+    (message.contextKind === undefined && message.role !== "system" && message.characterId != null)
+  );
+}
+
+function scopeIndividualGroupHistoryRoles(messages: ChatMLMessage[], targetCharacterId: string): ChatMLMessage[] {
+  return messages.map((message) => {
+    if (!isIndividualGroupHistoryMessage(message)) return message;
+    let next = { ...message };
+    if (next.characterId) {
+      next.role = next.characterId === targetCharacterId ? "assistant" : "user";
+    } else if (next.role === "assistant") {
+      next.role = "user";
+    }
+    if (next.role !== "assistant" && next.providerMetadata) {
+      const withoutAssistantMetadata = { ...next };
+      delete withoutAssistantMetadata.providerMetadata;
+      next = withoutAssistantMetadata;
+    }
+    return next;
+  });
 }
 
 function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {
@@ -1212,7 +1260,7 @@ function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {
     const message = normalizedMessages[index]!;
     const effectiveRole = message.role === "system" ? "user" : message.role;
     if (effectiveRole === expectedRole) {
-      result.push({ ...message, role: effectiveRole });
+      result.push(promptMessageWithRole(message, effectiveRole));
       expectedRole = effectiveRole === "user" ? "assistant" : "user";
       continue;
     }
@@ -1223,8 +1271,8 @@ function enforceStrictRoles(messages: ChatMLMessage[]): ChatMLMessage[] {
       continue;
     }
 
-    result.push({ ...message, role: effectiveRole });
-    expectedRole = effectiveRole === "user" ? "assistant" : "user";
+    result.push(promptMessageWithRole(message, expectedRole));
+    expectedRole = expectedRole === "user" ? "assistant" : "user";
   }
 
   return result;
@@ -1431,8 +1479,10 @@ export async function assembleGenerationPrompt(
     normalizeWrapFormat(input.chat.wrapFormat) ??
     normalizeWrapFormat(input.connection.wrapFormat) ??
     "xml";
-  const historyLimit = Math.max(1, Math.min(300, readNumber(input.request.historyLimit, 80)));
   const chatMeta = parseRecord(input.chat.metadata);
+  const metadataHistoryLimit = readNumber(chatMeta.contextMessageLimit, 0);
+  const requestedHistoryLimit = readNumber(input.request.historyLimit, metadataHistoryLimit || 300);
+  const historyLimit = Math.max(1, Math.min(300, metadataHistoryLimit || requestedHistoryLimit || 300));
   const history = historyMessages(input.storedMessages, historyLimit, chatMeta.excludePastReasoning === false);
   const macros = macroContext({
     chat: input.chat,
@@ -1549,6 +1599,14 @@ export async function assembleGenerationPrompt(
   applyRegexScriptsToPromptMessages(messages, regexScripts, {
     resolveMacros: (value) => resolveMacros(value, macros, { trimResult: false }),
   });
+  messages = messages.map((message) => ({
+    ...message,
+    content: collapseExcessBlankLines(message.content),
+  }));
+  const individualGroupTarget = scopedIndividualGroupTarget(input, characters);
+  if (individualGroupTarget) {
+    messages = scopeIndividualGroupHistoryRoles(messages, individualGroupTarget);
+  }
   const strictRoleFormatting =
     boolish(promptParameters?.strictRoleFormatting, true) &&
     chatMode === "roleplay";

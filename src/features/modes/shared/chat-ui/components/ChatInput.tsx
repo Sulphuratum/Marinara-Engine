@@ -88,6 +88,10 @@ function inferAttachmentType(file: File): string {
   return "application/octet-stream";
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function isSupportedChatAttachment(file: File): boolean {
   if (file.type.startsWith("image/")) return true;
   if (file.type.startsWith("text/")) return true;
@@ -493,6 +497,7 @@ export const ChatInput = memo(function ChatInput({
         try {
           await generate({ chatId: activeChatId, connectionId: null });
         } catch (error) {
+          if (isAbortError(error)) return;
           const msg = error instanceof Error ? error.message : "Generation failed";
           toast.error(msg);
         }
@@ -540,6 +545,7 @@ export const ChatInput = memo(function ChatInput({
           setFeedback(result.feedback);
         }
       } catch (error) {
+        if (isAbortError(error)) return;
         const activeChatIdAfterFailure = useChatStore.getState().activeChatId;
         const currentValue = textareaRef.current?.value ?? "";
         const canRestoreVisibleDraft = activeChatIdAfterFailure === activeChatId && currentValue.length === 0;
@@ -632,6 +638,7 @@ export const ChatInput = memo(function ChatInput({
         ...(pendingAttachments.length ? { attachments: pendingAttachments } : {}),
       });
     } catch (error) {
+      if (isAbortError(error)) return;
       const msg = error instanceof Error ? error.message : "Generation failed";
       toast.error(msg);
       console.error("Send failed:", error);
@@ -714,6 +721,7 @@ export const ChatInput = memo(function ChatInput({
           restoreSubmittedDraft();
         }
       } catch (error) {
+        if (isAbortError(error)) return;
         restoreSubmittedDraft();
         const msg = error instanceof Error ? error.message : fallbackError;
         toast.error(msg);
@@ -1075,6 +1083,7 @@ export const ChatInput = memo(function ChatInput({
             : { chatId: activeChatId, connectionId: null, forCharacterId: characterId },
         );
       } catch (error) {
+        if (isAbortError(error)) return;
         const msg = error instanceof Error ? error.message : "Generation failed";
         toast.error(msg);
       }
