@@ -986,22 +986,11 @@ function appendSummaryToSystemPrompt(
 
 function buildRoleplayScenePromptBlock(
   chat: JsonRecord,
-  characters: GenerationCharacterContext[],
-  persona: GenerationPersonaContext | null,
+  wrapFormat: WrapFormat,
 ): string | null {
   const meta = parseRecord(chat.metadata);
   if (readString(chat.mode || chat.chatMode) !== "roleplay" && readString(meta.sceneStatus) !== "active") return null;
   const parts: string[] = [];
-  const characterNames = characters.map((character) => character.name).filter(Boolean);
-  const playerName = persona?.name || "the user";
-  const roleLines = [
-    "This is a dedicated roleplay scene, not a normal conversation and not game mode.",
-    characterNames.length
-      ? `Play the scene characters: ${characterNames.join(", ")}. The player controls ${playerName}.`
-      : `The player controls ${playerName}.`,
-    "Continue the scene with immersive action, dialogue, and narration. Do not use game HUD/mechanics unless the scene explicitly established them.",
-  ];
-  parts.push(`<scene_role>\n${roleLines.join("\n")}\n</scene_role>`);
 
   const awareness: string[] = [];
   const relationship = readString(meta.sceneRelationshipHistory).trim();
@@ -1010,24 +999,14 @@ function buildRoleplayScenePromptBlock(
   if (context) awareness.push(`Conversation context before the scene:\n${context}`);
   const previous = readString(meta.lastRoleplaySceneSummary).trim();
   if (previous) awareness.push(`Previous scene continuity:\n${previous}`);
-  if (awareness.length) parts.push(`<awareness>\n${awareness.join("\n\n")}\n</awareness>`);
+  if (awareness.length) parts.push(wrapContent(awareness.join("\n\n"), "awareness", wrapFormat));
 
   const scenario = readString(meta.sceneScenario).trim() || readString(meta.sceneDescription).trim();
-  if (scenario) parts.push(`<scene_scenario>\n${scenario}\n</scene_scenario>`);
+  if (scenario) parts.push(wrapContent(scenario, "scene_scenario", wrapFormat));
   const instructions = readString(meta.sceneSystemPrompt).trim();
-  if (instructions) parts.push(`<scene_instructions>\n${instructions}\n</scene_instructions>`);
-  parts.push(
-    [
-      "<output_format>",
-      "Continue directly from the last visible message.",
-      "Keep character knowledge bounded to what they witnessed, inferred, or were told.",
-      `Never decide ${playerName}'s strategic choices or exact dialogue. End naturally when it is the player's turn.`,
-      "Use vivid, specific prose and distinct character voices. Avoid repeating the user's phrasing.",
-      "</output_format>",
-    ].join("\n"),
-  );
+  if (instructions) parts.push(wrapContent(instructions, "scene_instructions", wrapFormat));
 
-  return parts.join("\n\n");
+  return parts.length > 0 ? parts.join("\n\n") : null;
 }
 
 export function chatSummaryForGeneration(chat: JsonRecord): string | null {
@@ -1742,7 +1721,7 @@ export async function assembleGenerationPrompt(
     }
     messages.push(gameReminder!);
   } else {
-    const sceneBlock = buildRoleplayScenePromptBlock(input.chat, promptCharacters, persona);
+    const sceneBlock = buildRoleplayScenePromptBlock(input.chat, wrapFormat);
     if (sceneBlock) {
       const firstSystemIndex = messages.findIndex((message) => message.role === "system");
       messages.splice(firstSystemIndex >= 0 ? firstSystemIndex + 1 : 0, 0, {

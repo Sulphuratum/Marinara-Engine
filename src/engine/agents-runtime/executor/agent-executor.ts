@@ -1562,6 +1562,10 @@ function parseAgentResponse(
       const data = JSON.parse(jsonStr);
       return { type: resultType, data, error: null };
     } catch (error) {
+      const fallback = coerceMalformedJsonAgentResponse(config.type, responseText);
+      if (fallback !== null) {
+        return { type: resultType, data: fallback, error: null };
+      }
       return { type: resultType, data: null, error: extractErrorMessage(error, "Invalid JSON response") };
     }
   }
@@ -1569,6 +1573,26 @@ function parseAgentResponse(
   // Text-based agents (prose-guardian, director). Sanitize before injection so
   // leaked tracker/roleplay content can't reach the main prompt.
   return { type: resultType, data: { text: sanitizeTextAgentResponse(config.type, responseText) }, error: null };
+}
+
+function coerceMalformedJsonAgentResponse(agentType: string, responseText: string): unknown | null {
+  if (agentType !== "echo-chamber") return null;
+  const lines = responseText
+    .replace(/```[\s\S]*?```/g, "")
+    .split(/\n+/)
+    .map((line) => line.replace(/^[-*•\d.)\s]+/, "").trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  const reactions = lines
+    .map((line, index) => {
+      const [maybeName, ...rest] = line.split(":");
+      const reaction = rest.length > 0 ? rest.join(":").trim() : line;
+      const characterName =
+        rest.length > 0 && maybeName.trim().length <= 40 ? maybeName.trim() : `viewer_${index + 1}`;
+      return reaction ? { characterName, reaction } : null;
+    })
+    .filter((entry): entry is { characterName: string; reaction: string } => entry !== null);
+  return reactions.length > 0 ? { reactions } : null;
 }
 
 /** Extract JSON from a response that may contain markdown fences. */

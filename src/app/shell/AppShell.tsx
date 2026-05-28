@@ -2,6 +2,7 @@
 // Layout: Main App Shell (Discord-like three-column)
 // ──────────────────────────────────────────────
 import { ChatSidebar, type ChatSidebarTab } from "./ChatSidebar";
+import { AppFindOverlay } from "./AppFindOverlay";
 import { TopBar } from "./TopBar";
 import { WindowTitleBar } from "./WindowTitleBar";
 import { SpotifyMobileWidget } from "../../features/shell/spotify/shell";
@@ -916,6 +917,7 @@ export function AppShell() {
         </>
       )}
       <ImagePromptReviewHost />
+      <AppFindOverlay />
 
       <header
         ref={headerRef}

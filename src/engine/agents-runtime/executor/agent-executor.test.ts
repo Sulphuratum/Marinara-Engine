@@ -146,6 +146,30 @@ describe("executeAgent result parsing", () => {
     });
   });
 
+  it("coerces malformed Echo Chamber prose into reaction rows", async () => {
+    const provider = providerWithResponses(["chat_doc: THE DRAMA\nI cannot believe he said that"]);
+
+    const result = await executeAgent(
+      agentConfig({ id: "echo", type: "echo-chamber", name: "Echo Chamber" }),
+      baseContext,
+      provider,
+      "agent-model",
+    );
+
+    expect(result).toMatchObject({
+      agentId: "echo",
+      agentType: "echo-chamber",
+      type: "echo_message",
+      success: true,
+      data: {
+        reactions: [
+          { characterName: "chat_doc", reaction: "THE DRAMA" },
+          { characterName: "viewer_2", reaction: "I cannot believe he said that" },
+        ],
+      },
+    });
+  });
+
   it("sanitizes leaked tracker and assistant tags from text-agent results", async () => {
     const provider = providerWithResponses([
       [

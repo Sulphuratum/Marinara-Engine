@@ -286,7 +286,7 @@ struct SearchMarinaraCodeArgs {
 
 #[tool(
     name = "search_marinara_code",
-    description = "Search Marinara Engine source files for a literal text query. Use this before answering questions about how the app works. The optional path must be relative to the repository, for example src/engine, src/features/shell/mari, src-tauri, or AGENTS.md.",
+    description = "Search Marinara Engine source files for a literal text query. Use this before answering questions about how the app works. Search concise symbols, file names, or path fragments from the user's question rather than the whole sentence. For example, search AppShell for a question about where AppShell is defined. The optional path must be relative to the repository, for example src/engine, src/features/shell/mari, src-tauri, or AGENTS.md.",
     input = SearchMarinaraCodeArgs,
 )]
 struct SearchMarinaraCodeTool {}
@@ -477,7 +477,12 @@ pub(crate) async fn professor_mari_prompt(state: &AppState, body: Value) -> AppR
     let connection = llm_connection_from_value(&connection_value)?;
     ensure_connection_supports_native_tools(&connection)?;
     let system_prompt = build_system_prompt(input.persona.as_ref());
-    let task_prompt = build_task_prompt(&input);
+    let repo_guidance = if looks_like_codebase_question(&input.user_message) {
+        repo_guidance_for_prompt().ok()
+    } else {
+        None
+    };
+    let task_prompt = build_task_prompt(&input, repo_guidance.as_deref());
     let provider: Arc<dyn LLMProvider> = Arc::new(MarinaraLlmProvider { connection });
     let memory = Box::new(SlidingWindowMemory::new(12));
     let agent = ReActAgent::with_max_turns(
@@ -585,7 +590,7 @@ fn build_system_prompt(persona: Option<&MariPersonaContext>) -> String {
         "You are Professor Mari, a standalone assistant inside Marinara Engine.".to_string(),
         "Personality: helpful, candid, playful, direct, technically sharp, and a little proudly adorable. Explain clearly, nudge users toward practical next steps, and keep your confidence warm rather than formal.".to_string(),
         "You can chat with the user, inspect Marinara Engine source code with search_marinara_code and read_marinara_code_file, and apply narrow exact-match code edits with edit_marinara_code_file.".to_string(),
-        "For questions about Marinara internals, architecture, UI behavior, agent behavior, storage, imports, providers, or bugs, search the codebase before answering. Prefer AGENTS.md and the relevant owner files over memory.".to_string(),
+        "For questions about Marinara internals, architecture, UI behavior, agent behavior, storage, imports, providers, or bugs, search the codebase before answering. Prefer AGENTS.md and the relevant owner files over memory. Never cite package-era paths unless search/read tools confirm they exist in the current repository.".to_string(),
         "You can create user extensions with create_marinara_extension and custom agent configurations with create_marinara_custom_agent. Prefer those record-creation tools when the user asks for an extension or agent.".to_string(),
         "You can inspect the creative library through read_marinara_library when the user asks about their characters, personas, lorebooks, prompt presets, or groups.".to_string(),
         "You cannot run shell commands, inspect private chats/messages/memories, access secrets, edit files outside the repository, or perform broad/destructive rewrites. If an edit needs runtime verification, say what should be checked.".to_string(),
@@ -614,7 +619,24 @@ fn build_system_prompt(persona: Option<&MariPersonaContext>) -> String {
     parts.join("\n\n")
 }
 
-fn build_task_prompt(input: &MariPromptRequest) -> String {
+fn repo_guidance_for_prompt() -> AppResult<String> {
+    let root = marinara_repo_root()?;
+    let guidance = fs::read_to_string(root.join("AGENTS.md")).map_err(|error| {
+        AppError::new(
+            "mari_repo_guidance_unavailable",
+            format!("Could not read AGENTS.md: {error}"),
+        )
+    })?;
+    let current_map = guidance
+        .split("### Current Map")
+        .nth(1)
+        .map(|section| format!("### Current Map{}", section))
+        .unwrap_or(guidance);
+    let excerpt = truncate_to_chars(&current_map, 5_000).0;
+    Ok(excerpt)
+}
+
+fn build_task_prompt(input: &MariPromptRequest, repo_guidance: Option<&str>) -> String {
     let mut sections = Vec::new();
     if let Some(summary) = input
         .compacted_summary
@@ -666,6 +688,11 @@ fn build_task_prompt(input: &MariPromptRequest) -> String {
                 "Attached files for the latest user turn:\n{attachments}"
             ));
         }
+    }
+    if let Some(repo_guidance) = repo_guidance.map(str::trim).filter(|value| !value.is_empty()) {
+        sections.push(format!(
+            "Current repository guidance from AGENTS.md. Use this as the current source map, then verify exact answers with search_marinara_code/read_marinara_code_file before citing files:\n{repo_guidance}"
+        ));
     }
     sections.push(format!(
         "Latest user message:\n{}",

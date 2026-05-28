@@ -1269,6 +1269,59 @@ describe("startGeneration agent runtime parity", () => {
       }),
     );
   });
+
+  it("stores expression agent choices on generated assistant message metadata", async () => {
+    const { deps, createChatMessage } = generationDepsForChat({
+      chatPatch: { mode: "roleplay", characterIds: ["char-dottore"] },
+      chatMetadata: { enableAgents: true },
+      characters: [{ id: "char-dottore", data: { name: "Dottore", description: "Fatui scientist." } }],
+      agents: [
+        {
+          id: "expression",
+          type: "expression",
+          name: "Expression Engine",
+          enabled: true,
+          phase: "post_processing",
+          connectionId: null,
+          model: "agent-model",
+          promptTemplate: "Pick the visible character expression.",
+          settings: {},
+        },
+      ],
+    });
+    let turn = 0;
+    const stream: LlmGateway["stream"] = vi.fn(async function* () {
+      if (turn === 0) {
+        turn += 1;
+        yield { type: "token" as const, text: "Assistant reply." };
+        return;
+      }
+      turn += 1;
+      yield {
+        type: "token" as const,
+        text: [
+          '<result agent="expression">',
+          '{ "expressions": [{ "characterId": "char-dottore", "characterName": "Dottore", "expression": "smirk", "transition": "crossfade" }] }',
+          "</result>",
+        ].join("\n"),
+      };
+    });
+    deps.llm = { ...deps.llm, stream };
+
+    await drainGeneration(startGeneration(deps, { chatId: "chat-1", userMessage: "hello" }));
+
+    const assistantCreate = createChatMessage.mock.calls.find(
+      (call) => (call[1] as { role?: unknown }).role === "assistant",
+    );
+    expect(assistantCreate?.[1]).toMatchObject({
+      extra: {
+        spriteExpressions: {
+          "char-dottore": "smirk",
+          Dottore: "smirk",
+        },
+      },
+    });
+  });
 });
 
 describe("startGeneration Discord mirror", () => {

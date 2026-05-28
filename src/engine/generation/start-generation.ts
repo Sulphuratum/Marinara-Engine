@@ -835,6 +835,25 @@ function buildSavedGenerationPromptSnapshot(args: {
   };
 }
 
+function spriteExpressionsFromAgentResults(results: AgentResult[]): Record<string, string> | null {
+  const expressions: Record<string, string> = {};
+  for (const result of results) {
+    if (!result.success || result.agentType !== "expression") continue;
+    const data = parseRecord(result.data);
+    const entries = Array.isArray(data.expressions) ? data.expressions : [];
+    for (const entry of entries) {
+      const record = parseRecord(entry);
+      const expression = readString(record.expression).trim();
+      if (!expression) continue;
+      const characterId = readString(record.characterId).trim();
+      const characterName = readString(record.characterName).trim();
+      if (characterId) expressions[characterId] = expression;
+      if (characterName) expressions[characterName] = expression;
+    }
+  }
+  return Object.keys(expressions).length > 0 ? expressions : null;
+}
+
 async function saveAssistantMessage(args: {
   storage: StorageGateway;
   chat: JsonRecord;
@@ -848,6 +867,7 @@ async function saveAssistantMessage(args: {
   attachments?: JsonRecord[];
   usage?: unknown;
   promptSnapshot?: MainGenerationPromptSnapshot | null;
+  spriteExpressions?: Record<string, string> | null;
 }): Promise<unknown | null> {
   const regenerateMessageId = readString(args.input.regenerateMessageId).trim();
   const generationReplay = buildGenerationReplay(args.input);
@@ -870,6 +890,7 @@ async function saveAssistantMessage(args: {
         generationReplay,
         chatSummaryFingerprint: args.chatSummaryFingerprint,
         promptSnapshot,
+        spriteExpressions: args.spriteExpressions,
       });
     }
 
@@ -881,6 +902,7 @@ async function saveAssistantMessage(args: {
         isGenerated: true,
         ...(thinking ? { thinking } : {}),
         ...(generationReplay ? { generationReplay } : {}),
+        ...(args.spriteExpressions ? { spriteExpressions: args.spriteExpressions } : {}),
         ...(promptSnapshot
           ? {
               generationPromptSnapshot: promptSnapshot,
@@ -902,6 +924,7 @@ async function saveAssistantMessage(args: {
       generationReplay,
       chatSummaryFingerprint: args.chatSummaryFingerprint,
       promptSnapshot,
+      spriteExpressions: args.spriteExpressions,
     });
   }
 
@@ -923,6 +946,7 @@ async function saveAssistantMessage(args: {
       ...(args.attachments?.length ? { attachments: args.attachments } : {}),
       ...(thinking ? { thinking } : {}),
       ...(generationReplay ? { generationReplay } : {}),
+      ...(args.spriteExpressions ? { spriteExpressions: args.spriteExpressions } : {}),
       ...(promptSnapshot
         ? {
             generationPromptSnapshot: promptSnapshot,
@@ -950,12 +974,14 @@ async function saveRegeneratedMessage(args: {
   generationReplay: GenerationReplay | null;
   chatSummaryFingerprint: string | null;
   promptSnapshot: GenerationPromptSnapshot | null;
+  spriteExpressions?: Record<string, string> | null;
 }): Promise<unknown | null> {
   const swipeExtra = swipeScopedGenerationExtra({
     generationReplay: args.generationReplay,
     chatSummaryFingerprint: args.chatSummaryFingerprint,
     thinking: args.thinking,
     promptSnapshot: args.promptSnapshot,
+    spriteExpressions: args.spriteExpressions,
   });
   const updated = await args.storage.addChatMessageSwipe(
     args.chatId,
@@ -970,6 +996,7 @@ async function saveRegeneratedMessage(args: {
     chatSummaryFingerprint: args.chatSummaryFingerprint,
     thinking: args.thinking,
     promptSnapshot: args.promptSnapshot,
+    spriteExpressions: args.spriteExpressions,
     activeSwipeIndex,
     existingExtra: parseRecord(updatedRecord.extra),
   });
@@ -981,12 +1008,16 @@ function swipeScopedGenerationExtra(args: {
   chatSummaryFingerprint: string | null;
   thinking?: string | null;
   promptSnapshot?: GenerationPromptSnapshot | null;
+  spriteExpressions?: Record<string, string> | null;
 }): Record<string, unknown> {
   const extra: Record<string, unknown> = {};
   if (args.generationReplay) extra.generationReplay = args.generationReplay;
   extra.chatSummaryFingerprint = args.chatSummaryFingerprint;
   const trimmedThinking = collapseExcessBlankLines(readString(args.thinking).trim());
   if (trimmedThinking) extra.thinking = trimmedThinking;
+  if (args.spriteExpressions && Object.keys(args.spriteExpressions).length > 0) {
+    extra.spriteExpressions = args.spriteExpressions;
+  }
   if (args.promptSnapshot) extra.generationPromptSnapshot = args.promptSnapshot;
   return extra;
 }
@@ -996,6 +1027,7 @@ function generationReplayExtraPatch(args: {
   chatSummaryFingerprint: string | null;
   thinking?: string | null;
   promptSnapshot?: GenerationPromptSnapshot | null;
+  spriteExpressions?: Record<string, string> | null;
   activeSwipeIndex?: number | null;
   existingExtra?: JsonRecord | null;
 }): Record<string, unknown> {
@@ -1004,6 +1036,9 @@ function generationReplayExtraPatch(args: {
   extraPatch.chatSummaryFingerprint = args.chatSummaryFingerprint;
   const trimmedThinking = collapseExcessBlankLines(readString(args.thinking).trim());
   if (trimmedThinking) extraPatch.thinking = trimmedThinking;
+  if (args.spriteExpressions && Object.keys(args.spriteExpressions).length > 0) {
+    extraPatch.spriteExpressions = args.spriteExpressions;
+  }
   if (args.promptSnapshot) {
     const activeSwipeIndex =
       typeof args.activeSwipeIndex === "number" && Number.isFinite(args.activeSwipeIndex)
@@ -1481,6 +1516,7 @@ export async function* startGeneration(
     }
     agentEvents.length = 0;
     const allAgentResults = uniqueAgentResults([...(runtime?.preResults ?? []), ...emittedAgentResults]);
+    const spriteExpressions = spriteExpressionsFromAgentResults(allAgentResults);
     const hasIllustrationRequest = emittedAgentResults.some((result) => illustratorPromptData(result) !== null);
     if (hasIllustrationRequest) yield { type: "phase", data: "Generating illustration..." };
     const illustration = await generateIllustrationAttachments({
@@ -1519,6 +1555,7 @@ export async function* startGeneration(
           attachments: [...connected.assistantAttachments, ...illustration.attachments],
           usage,
           promptSnapshot,
+          spriteExpressions,
         });
     if (saved && input.impersonate !== true) {
       await mirrorSavedAssistantMessageToDiscord({

@@ -4,6 +4,7 @@
 import { useState, useMemo } from "react";
 import { X, ChevronRight, ChevronDown, Loader2 } from "lucide-react";
 import { cn } from "../../../../../shared/lib/utils";
+import { usePresetSummaries } from "../../../../catalog/presets/index";
 
 function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
@@ -378,6 +379,7 @@ function ChatHistoryMessage({ entry, roleColor }: { entry: ChatHistoryEntry; rol
 // ═══════════════════════════════════════════════
 
 export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
+  const { data: presetSummaries } = usePresetSummaries();
   const displayMessages = data.messages;
   const sections = useMemo(() => buildDisplaySections(displayMessages), [displayMessages]);
   const totalTokens = useMemo(() => estimateTokens(data.messages.map((m) => m.content).join("")), [data.messages]);
@@ -385,6 +387,11 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
 
   const gen = data.generationInfo;
   const params = data.parameters as Record<string, unknown> | null;
+  const promptPresetLabel = useMemo(() => {
+    const id = data.promptPresetId?.trim();
+    if (!id) return null;
+    return presetSummaries?.find((preset) => preset.id === id)?.name?.trim() || id;
+  }, [data.promptPresetId, presetSummaries]);
 
   // Build parameter pills from generationInfo (cached) or assembled parameters
   const paramPills = useMemo(() => {
@@ -478,10 +485,10 @@ export function PeekPromptModal({ data, onClose }: PeekPromptModalProps) {
                     {gen.model}
                   </span>
                 )}
-                {data.promptPresetId && (
-                  <span className="font-medium text-[var(--foreground)]">
+                {promptPresetLabel && (
+                  <span className="font-medium text-[var(--foreground)]" title={data.promptPresetId ?? undefined}>
                     <span className="text-[var(--muted-foreground)] font-normal">Preset / </span>
-                    {data.promptPresetId}
+                    {promptPresetLabel}
                   </span>
                 )}
                 <span className="text-[var(--muted-foreground)]">

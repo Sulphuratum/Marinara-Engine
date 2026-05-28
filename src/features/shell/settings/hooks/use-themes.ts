@@ -60,11 +60,7 @@ export function useSetActiveTheme() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (id: string | null): Promise<Theme | null> => {
-      const cachedThemes = qc.getQueryData<Theme[]>(themeKeys.list());
-      const themes =
-        cachedThemes && (!id || cachedThemes.some((theme) => theme.id === id))
-          ? cachedThemes
-          : await storageApi.list<Theme>("themes");
+      const themes = await storageApi.list<Theme>("themes");
       let selected: Theme | null = null;
       await Promise.all(
         themes.flatMap((theme) => {

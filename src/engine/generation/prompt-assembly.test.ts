@@ -315,6 +315,75 @@ describe("assembleGenerationPrompt macro parity", () => {
     expect(prompt).toContain("Aster: Example line.");
   });
 
+  it("keeps preset XML wrappers when prompt-only regex cleanup strips HTML from history", async () => {
+    const baseStorage = storageWithPreset({ id: "preset", wrapFormat: "xml" }, [
+      section({
+        id: "role",
+        name: "Role",
+        role: "system",
+        content: "You are {{char}}.",
+        sortOrder: 0,
+      }),
+      section({
+        id: "character",
+        name: "Characters",
+        role: "system",
+        markerConfig: { type: "character" },
+        sortOrder: 1,
+      }),
+      section({
+        id: "history",
+        name: "History",
+        role: "system",
+        markerConfig: { type: "chat_history" },
+        sortOrder: 2,
+      }),
+    ]);
+    const assembly = await assembleGenerationPrompt(
+      {
+        ...baseStorage,
+        get: async <T>(entity: string, id: string) => {
+          if (entity === "prompts" && id === "preset") return { id: "preset", wrapFormat: "xml" } as T;
+          if (entity === "characters" && id === "char-a") {
+            return { id: "char-a", data: { name: "Aster", description: "A roleplay card." } } as T;
+          }
+          return null;
+        },
+        list: async <T>(entity: string, options?: { filters?: Record<string, unknown> }) => {
+          if (entity === "regex-scripts") {
+            return [
+              {
+                id: "clean-html",
+                enabled: true,
+                promptOnly: true,
+                placement: ["user_input", "ai_output"],
+                findRegex: "[ \t]?<(?!--)(?!\\/?(?:font|lie|filter)\\b)(?:\"[^\"]*\"|'[^']*'|[^'\">])*>",
+                flags: "g",
+                replaceString: "",
+                trimStrings: [],
+              },
+            ] as T[];
+          }
+          return baseStorage.list<T>(entity, options);
+        },
+      },
+      {
+        chat: { id: "chat", mode: "roleplay", characterIds: ["char-a"] },
+        storedMessages: [{ id: "old", role: "assistant", content: "<b>Old reply</b>" }],
+        connection: {},
+        request,
+        latestUserInput: "",
+      },
+    );
+
+    const prompt = assembly.messages.map((message) => message.content).join("\n\n");
+    expect(prompt).toContain("<role>");
+    expect(prompt).toContain("<characters>");
+    expect(prompt).toContain("<description>");
+    expect(prompt).toContain("Old reply");
+    expect(prompt).not.toContain("<b>Old reply</b>");
+  });
+
   it("sends only the responding character card for individual roleplay groups", async () => {
     const storage = {
       ...storageWithPreset({ id: "preset", wrapFormat: "xml" }, [
@@ -399,6 +468,72 @@ describe("assembleGenerationPrompt macro parity", () => {
     expect(prompt).toContain("Tags=slow burn | soft tension");
     expect(prompt).not.toContain("{{POV}}");
     expect(prompt).not.toContain("{{TAGS}}");
+  });
+
+  it("does not append the generic roleplay scene scaffold after a selected preset", async () => {
+    const assembly = await assembleGenerationPrompt(
+      storageWithPreset({ id: "preset", wrapFormat: "xml" }, [
+        section({
+          id: "role",
+          name: "Role",
+          role: "system",
+          content: "<role>You are {{char}}.</role>",
+          sortOrder: 0,
+        }),
+      ]),
+      {
+        chat: { id: "chat", mode: "roleplay", promptPresetId: "preset" },
+        storedMessages: [],
+        connection: {},
+        request,
+        latestUserInput: "",
+      },
+    );
+
+    const prompt = assembly.messages.map((message) => message.content).join("\n\n");
+    expect(prompt).toContain("<role>");
+    expect(prompt).toContain("You are Character.");
+    expect(prompt).not.toContain("This is a dedicated roleplay scene");
+    expect(prompt).not.toContain("Continue directly from the last visible message");
+    expect(prompt).not.toContain("<scene_role>");
+    expect(prompt).not.toContain("<output_format>");
+  });
+
+  it("keeps explicit scene metadata without adding the generic roleplay scaffold", async () => {
+    const assembly = await assembleGenerationPrompt(
+      storageWithPreset({ id: "preset", wrapFormat: "xml" }, [
+        section({
+          id: "role",
+          name: "Role",
+          role: "system",
+          content: "Preset role only.",
+          sortOrder: 0,
+        }),
+      ]),
+      {
+        chat: {
+          id: "chat",
+          mode: "roleplay",
+          promptPresetId: "preset",
+          metadata: {
+            sceneScenario: "A moonlit laboratory scene.",
+            sceneSystemPrompt: "Keep the current scene objective in focus.",
+          },
+        },
+        storedMessages: [],
+        connection: {},
+        request,
+        latestUserInput: "",
+      },
+    );
+
+    const prompt = assembly.messages.map((message) => message.content).join("\n\n");
+    expect(prompt).toContain("<scene_scenario>");
+    expect(prompt).toContain("A moonlit laboratory scene.");
+    expect(prompt).toContain("<scene_instructions>");
+    expect(prompt).toContain("Keep the current scene objective in focus.");
+    expect(prompt).not.toContain("This is a dedicated roleplay scene");
+    expect(prompt).not.toContain("Continue directly from the last visible message");
   });
 
   it("falls back to the chat preset when a connection override points at a missing preset", async () => {
@@ -1126,7 +1261,7 @@ describe("assembleGenerationPrompt chat summary fingerprints", () => {
     expect(assembly.chatSummaryFingerprint).toBe(fingerprintChatSummary(summary));
   });
 
-  it("fingerprints the current summary even when prompt regex scripts transform the final prompt text", async () => {
+  it("keeps prompt summaries stable when prompt-only regex scripts clean chat content", async () => {
     const summary = "The user met Nia at the market.";
     const assembly = await assembleGenerationPrompt(
       storageWithSectionsAndRegex(
@@ -1164,8 +1299,8 @@ describe("assembleGenerationPrompt chat summary fingerprints", () => {
     );
 
     const prompt = assembly.messages.map((message) => message.content).join("\n\n");
-    expect(prompt).toContain("The user met Nia near the docks.");
-    expect(prompt).not.toContain(summary);
+    expect(prompt).toContain(summary);
+    expect(prompt).not.toContain("The user met Nia near the docks.");
     expect(assembly.chatSummaryFingerprint).toBe(fingerprintChatSummary(summary));
   });
 });

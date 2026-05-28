@@ -58,6 +58,9 @@ export type GenerateArgs = GenerationReplayInput & {
 type StreamEvent = { type: string; data?: unknown };
 type QueryClient = ReturnType<typeof useQueryClient>;
 type GenerationStreamFactory = (args: GenerateArgs, signal: AbortSignal) => AsyncGenerator<StreamEvent>;
+type AgentResultEffectOptions = {
+  skipTrackerSync?: boolean;
+};
 const HAPTIC_COMMAND_INTERVAL_MS = 225;
 const TYPEWRITER_MAX_FRAME_MS = 120;
 const scheduledChatRefreshTimers = new Map<string, number>();
@@ -834,6 +837,7 @@ async function applyAgentResultEffects(
   queryClient: ReturnType<typeof useQueryClient>,
   chatId: string,
   rawResult: unknown,
+  options: AgentResultEffectOptions = {},
 ) {
   const result = parseAgentResult(rawResult);
   if (!result) return;
@@ -904,9 +908,11 @@ async function applyAgentResultEffects(
   }
 
   if (result.type === "haptic_command" || result.agentType === "haptic") await applyHapticAgentResult(result.data);
-  if (result.type === "background_change") await applyBackgroundChoice(chatId, data.chosen);
+  if (result.type === "background_change" || result.agentType === "background") {
+    await applyBackgroundChoice(chatId, data.chosen);
+  }
   if (result.agentType === "quest") applyQuestUpdates(result.data);
-  await applyTrackerResultToGameState(chatId, result);
+  if (!options.skipTrackerSync) await applyTrackerResultToGameState(chatId, result);
 }
 
 export async function runGenerationWithUi(
@@ -943,6 +949,7 @@ export async function runGenerationWithUi(
   let lastTypewriterPaintAt = 0;
   let typewriterRemainder = 0;
   const revealWaiters = new Set<() => void>();
+  const pendingAgentResultEffects: unknown[] = [];
 
   const cancelTypewriterFrame = () => {
     if (typewriterFrame === null) return;
@@ -1058,6 +1065,21 @@ export async function runGenerationWithUi(
 
   const ownsChatController = () => useChatStore.getState().abortControllers.get(chatId) === controller;
 
+  const queueAgentResultEffect = (rawResult: unknown) => {
+    pendingAgentResultEffects.push(rawResult);
+  };
+
+  const drainAgentResultEffects = () => {
+    if (pendingAgentResultEffects.length === 0) return;
+    const batch = pendingAgentResultEffects.splice(0, pendingAgentResultEffects.length);
+    runDeferredGenerationWork("agent result effects", async () => {
+      for (const rawResult of batch) {
+        await applyAgentResultEffects(queryClient, chatId, rawResult, { skipTrackerSync: true });
+        await delay(0);
+      }
+    });
+  };
+
   const stopGenerationUi = () => {
     cancelTypewriterFrame();
     pendingReveal = "";
@@ -1129,9 +1151,7 @@ export async function runGenerationWithUi(
           }
           break;
         case "agent_result":
-          runDeferredGenerationWork("agent result effects", () =>
-            applyAgentResultEffects(queryClient, chatId, event.data),
-          );
+          queueAgentResultEffect(event.data);
           break;
         case "cross_post": {
           const data = parseMaybeRecord(event.data);
@@ -1200,8 +1220,14 @@ export async function runGenerationWithUi(
     throw error;
   } finally {
     controller.signal.removeEventListener("abort", stopGenerationUi);
+    const wasAborted = controller.signal.aborted;
     stopGenerationUi();
     scheduleChatQueryRefresh(queryClient, chatId);
+    if (wasAborted) {
+      pendingAgentResultEffects.length = 0;
+    } else {
+      drainAgentResultEffects();
+    }
   }
 }
 

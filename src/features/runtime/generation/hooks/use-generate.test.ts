@@ -8,6 +8,10 @@ import { runGenerationWithUi, type GenerateArgs } from "./use-generate";
 const storageApiMock = vi.hoisted(() => ({
   get: vi.fn(),
 }));
+const worldStateApiMock = vi.hoisted(() => ({
+  get: vi.fn(async () => null),
+  patch: vi.fn(async (_chatId: string, patch: unknown) => patch),
+}));
 
 vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), {
@@ -45,10 +49,7 @@ vi.mock("../../world-state/index", () => ({
       setGameState: vi.fn(),
     }),
   },
-  worldStateApi: {
-    get: vi.fn(async () => null),
-    patch: vi.fn(async (_chatId: string, patch: unknown) => patch),
-  },
+  worldStateApi: worldStateApiMock,
 }));
 
 vi.mock("../../../catalog/chats/index", () => ({
@@ -101,6 +102,8 @@ describe("runGenerationWithUi", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     storageApiMock.get.mockReset();
+    worldStateApiMock.get.mockClear();
+    worldStateApiMock.patch.mockClear();
     warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     useChatStore.getState().reset();
     useChatStore.getState().setActiveChatId("chat-1");
@@ -172,5 +175,40 @@ describe("runGenerationWithUi", () => {
     expect(state.isStreaming).toBe(true);
     expect(state.streamBuffer).toBe("");
     expect(useAgentStore.getState().isProcessing).toBe(true);
+  });
+
+  it("defers live agent result effects until generation UI cleanup", async () => {
+    const queryClient = queryClientWithChat();
+
+    const streamFactory = vi.fn<TestStreamFactory>(async function* () {
+      yield {
+        type: "agent_result",
+        data: {
+          agentId: "world-state",
+          agentType: "world-state",
+          type: "game_state_update",
+          data: { location: "Primary Examination Theater" },
+          success: true,
+          error: null,
+          tokensUsed: 12,
+          durationMs: 4,
+        },
+      };
+      yield { type: "token", data: "Hello" };
+      yield { type: "done" };
+    });
+
+    await expect(runGenerationWithUi(queryClient, { chatId: "chat-1" }, streamFactory)).resolves.toBe(true);
+
+    expect(useAgentStore.getState().isProcessing).toBe(false);
+    expect(useAgentStore.getState().lastResults.size).toBe(0);
+
+    await vi.runOnlyPendingTimersAsync();
+
+    expect(useAgentStore.getState().lastResults.get("world-state")).toMatchObject({
+      agentType: "world-state",
+      success: true,
+    });
+    expect(worldStateApiMock.patch).not.toHaveBeenCalled();
   });
 });
