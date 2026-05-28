@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "package.json": {
-    "mtime": 1779961269.1871486,
-    "ast_hash": "2e8a2e67295af9c24b3459ba9e5d6486",
+    "mtime": 1779985097.1975687,
+    "ast_hash": "2a35c60dd77cf99d48619b90f3423303",
     "semantic_hash": ""
   },
   "tsconfig.json": {
@@ -5767,6 +5767,11 @@
   "src-tauri/resources/default-data/game-assets/ambient/interior/eerie-atmosphere.ogg": {
     "mtime": 1779835633.3148127,
     "ast_hash": "5e959b5a4583327f92fc0115b49a928a",
+    "semantic_hash": ""
+  },
+  ".prettierrc.json": {
+    "mtime": 1779985014.509952,
+    "ast_hash": "eb2ab6b9534540be620788d3e09aff93",
     "semantic_hash": ""
   }
 }
