@@ -170,8 +170,8 @@
     "semantic_hash": ""
   },
   "src-tauri/crates/llm/src/lib.rs": {
-    "mtime": 1780037341.544335,
-    "ast_hash": "909fefd7a687f7aee92f7cce73a7ffde",
+    "mtime": 1780039823.7220483,
+    "ast_hash": "7b0c25309e4482a0f730ce6eda554f4c",
     "semantic_hash": ""
   },
   "src-tauri/crates/core/src/lib.rs": {
@@ -5682,6 +5682,61 @@
   "scripts/check-graphify-scope.mjs": {
     "mtime": 1780038653.4292598,
     "ast_hash": "508147626235be78ea322f4fb90be17f",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/tauri.settings.gradle": {
+    "mtime": 1779703246.2137322,
+    "ast_hash": "61868dc086fa8d1c86d43b90cd5444f5",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/tauri.build.gradle.kts": {
+    "mtime": 1779703246.2137322,
+    "ast_hash": "3c89aa14a516eb5c3a9df3b7a618d739",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/Ipc.kt": {
+    "mtime": 1779703216.6856103,
+    "ast_hash": "a0312100b17edb17ed99f7f3a0ca0d04",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/Logger.kt": {
+    "mtime": 1779703216.6991236,
+    "ast_hash": "2a999c5543facba10b551cb03620bba0",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/PermissionHelper.kt": {
+    "mtime": 1779703216.7131283,
+    "ast_hash": "4f305d8fa8340e6b07e04338af908eb5",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/Rust.kt": {
+    "mtime": 1779703216.7336383,
+    "ast_hash": "5f87ec95bd44c15d74637986e3290183",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/RustWebChromeClient.kt": {
+    "mtime": 1779703216.7491436,
+    "ast_hash": "317f69b65a24b631a38e225ca38c6636",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/RustWebView.kt": {
+    "mtime": 1779703216.7641556,
+    "ast_hash": "e61f865f72e5e348c103d3dbf7b60a56",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/RustWebViewClient.kt": {
+    "mtime": 1779703216.777156,
+    "ast_hash": "eccd02bfa68cd8604634923852c007e3",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/TauriActivity.kt": {
+    "mtime": 1779703244.018254,
+    "ast_hash": "d03243906946beb7730f6af9d1c940c6",
+    "semantic_hash": ""
+  },
+  "src-tauri/gen/android/app/src/main/java/com/marinara_engine/app/generated/WryActivity.kt": {
+    "mtime": 1779703216.7896566,
+    "ast_hash": "a0315affc0ba380862f265bda859e69e",
     "semantic_hash": ""
   }
 }

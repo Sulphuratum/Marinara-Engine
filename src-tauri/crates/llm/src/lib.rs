@@ -1751,7 +1751,7 @@ fn parse_claude_subscription_json_output(raw: &str) -> Option<Value> {
     trimmed
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line.trim()).ok())
-        .last()
+        .next_back()
 }
 
 pub fn diagnose_claude_subscription_model(model: &str, fast_mode: bool) -> AppResult<Value> {
