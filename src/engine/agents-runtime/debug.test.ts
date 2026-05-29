@@ -55,4 +55,21 @@ describe("createAgentRuntimeDebug", () => {
       }),
     );
   });
+
+  it("truncates huge debug payloads before console logging and UI dispatch", () => {
+    const sink = vi.fn();
+    const consoleDebug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
+    const logger = createAgentRuntimeDebug({ ...baseContext, debugMode: true, debugSink: sink });
+    const hugePayload = "x".repeat(4_500);
+
+    logger.debug(hugePayload);
+    logger.emit({ level: "debug", phase: "post_processing", message: "batch-raw-response", args: [hugePayload] });
+
+    const logged = consoleDebug.mock.calls[0]?.[0];
+    const emitted = sink.mock.calls[0]?.[0]?.args?.[0];
+    expect(typeof logged).toBe("string");
+    expect(typeof emitted).toBe("string");
+    expect((logged as string).length).toBeLessThan(hugePayload.length);
+    expect(emitted).toContain("debug output truncated before UI dispatch");
+  });
 });

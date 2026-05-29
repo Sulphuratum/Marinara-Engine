@@ -26,7 +26,7 @@ import { ApiError } from "../../../../shared/api/api-errors";
 import { visualAssetsApi } from "../../../../shared/api/visual-assets-api";
 import { requestImagePromptReview } from "../../../../shared/components/ui/ImagePromptReviewHost";
 import { useAgentStore, type PendingCardUpdate } from "../../../../shared/stores/agent.store";
-import { toAgentFailure } from "../../../../shared/lib/agent-failures";
+import { formatAgentFailuresToast, toAgentFailure, type AgentFailure } from "../../../../shared/lib/agent-failures";
 import { useChatStore } from "../../../../shared/stores/chat.store";
 import { useUIStore } from "../../../../shared/stores/ui.store";
 import { useGameStateStore } from "../../world-state/index";
@@ -63,6 +63,9 @@ type AgentResultEffectOptions = {
 };
 const HAPTIC_COMMAND_INTERVAL_MS = 225;
 const TYPEWRITER_MAX_FRAME_MS = 120;
+const AGENT_DEBUG_FLUSH_DELAY_MS = 80;
+const AGENT_DEBUG_FLUSH_CHUNK_SIZE = 8;
+const AGENT_DEBUG_FLUSH_CONTINUE_DELAY_MS = 16;
 const scheduledChatRefreshTimers = new Map<string, number>();
 const queuedAgentDebugEntries: Array<Omit<AgentDebugEntry, "timestamp"> & { timestamp?: number }> = [];
 let agentDebugFlushTimer: number | null = null;
@@ -243,14 +246,19 @@ function runDeferredGenerationWork(label: string, task: () => Promise<void> | vo
 function flushQueuedAgentDebugEntries(): void {
   agentDebugFlushTimer = null;
   if (queuedAgentDebugEntries.length === 0) return;
-  const entries = queuedAgentDebugEntries.splice(0, queuedAgentDebugEntries.length);
+  const entries = queuedAgentDebugEntries.splice(0, AGENT_DEBUG_FLUSH_CHUNK_SIZE);
   useAgentStore.getState().addDebugEntries(entries);
+  if (queuedAgentDebugEntries.length > 0) scheduleAgentDebugFlush(AGENT_DEBUG_FLUSH_CONTINUE_DELAY_MS);
+}
+
+function scheduleAgentDebugFlush(delayMs = AGENT_DEBUG_FLUSH_DELAY_MS): void {
+  if (agentDebugFlushTimer !== null) return;
+  agentDebugFlushTimer = window.setTimeout(flushQueuedAgentDebugEntries, delayMs);
 }
 
 function enqueueAgentDebugEntry(entry: Omit<AgentDebugEntry, "timestamp"> & { timestamp?: number }): void {
   queuedAgentDebugEntries.push(entry);
-  if (agentDebugFlushTimer !== null) return;
-  agentDebugFlushTimer = window.setTimeout(flushQueuedAgentDebugEntries, 80);
+  scheduleAgentDebugFlush();
 }
 
 function scheduleChatQueryRefresh(queryClient: QueryClient, chatId: string): void {
@@ -950,6 +958,7 @@ export async function runGenerationWithUi(
   let typewriterRemainder = 0;
   const revealWaiters = new Set<() => void>();
   const pendingAgentResultEffects: unknown[] = [];
+  let agentResultEffectsDrainScheduled = false;
 
   const cancelTypewriterFrame = () => {
     if (typewriterFrame === null) return;
@@ -1070,23 +1079,29 @@ export async function runGenerationWithUi(
   };
 
   const drainAgentResultEffects = () => {
-    if (pendingAgentResultEffects.length === 0) return;
-    const batch = pendingAgentResultEffects.splice(0, pendingAgentResultEffects.length);
-    runDeferredGenerationWork("agent result effects", async () => {
-      for (const rawResult of batch) {
-        await applyAgentResultEffects(queryClient, chatId, rawResult, { skipTrackerSync: true });
-        await delay(0);
+    if (pendingAgentResultEffects.length === 0 || agentResultEffectsDrainScheduled) return;
+    agentResultEffectsDrainScheduled = true;
+    runDeferredGenerationWork("agent result effect", async () => {
+      agentResultEffectsDrainScheduled = false;
+      if (controller.signal.aborted) {
+        pendingAgentResultEffects.length = 0;
+        return;
       }
+      const rawResult = pendingAgentResultEffects.shift();
+      if (rawResult !== undefined) {
+        await applyAgentResultEffects(queryClient, chatId, rawResult, { skipTrackerSync: true });
+      }
+      if (pendingAgentResultEffects.length > 0) drainAgentResultEffects();
     });
   };
 
-  const stopGenerationUi = () => {
-    cancelTypewriterFrame();
-    pendingReveal = "";
-    typewriterActive = false;
-    resolveAllRevealWaiters();
+  let foregroundGenerationReleased = false;
+
+  const releaseForegroundGenerationUi = () => {
+    if (foregroundGenerationReleased) return;
     const state = useChatStore.getState();
     if (!ownsChatController()) return;
+    foregroundGenerationReleased = true;
     state.setAbortController(chatId, null);
     state.setMariPhase(chatId, "idle");
     if (state.streamingChatId === chatId) {
@@ -1101,6 +1116,14 @@ export async function runGenerationWithUi(
     }
   };
 
+  const stopGenerationUi = () => {
+    cancelTypewriterFrame();
+    pendingReveal = "";
+    typewriterActive = false;
+    resolveAllRevealWaiters();
+    releaseForegroundGenerationUi();
+  };
+
   controller.signal.addEventListener("abort", stopGenerationUi, { once: true });
 
   try {
@@ -1108,15 +1131,15 @@ export async function runGenerationWithUi(
     await options.beforeStart?.(args, controller.signal);
     if (controller.signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
     for await (const event of streamFactory(args, controller.signal)) {
-      if (!ownsChatController()) break;
+      if (!foregroundGenerationReleased && !ownsChatController()) break;
       switch (event.type) {
         case "phase":
-          if (typeof event.data === "string") {
+          if (!foregroundGenerationReleased && typeof event.data === "string") {
             useChatStore.getState().setGenerationPhase(event.data);
           }
           break;
         case "thinking":
-          if (typeof event.data === "string") {
+          if (!foregroundGenerationReleased && typeof event.data === "string") {
             if (!receivedThinking) {
               receivedThinking = true;
               const state = useChatStore.getState();
@@ -1129,7 +1152,7 @@ export async function runGenerationWithUi(
           break;
         case "token":
         case "delta":
-          if (typeof event.data === "string") {
+          if (!foregroundGenerationReleased && typeof event.data === "string") {
             received += event.data;
             enqueueVisibleStreamText(event.data);
           }
@@ -1137,8 +1160,11 @@ export async function runGenerationWithUi(
         case "message":
         case "user_message":
           if (event.data && typeof event.data === "object") {
+            if (event.type === "user_message") await flushVisibleStreamText();
             upsertCachedMessage(queryClient, chatId, event.data);
             scheduleChatQueryRefresh(queryClient, chatId);
+            releaseForegroundGenerationUi();
+            drainAgentResultEffects();
           }
           break;
         case "assistant_message":
@@ -1148,6 +1174,8 @@ export async function runGenerationWithUi(
             scheduleChatQueryRefresh(queryClient, chatId);
             const trackerTarget = trackerTargetFromMessagePayload(event.data);
             runDeferredGenerationWork("game state refresh", () => refreshGameStateFromStorage(chatId, trackerTarget));
+            releaseForegroundGenerationUi();
+            drainAgentResultEffects();
           }
           break;
         case "agent_result":
@@ -1199,6 +1227,7 @@ export async function runGenerationWithUi(
         }
         case "illustration": {
           toast("Illustration generated.");
+          scheduleChatQueryRefresh(queryClient, chatId);
           runDeferredGenerationWork("gallery refresh", () =>
             queryClient.invalidateQueries({ queryKey: ["gallery", "images", chatId] }),
           );
@@ -1252,26 +1281,33 @@ export function useGenerate() {
       image: {
         generate: async <T = unknown>(input: Record<string, unknown>) => {
           const kind = readString(input.kind).trim();
-          if (kind !== "selfie" || !useUIStore.getState().reviewImagePromptsBeforeSend) {
+          const reviewKind = kind === "selfie" || kind === "illustration" ? kind : null;
+          if (!reviewKind || !useUIStore.getState().reviewImagePromptsBeforeSend) {
             return integrationGateway.image.generate<T>(input);
           }
 
           const prompt = readString(input.prompt).trim();
           if (!prompt) return integrationGateway.image.generate<T>(input);
 
-          const id = readString(input.reviewId).trim() || `selfie-${Date.now()}`;
+          const id = readString(input.reviewId).trim() || `${reviewKind}-${Date.now()}`;
           const overrides = await requestImagePromptReview([
             {
               id,
-              kind: "selfie",
-              title: readString(input.reviewTitle).trim() || "Conversation selfie",
+              kind: reviewKind,
+              title:
+                readString(input.reviewTitle).trim() ||
+                (reviewKind === "illustration" ? "Scene illustration" : "Conversation selfie"),
               prompt,
               negativePrompt: readString(input.negativePrompt).trim(),
               width: readPositiveNumber(input.width, 512),
               height: readPositiveNumber(input.height, 768),
             },
           ]);
-          if (!overrides) throw new Error("Selfie generation cancelled.");
+          if (!overrides) {
+            throw new Error(
+              reviewKind === "illustration" ? "Illustration generation cancelled." : "Selfie generation cancelled.",
+            );
+          }
 
           const override = overrides.find((item) => item.id === id) ?? overrides[0];
           return integrationGateway.image.generate<T>({
@@ -1367,10 +1403,25 @@ export function useGenerate() {
           { storage: storageApi, llm: llmApi, integrations: integrationGateway, visuals: visualAssetsApi },
           { chatId, agentTypes, options: { ...(options ?? {}), bypassActivation: options?.bypassActivation ?? true } },
         );
+        const failedRetries: AgentFailure[] = [];
+        for (const rawResult of results) {
+          const result = parseAgentResult(rawResult);
+          if (!result || result.success) continue;
+          const raw = isRecord(rawResult) ? rawResult : null;
+          const data = parseMaybeRecord(result.data);
+          const agentName =
+            (raw ? readString(raw.agentName).trim() || readString(raw.name).trim() : "") ||
+            readString(data.agentName).trim() ||
+            result.agentType;
+          failedRetries.push(toAgentFailure({ agentType: result.agentType, agentName, error: result.error }));
+        }
         for (const result of results) {
           runDeferredGenerationWork("agent retry result effects", () =>
             applyAgentResultEffects(queryClient, chatId, result),
           );
+        }
+        if (failedRetries.length > 0) {
+          toast.error(formatAgentFailuresToast(failedRetries), { duration: 10_000 });
         }
         runDeferredGenerationWork("agent retry refresh", async () => {
           await refreshGameStateFromStorage(chatId);

@@ -24,6 +24,24 @@ const EXPRESSION_AGENT_RECENT_CONTEXT_MESSAGES = 2;
 const EXPRESSION_AGENT_CONTEXT_CHAR_LIMIT = 1200;
 const EXPRESSION_AGENT_RESPONSE_CHAR_LIMIT = 6000;
 
+async function yieldToHost(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const host = globalThis as {
+      requestAnimationFrame?: (callback: () => void) => unknown;
+      setTimeout?: (callback: () => void, delay?: number) => unknown;
+    };
+    if (typeof host.requestAnimationFrame === "function") {
+      host.requestAnimationFrame(() => resolve());
+      return;
+    }
+    if (typeof host.setTimeout === "function") {
+      host.setTimeout(() => resolve(), 0);
+      return;
+    }
+    resolve();
+  });
+}
+
 /** Strip HTML/XML-style tags (e.g. <div style="..."> <br> <speaker>) from text to save tokens. */
 function stripHtmlTags(text: string): string {
   return text
@@ -555,7 +573,8 @@ export async function executeAgentBatch(
     emit({ level: "debug", phase: configs[0]!.phase, message: "batch-raw-response", args: [responseText] });
 
     // Parse the batched response into individual results
-    const { parsed, failed } = parseBatchResponse(configs, responseText, durationMs, totalTokens);
+    await yieldToHost();
+    const { parsed, failed } = await parseBatchResponse(configs, responseText, durationMs, totalTokens);
 
     logger.info(
       "[agent-batch] Batch parse: %d parsed, %d failed %s",
@@ -670,47 +689,23 @@ function buildBatchFinalInstruction(configs: AgentExecConfig[]): string {
  * Parse a batched LLM response into individual AgentResults.
  * Looks for <result agent="type">...</result> blocks.
  */
-function parseBatchResponse(
+async function parseBatchResponse(
   configs: AgentExecConfig[],
   responseText: string,
   totalDurationMs: number,
   totalTokens: number = 0,
-): { parsed: AgentResult[]; failed: AgentExecConfig[] } {
+): Promise<{ parsed: AgentResult[]; failed: AgentExecConfig[] }> {
   const perAgentDuration = Math.round(totalDurationMs / configs.length);
   const perAgentTokens = Math.round(totalTokens / configs.length);
+  const resultBlocks = extractResultBlocks(responseText);
   const parsed: AgentResult[] = [];
   const failed: AgentExecConfig[] = [];
 
-  for (const config of configs) {
-    const escaped = escapeRegex(config.type);
-    // Try several patterns the model might use:
-    // 1. <result agent="type">...</result>
-    // 2. <result agent='type'>...</result>
-    // 3. <result agent=type>...</result>  (unquoted)
-    // 4. <result_type>...</result_type>   (underscore variant)
-    // 5. <type>...</type>                 (bare agent ID as tag)
-    //
-    // We use GREEDY match ([\s\S]*) with a lookahead for the closing tag
-    // or the next <result to avoid stopping at a </result> inside JSON strings.
-    const patterns = [
-      new RegExp(
-        `<result\\s+agent\\s*=\\s*["']${escaped}["']\\s*>([\\s\\S]*?)</result\\s*>(?=\\s*(?:<result\\b|$))`,
-        "i",
-      ),
-      new RegExp(`<result\\s+agent\\s*=\\s*["']${escaped}["']\\s*>([\\s\\S]*?)</result>`, "i"),
-      new RegExp(`<result\\s+agent\\s*=\\s*${escaped}\\s*>([\\s\\S]*?)</result>`, "i"),
-      new RegExp(`<result_${escaped}>([\\s\\S]*?)</result_${escaped}>`, "i"),
-      new RegExp(`<${escaped}>([\\s\\S]*?)</${escaped}>`, "i"),
-    ];
-
-    let matchedOutput: string | null = null;
-    for (const pattern of patterns) {
-      const match = responseText.match(pattern);
-      if (match) {
-        matchedOutput = match[1]!.trim();
-        break;
-      }
-    }
+  for (let index = 0; index < configs.length; index++) {
+    const config = configs[index]!;
+    if (index > 0) await yieldToHost();
+    const matchedOutput =
+      resultBlocks.get(normalizeResultAgentId(config.type)) ?? findLegacyResultBlock(responseText, config.type);
 
     if (matchedOutput !== null) {
       const parsedResult = parseAgentResponse(config, matchedOutput);
@@ -735,6 +730,49 @@ function parseBatchResponse(
   }
 
   return { parsed, failed };
+}
+
+function extractResultBlocks(responseText: string): Map<string, string> {
+  const blocks = new Map<string, string>();
+  const starts: Array<{ agent: string; index: number; contentStart: number }> = [];
+  const openTagPattern = /<result\s+agent\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))\s*>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = openTagPattern.exec(responseText)) !== null) {
+    const agent = normalizeResultAgentId(match[1] ?? match[2] ?? match[3] ?? "");
+    if (!agent) continue;
+    starts.push({ agent, index: match.index, contentStart: match.index + match[0].length });
+  }
+
+  for (let index = 0; index < starts.length; index++) {
+    const current = starts[index]!;
+    if (blocks.has(current.agent)) continue;
+    const nextStart = starts[index + 1]?.index ?? responseText.length;
+    const segment = responseText.slice(current.contentStart, nextStart);
+    const closeIndex = segment.toLowerCase().lastIndexOf("</result");
+    const content = (closeIndex >= 0 ? segment.slice(0, closeIndex) : segment).trim();
+    blocks.set(current.agent, content);
+  }
+
+  return blocks;
+}
+
+function findLegacyResultBlock(responseText: string, agentType: string): string | null {
+  const escaped = escapeRegex(agentType);
+  const patterns = [
+    new RegExp(`<result_${escaped}>([\\s\\S]*?)</result_${escaped}>`, "i"),
+    new RegExp(`<${escaped}>([\\s\\S]*?)</${escaped}>`, "i"),
+  ];
+
+  for (const pattern of patterns) {
+    const match = responseText.match(pattern);
+    if (match) return match[1]!.trim();
+  }
+  return null;
+}
+
+function normalizeResultAgentId(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function escapeRegex(str: string): string {
@@ -1165,7 +1203,6 @@ function buildLoreBlock(context: AgentContext): string {
       pushXmlText(parts, "scenario", char.scenario);
       pushXmlText(parts, "first_mes", char.firstMes);
       pushXmlText(parts, "mes_example", char.mesExample);
-      pushXmlText(parts, "creator_notes", char.creatorNotes);
       pushXmlText(parts, "system_prompt", char.systemPrompt);
       pushXmlText(parts, "post_history_instructions", char.postHistoryInstructions);
       parts.push(`</character>`);
@@ -1249,7 +1286,6 @@ function buildAgentExtras(context: AgentContext, agentTypes: string[] = []): str
       if (char.appearance) parts.push(`<appearance>${escapeXml(char.appearance)}</appearance>`);
       if (char.firstMes) parts.push(`<first_mes>${escapeXml(char.firstMes)}</first_mes>`);
       if (char.mesExample) parts.push(`<mes_example>${escapeXml(char.mesExample)}</mes_example>`);
-      if (char.creatorNotes) parts.push(`<creator_notes>${escapeXml(char.creatorNotes)}</creator_notes>`);
       if (char.systemPrompt) parts.push(`<system_prompt>${escapeXml(char.systemPrompt)}</system_prompt>`);
       if (char.postHistoryInstructions)
         parts.push(`<post_history_instructions>${escapeXml(char.postHistoryInstructions)}</post_history_instructions>`);
@@ -1587,8 +1623,7 @@ function coerceMalformedJsonAgentResponse(agentType: string, responseText: strin
     .map((line, index) => {
       const [maybeName, ...rest] = line.split(":");
       const reaction = rest.length > 0 ? rest.join(":").trim() : line;
-      const characterName =
-        rest.length > 0 && maybeName.trim().length <= 40 ? maybeName.trim() : `viewer_${index + 1}`;
+      const characterName = rest.length > 0 && maybeName.trim().length <= 40 ? maybeName.trim() : `viewer_${index + 1}`;
       return reaction ? { characterName, reaction } : null;
     })
     .filter((entry): entry is { characterName: string; reaction: string } => entry !== null);

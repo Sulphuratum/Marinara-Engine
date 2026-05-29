@@ -246,6 +246,7 @@ describe("executeAgentBatch fallback behavior", () => {
             backstory: "Exiled scholar.",
             appearance: "Masked Harbinger.",
             mesExample: '"Observe."',
+            creatorNotes: "Private card note.",
           },
         ],
         persona: {
@@ -275,6 +276,8 @@ describe("executeAgentBatch fallback behavior", () => {
     expect(systemPrompt).toContain("<personality>Sharp and theatrical.</personality>");
     expect(systemPrompt).toContain("<backstory>Exiled scholar.</backstory>");
     expect(systemPrompt).toContain("<appearance>Masked Harbinger.</appearance>");
+    expect(systemPrompt).not.toContain("Private card note.");
+    expect(systemPrompt).not.toContain("<creator_notes>");
     expect(systemPrompt).toContain('<user_persona name="Mari">');
     expect(systemPrompt).toContain("<personality>Curious and stubborn.</personality>");
     expect(systemPrompt).toContain("<available_sprites>");

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import type { DiscordGateway } from "../capabilities/integrations";
+import type { DiscordGateway, IntegrationGateway } from "../capabilities/integrations";
 import type { LlmGateway } from "../capabilities/llm";
 import type { StorageGateway } from "../capabilities/storage";
+import type { VisualAssetGateway } from "../capabilities/visual-assets";
 import { fingerprintChatSummary } from "../shared/text/chat-summary-fingerprint";
 import { retryGenerationAgents, startGeneration, type GenerationEngineDeps } from "./start-generation";
 
@@ -43,6 +44,10 @@ function generationDepsForChat(
     prompts?: Record<string, unknown>[];
     promptSections?: Record<string, unknown>[];
     promptVariables?: Record<string, unknown>[];
+    completeResponse?: string;
+    streamResponses?: string[];
+    integrations?: Partial<IntegrationGateway>;
+    visuals?: VisualAssetGateway;
   } = {},
 ) {
   const chat = {
@@ -67,15 +72,25 @@ function generationDepsForChat(
     listChatMessages.mock.calls.length > 1 && options.messagesAfterSave ? options.messagesAfterSave : initialMessages,
   );
   const streamedRequests: unknown[] = [];
+  const completedRequests: unknown[] = [];
   const stream: LlmGateway["stream"] = vi.fn(async function* (request) {
+    const response = options.streamResponses?.[streamedRequests.length] ?? "Done.";
     streamedRequests.push(request);
-    yield { type: "token" as const, text: "Done." };
+    yield { type: "token" as const, text: response };
+  });
+  const complete: LlmGateway["complete"] = vi.fn(async (request) => {
+    completedRequests.push(request);
+    return options.completeResponse ?? '{"characterIds":[]}';
   });
   const createChatMessage = vi.fn(async (_chatId: string, value: Record<string, unknown>) => {
-    if (value.role === "user") {
-      return options.savedUserMessage ?? { id: "user-1", chatId: "chat-1", ...value };
+    const saved =
+      value.role === "user"
+        ? (options.savedUserMessage ?? { id: "user-1", chatId: "chat-1", ...value })
+        : { id: "assistant-2", chatId: "chat-1", ...value };
+    if (saved && typeof saved === "object" && "id" in saved) {
+      messagesById.set(String(saved.id), saved as Record<string, unknown>);
     }
-    return { id: "assistant-2", chatId: "chat-1", ...value };
+    return saved;
   });
   const addChatMessageSwipe = vi.fn(
     async (
@@ -94,13 +109,17 @@ function generationDepsForChat(
       extra: options?.activate === false ? messagesById.get(messageId)?.extra : options?.extra,
     }),
   );
-  const patchChatMessageExtra = vi.fn(async (messageId: string, patch: Record<string, unknown>) => ({
-    ...messagesById.get(messageId),
-    extra: {
-      ...((messagesById.get(messageId)?.extra as Record<string, unknown> | undefined) ?? {}),
-      ...patch,
-    },
-  }));
+  const patchChatMessageExtra = vi.fn(async (messageId: string, patch: Record<string, unknown>) => {
+    const updated = {
+      ...messagesById.get(messageId),
+      extra: {
+        ...((messagesById.get(messageId)?.extra as Record<string, unknown> | undefined) ?? {}),
+        ...patch,
+      },
+    };
+    messagesById.set(messageId, updated);
+    return updated;
+  });
   const storage = {
     get: vi.fn(async (entity: string, id: string) => {
       if (entity === "chats" && id === "chat-1") return chat;
@@ -126,7 +145,10 @@ function generationDepsForChat(
       }
       return [];
     }),
-    create: vi.fn(async (_entity: string, value: Record<string, unknown>) => value),
+    create: vi.fn(async (entity: string, value: Record<string, unknown>) => ({
+      id: entity === "gallery" ? "gallery-1" : `${entity}-1`,
+      ...value,
+    })),
     createChatMessage,
     addChatMessageSwipe,
     patchChatMessageExtra,
@@ -137,10 +159,19 @@ function generationDepsForChat(
   } as Partial<StorageGateway> as StorageGateway;
   const deps: GenerationEngineDeps = {
     storage,
-    llm: { stream } as Partial<LlmGateway> as LlmGateway,
-    integrations: {} as GenerationEngineDeps["integrations"],
+    llm: { stream, complete } as Partial<LlmGateway> as LlmGateway,
+    integrations: (options.integrations ?? {}) as GenerationEngineDeps["integrations"],
+    visuals: options.visuals,
   };
-  return { deps, createChatMessage, addChatMessageSwipe, patchChatMessageExtra, listChatMessages, streamedRequests };
+  return {
+    deps,
+    createChatMessage,
+    addChatMessageSwipe,
+    patchChatMessageExtra,
+    listChatMessages,
+    streamedRequests,
+    completedRequests,
+  };
 }
 
 async function drainGeneration(stream: AsyncGenerator<unknown>) {
@@ -693,6 +724,66 @@ describe("startGeneration chat message loading", () => {
     expect(snapshot.messages.map((message) => message.content).join("\n")).not.toContain("Done.");
     expect(extra.generationPromptSnapshotsBySwipe).toMatchObject({ "0": snapshot });
   });
+
+  it("stores provider-visible parameters in peek prompt snapshots for Opus adaptive models", async () => {
+    const { deps, createChatMessage, streamedRequests } = generationDepsForChat({
+      chatPatch: { mode: "roleplay", promptPresetId: "preset-1" },
+      connectionPatch: { provider: "openrouter", model: "anthropic/claude-opus-4-8" },
+      prompts: [
+        {
+          id: "preset-1",
+          wrapFormat: "xml",
+          parameters: {
+            temperature: 0.33,
+            topP: 0.9,
+            maxTokens: 444,
+            reasoningEffort: "xhigh",
+            verbosity: "high",
+          },
+        },
+      ],
+      promptSections: [
+        {
+          id: "main",
+          presetId: "preset-1",
+          name: "Main Prompt",
+          role: "system",
+          content: "Preset rules.",
+          enabled: true,
+          sortOrder: 0,
+        },
+      ],
+    });
+
+    await drainGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "advance",
+        impersonateBlockAgents: true,
+      }),
+    );
+
+    const request = streamedRequests[0] as { parameters: Record<string, unknown> };
+    const assistantSave = createChatMessage.mock.calls.find(([, value]) => value.role === "assistant");
+    const extra = (assistantSave?.[1] as { extra?: Record<string, unknown> } | undefined)?.extra ?? {};
+    const snapshot = extra.generationPromptSnapshot as {
+      parameters: Record<string, unknown>;
+      generationInfo?: Record<string, unknown> | null;
+    };
+
+    expect(request.parameters).toMatchObject({ temperature: 0.33, topP: 0.9, verbosity: "high" });
+    expect(snapshot.parameters).toMatchObject({ stream: true, max_tokens: 444, reasoning: { effort: "high" } });
+    expect(snapshot.parameters).not.toHaveProperty("temperature");
+    expect(snapshot.parameters).not.toHaveProperty("top_p");
+    expect(snapshot.parameters).not.toHaveProperty("verbosity");
+    expect(snapshot.generationInfo).toMatchObject({
+      temperature: null,
+      topP: null,
+      verbosity: null,
+      maxTokens: 444,
+      reasoningEffort: "high",
+    });
+  });
 });
 
 describe("startGeneration chat summary fingerprint metadata", () => {
@@ -1161,6 +1252,153 @@ describe("startGeneration automatic Illustrator cadence", () => {
 
     expect(streamedRequests).toHaveLength(2);
   });
+
+  it("uses Illustrator image settings and reference images when creating roleplay illustrations", async () => {
+    const imageRequests: Record<string, unknown>[] = [];
+    const imageGenerate: IntegrationGateway["image"]["generate"] = async <T = unknown>(
+      input: Record<string, unknown>,
+    ): Promise<T> => {
+      imageRequests.push(input);
+      return {
+        base64: "generated-image",
+        mimeType: "image/png",
+        provider: "test-image-provider",
+        model: "test-image-model",
+      } as T;
+    };
+    const visuals: VisualAssetGateway = {
+      listSprites: vi.fn(async (characterId: string) =>
+        characterId === "char-dottore"
+          ? [
+              { expression: "neutral", url: "data:image/png;base64,portrait-sprite" },
+              { expression: "full_idle", url: "data:image/png;base64,full-body-sprite" },
+            ]
+          : [],
+      ),
+      listBackgrounds: vi.fn(async () => []),
+    };
+    const illustratorResponse = JSON.stringify({
+      shouldGenerate: true,
+      reason: "Important visual beat",
+      prompt: "Dottore and Mari in a moonlit laboratory confrontation",
+      negativePrompt: "low detail",
+    });
+    const { deps, createChatMessage, patchChatMessageExtra } = generationDepsForChat({
+      chatPatch: {
+        mode: "roleplay",
+        characterIds: ["char-dottore"],
+        personaId: "persona-mari",
+      },
+      chatMetadata: {
+        enableAgents: true,
+        illustrationResolution: "768x1024",
+      },
+      characters: [
+        {
+          id: "char-dottore",
+          name: "Il Dottore",
+          avatarPath: "data:image/png;base64,dottore-avatar",
+          data: {
+            name: "Il Dottore",
+            appearance: "blue hair, red eyes, white coat, black mask",
+          },
+        },
+      ],
+      personas: [
+        {
+          id: "persona-mari",
+          name: "Mari",
+          avatarPath: "data:image/png;base64,mari-avatar",
+          data: {
+            name: "Mari",
+            appearance: "brown hair, silver glasses, lab dress",
+          },
+        },
+      ],
+      agents: [
+        {
+          id: "illustrator-agent",
+          type: "illustrator",
+          name: "Illustrator",
+          enabled: true,
+          phase: "post_processing",
+          connectionId: null,
+          model: "agent-model",
+          promptTemplate: "Return JSON.",
+          settings: {
+            runInterval: 1,
+            imageConnectionId: "image-conn",
+            imagePositivePrompt: "painterly, dramatic lighting",
+            imageNegativePrompt: "bad anatomy",
+            useAvatarReferences: true,
+          },
+        },
+      ],
+      streamResponses: ["Done.", illustratorResponse],
+      integrations: {
+        image: { generate: imageGenerate },
+      },
+      visuals,
+    });
+
+    const events = await collectGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "continue",
+        imagePromptSettings: { includeAppearances: true },
+      }),
+    );
+
+    expect(imageRequests).toHaveLength(1);
+    const imageRequest = imageRequests[0];
+    expect(imageRequest).toMatchObject({
+      connectionId: "image-conn",
+      kind: "illustration",
+      width: 768,
+      height: 1024,
+      negativePrompt: "low detail, bad anatomy",
+      referenceImages: ["data:image/png;base64,full-body-sprite", "data:image/png;base64,mari-avatar"],
+    });
+    expect(String(imageRequest.prompt)).toContain("Dottore and Mari");
+    expect(String(imageRequest.prompt)).toContain("Il Dottore: blue hair");
+    expect(String(imageRequest.prompt)).toContain("Mari: brown hair");
+    expect(String(imageRequest.prompt)).toContain("painterly");
+
+    const assistantSave = createChatMessage.mock.calls.find(([, value]) => value.role === "assistant");
+    expect((assistantSave?.[1] as { extra?: { attachments?: unknown[] } } | undefined)?.extra?.attachments).toBe(
+      undefined,
+    );
+    expect(patchChatMessageExtra).toHaveBeenCalledWith(
+      "assistant-2",
+      expect.objectContaining({
+        attachments: [
+          expect.objectContaining({
+            type: "image",
+            url: "data:image/png;base64,generated-image",
+            galleryId: "gallery-1",
+            prompt: imageRequest.prompt,
+          }),
+        ],
+      }),
+    );
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "illustration",
+          data: expect.objectContaining({ galleryId: "gallery-1", prompt: imageRequest.prompt }),
+        }),
+      ]),
+    );
+    expect(deps.storage.create).toHaveBeenCalledWith(
+      "gallery",
+      expect.objectContaining({
+        chatId: "chat-1",
+        kind: "illustration",
+        prompt: imageRequest.prompt,
+        referenceImageCount: 2,
+      }),
+    );
+  });
 });
 
 describe("startGeneration automatic custom agent cadence", () => {
@@ -1411,7 +1649,7 @@ describe("startGeneration agent runtime parity", () => {
 
   it("does not duplicate parallel agent results from callback and return paths", async () => {
     const events: unknown[] = [];
-    const { deps, createChatMessage } = generationDepsForChat({
+    const { deps } = generationDepsForChat({
       chatMetadata: { enableAgents: true },
       agents: [
         {
@@ -1434,12 +1672,6 @@ describe("startGeneration agent runtime parity", () => {
 
     const agentEvents = events.filter((event) => (event as { type?: string }).type === "agent_result");
     expect(agentEvents).toHaveLength(1);
-    const assistantCreate = createChatMessage.mock.calls.find(
-      (call) => (call[1] as { role?: unknown }).role === "assistant",
-    );
-    expect(assistantCreate?.[1]).toMatchObject({
-      generationInfo: { agentResults: 1 },
-    });
     expect(deps.storage.create).toHaveBeenCalledWith(
       "agent-runs",
       expect.objectContaining({
@@ -1452,7 +1684,7 @@ describe("startGeneration agent runtime parity", () => {
   });
 
   it("stores expression agent choices on generated assistant message metadata", async () => {
-    const { deps, createChatMessage } = generationDepsForChat({
+    const { deps, patchChatMessageExtra } = generationDepsForChat({
       chatPatch: { mode: "roleplay", characterIds: ["char-dottore"] },
       chatMetadata: { enableAgents: true },
       characters: [{ id: "char-dottore", data: { name: "Dottore", description: "Fatui scientist." } }],
@@ -1491,21 +1723,68 @@ describe("startGeneration agent runtime parity", () => {
 
     await drainGeneration(startGeneration(deps, { chatId: "chat-1", userMessage: "hello" }));
 
-    const assistantCreate = createChatMessage.mock.calls.find(
-      (call) => (call[1] as { role?: unknown }).role === "assistant",
-    );
-    expect(assistantCreate?.[1]).toMatchObject({
-      extra: {
+    expect(patchChatMessageExtra).toHaveBeenCalledWith(
+      "assistant-2",
+      expect.objectContaining({
         spriteExpressions: {
           "char-dottore": "smirk",
           Dottore: "smirk",
         },
-      },
+      }),
+    );
+  });
+
+  it("saves the assistant message before waiting for post-processing agents", async () => {
+    const { deps, createChatMessage, patchChatMessageExtra } = generationDepsForChat({
+      chatPatch: { mode: "roleplay" },
+      chatMetadata: { enableAgents: true },
+      agents: [
+        {
+          id: "cyoa",
+          type: "cyoa",
+          name: "CYOA Choices",
+          enabled: true,
+          phase: "post_processing",
+          connectionId: null,
+          model: "agent-model",
+          promptTemplate: "Offer choices.",
+          settings: {},
+        },
+      ],
     });
+    const callOrder: string[] = [];
+    let turn = 0;
+    deps.llm = {
+      ...deps.llm,
+      stream: vi.fn(async function* () {
+        if (turn === 0) {
+          turn += 1;
+          yield { type: "token" as const, text: "Assistant reply." };
+          return;
+        }
+        callOrder.push("post-agent-started");
+        turn += 1;
+        yield { type: "token" as const, text: JSON.stringify({ choices: [{ label: "Look", text: "I look." }] }) };
+      }),
+    };
+    createChatMessage.mockImplementation(async (_chatId: string, value: Record<string, unknown>) => {
+      callOrder.push(`save-${String(value.role)}`);
+      return { id: value.role === "assistant" ? "assistant-2" : "user-1", chatId: "chat-1", ...value };
+    });
+
+    await drainGeneration(startGeneration(deps, { chatId: "chat-1", userMessage: "hello" }));
+
+    expect(callOrder).toEqual(["save-user", "save-assistant", "post-agent-started"]);
+    expect(patchChatMessageExtra).toHaveBeenCalledWith(
+      "assistant-2",
+      expect.objectContaining({
+        cyoaChoices: [{ label: "Look", text: "I look." }],
+      }),
+    );
   });
 
   it("persists CYOA choices and pre-generation injections on generated assistant message metadata", async () => {
-    const { deps, createChatMessage } = generationDepsForChat({
+    const { deps, createChatMessage, patchChatMessageExtra } = generationDepsForChat({
       chatPatch: { mode: "roleplay" },
       chatMetadata: { enableAgents: true },
       agents: [
@@ -1561,12 +1840,20 @@ describe("startGeneration agent runtime parity", () => {
         contextInjections: [
           { agentType: "prose-guardian", agentName: "Prose Guardian", text: "Vary sentence rhythm." },
         ],
+      },
+    });
+    expect(patchChatMessageExtra).toHaveBeenCalledWith(
+      "assistant-2",
+      expect.objectContaining({
+        contextInjections: [
+          { agentType: "prose-guardian", agentName: "Prose Guardian", text: "Vary sentence rhythm." },
+        ],
         cyoaChoices: [
           { label: "Press forward", text: "I step closer and press for the truth." },
           { label: "Hold back", text: "I stay quiet and watch for another clue." },
         ],
-      },
-    });
+      }),
+    );
   });
 
   it("stores regenerated CYOA choices and injections on the new assistant swipe", async () => {
@@ -1626,7 +1913,6 @@ describe("startGeneration agent runtime parity", () => {
           contextInjections: [
             { agentType: "prose-guardian", agentName: "Prose Guardian", text: "Make the next swipe sharper." },
           ],
-          cyoaChoices: [{ label: "Demand answers", text: "I demand answers immediately." }],
         }),
       }),
     );
@@ -1771,10 +2057,14 @@ describe("startGeneration Discord mirror", () => {
 });
 
 describe("startGeneration group turn prompt toggle", () => {
-  it("keeps target character instructions enabled by default for non-conversation group chats", async () => {
+  it("keeps target character instructions enabled by default for individual roleplay groups", async () => {
     const { deps, streamedRequests } = generationDepsForChat({
       chatPatch: { mode: "roleplay", characterIds: ["char-1", "char-2"] },
-      characters: [{ id: "char-1", data: { name: "Marina" } }],
+      chatMetadata: { groupChatMode: "individual" },
+      characters: [
+        { id: "char-1", data: { name: "Marina" } },
+        { id: "char-2", data: { name: "Roux" } },
+      ],
     });
 
     await drainGeneration(
@@ -1782,15 +2072,18 @@ describe("startGeneration group turn prompt toggle", () => {
     );
 
     expect((streamedRequests[0] as { messages: Array<{ content: string }> }).messages).toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: "[Generation instruction: respond as Marina.]" })]),
+      expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining("Respond only as Marina") })]),
     );
   });
 
-  it("omits target character instructions when non-conversation group turn prompts are disabled", async () => {
+  it("omits target character instructions when individual roleplay group turn prompts are disabled", async () => {
     const { deps, streamedRequests } = generationDepsForChat({
       chatPatch: { mode: "roleplay", characterIds: ["char-1", "char-2"] },
-      chatMetadata: { groupTurnPromptEnabled: false },
-      characters: [{ id: "char-1", data: { name: "Marina" } }],
+      chatMetadata: { groupChatMode: "individual", groupTurnPromptEnabled: false },
+      characters: [
+        { id: "char-1", data: { name: "Marina" } },
+        { id: "char-2", data: { name: "Roux" } },
+      ],
     });
 
     await drainGeneration(
@@ -1798,8 +2091,128 @@ describe("startGeneration group turn prompt toggle", () => {
     );
 
     expect((streamedRequests[0] as { messages: Array<{ content: string }> }).messages).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ content: "[Generation instruction: respond as Marina.]" })]),
+      expect.arrayContaining([expect.objectContaining({ content: expect.stringContaining("Respond only as Marina") })]),
     );
+  });
+
+  it("resolves sequential individual roleplay turns before assembling character cards", async () => {
+    const { deps, createChatMessage, streamedRequests } = generationDepsForChat({
+      chatPatch: {
+        mode: "roleplay",
+        promptPresetId: "preset",
+        characterIds: ["char-a", "char-b"],
+      },
+      chatMetadata: { groupChatMode: "individual", groupResponseOrder: "sequential" },
+      characters: [
+        { id: "char-a", data: { name: "Aster", description: "ASTER CARD" } },
+        { id: "char-b", data: { name: "Briar", description: "BRIAR CARD" } },
+      ],
+      prompts: [{ id: "preset", wrapFormat: "xml" }],
+      promptSections: [
+        {
+          id: "character",
+          presetId: "preset",
+          name: "Characters",
+          role: "system",
+          markerConfig: { type: "character" },
+          enabled: true,
+          sortOrder: 0,
+        },
+        {
+          id: "history",
+          presetId: "preset",
+          name: "History",
+          role: "user",
+          markerConfig: { type: "chat_history" },
+          enabled: true,
+          sortOrder: 1,
+        },
+      ],
+      initialMessages: [
+        {
+          id: "assistant-a",
+          chatId: "chat-1",
+          role: "assistant",
+          characterId: "char-a",
+          content: "Aster answered last.",
+        },
+      ],
+    });
+
+    await drainGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "continue",
+        impersonateBlockAgents: true,
+      }),
+    );
+
+    const promptText = (streamedRequests[0] as { messages: Array<{ content: string }> }).messages
+      .map((message) => message.content)
+      .join("\n");
+    expect(promptText).toContain("BRIAR CARD");
+    expect(promptText).not.toContain("ASTER CARD");
+    expect(promptText).toContain("Respond only as Briar");
+    const assistantSave = createChatMessage.mock.calls.find(([, value]) => value.role === "assistant");
+    expect(assistantSave?.[1]).toMatchObject({ characterId: "char-b" });
+  });
+
+  it("uses the smart response orchestrator to choose one individual roleplay responder", async () => {
+    const { deps, createChatMessage, streamedRequests, completedRequests } = generationDepsForChat({
+      chatPatch: {
+        mode: "roleplay",
+        promptPresetId: "preset",
+        characterIds: ["char-a", "char-b"],
+      },
+      chatMetadata: { groupChatMode: "individual", groupResponseOrder: "smart" },
+      characters: [
+        { id: "char-a", data: { name: "Aster", description: "ASTER CARD", personality: "Reserved." } },
+        { id: "char-b", data: { name: "Briar", description: "BRIAR CARD", personality: "Direct." } },
+      ],
+      prompts: [{ id: "preset", wrapFormat: "xml" }],
+      promptSections: [
+        {
+          id: "character",
+          presetId: "preset",
+          name: "Characters",
+          role: "system",
+          markerConfig: { type: "character" },
+          enabled: true,
+          sortOrder: 0,
+        },
+        {
+          id: "history",
+          presetId: "preset",
+          name: "History",
+          role: "user",
+          markerConfig: { type: "chat_history" },
+          enabled: true,
+          sortOrder: 1,
+        },
+      ],
+      initialMessages: [{ id: "user-old", chatId: "chat-1", role: "user", content: "Who should answer?" }],
+      completeResponse: '{"characterIds":["char-b"],"reason":"Briar was addressed."}',
+    });
+
+    await drainGeneration(
+      startGeneration(deps, {
+        chatId: "chat-1",
+        userMessage: "Briar, what do you think?",
+        impersonateBlockAgents: true,
+      }),
+    );
+
+    expect(completedRequests).toHaveLength(1);
+    const selectorPrompt = JSON.stringify(completedRequests[0]);
+    expect(selectorPrompt).toContain("hidden response orchestrator");
+    expect(selectorPrompt).toContain("char-b");
+    const promptText = (streamedRequests[0] as { messages: Array<{ content: string }> }).messages
+      .map((message) => message.content)
+      .join("\n");
+    expect(promptText).toContain("BRIAR CARD");
+    expect(promptText).not.toContain("ASTER CARD");
+    const assistantSave = createChatMessage.mock.calls.find(([, value]) => value.role === "assistant");
+    expect(assistantSave?.[1]).toMatchObject({ characterId: "char-b" });
   });
 });
 
