@@ -7,10 +7,10 @@ import { toast } from "sonner";
 import { useGameModeStore } from "../stores/game-mode.store";
 import { useGameAssetStore } from "../stores/game-asset.store";
 import { gameApi } from "../api/game-api";
+import { gameTrackerApi } from "../api/game-tracker-api";
 import { useChatStore } from "../../../../shared/stores/chat.store";
 import { useUIStore } from "../../../../shared/stores/ui.store";
 import { useGameStateStore } from "../../../runtime/world-state/index";
-import { worldStateApi } from "../../../runtime/world-state/index";
 import { useGameStatePatcher } from "../../../runtime/world-state/index";
 import type { GameStatePatchField, GameStatePatchValue } from "../../../runtime/world-state/types";
 import {
@@ -1786,16 +1786,20 @@ export function GameSurface({
 
   // ── Fetch game state on mount (WeatherEffects needs weather/time from the DB) ──
   useEffect(() => {
+    const requestedChatId = activeChatId;
     const existing = useGameStateStore.getState().current;
-    if (existing?.chatId === activeChatId) return;
-    worldStateApi
-      .get(activeChatId)
+    if (existing?.chatId === requestedChatId) return;
+    let cancelled = false;
+    gameTrackerApi.visible(requestedChatId)
       .then((gs) => {
-        if (gs) {
+        if (!cancelled && gs?.chatId === requestedChatId && useChatStore.getState().activeChatId === requestedChatId) {
           useGameStateStore.getState().setGameState(gs);
         }
       })
       .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [activeChatId]);
 
   // ── Patch game state snapshot with chatMeta weather/time when the snapshot is missing them ──
@@ -4869,6 +4873,18 @@ export function GameSurface({
       if (request.kind === "session_conclusion") {
         setConfirmEndSessionOpen(false);
       }
+      if (request.kind === "game_map" && targetChatId === useGameModeStore.getState().activeSessionChatId) {
+        const maps = Array.isArray(response.maps) ? (response.maps as GameMap[]) : null;
+        const map = response.map && typeof response.map === "object" ? (response.map as GameMap) : null;
+        const activeGameMapId =
+          typeof response.activeGameMapId === "string" ? response.activeGameMapId : (map?.id ?? null);
+        if (maps?.length) {
+          useGameModeStore.getState().setMaps(maps, activeGameMapId);
+        } else if (map) {
+          useGameModeStore.getState().setMaps([map], activeGameMapId ?? getGameMapId(map, 0));
+        }
+        setViewedMapId(null);
+      }
       setJsonRepairRequest(null);
     },
     [activeChatId, gameId, queryClient],
@@ -6772,8 +6788,14 @@ export function GameSurface({
   }, []);
 
   const handleGenerateMap = useCallback(() => {
-    if (isStreaming || !sessionInteractive) return;
+    if (isStreaming || !sessionInteractive || generateMap.isPending) return;
     const locationType = gameSnapshot?.location?.trim() || "current location";
+    const setupConfig = chatMeta.gameSetupConfig as Record<string, unknown> | null;
+    const connectionId =
+      (typeof chatMeta.gameSceneConnectionId === "string" && chatMeta.gameSceneConnectionId.trim()) ||
+      (typeof setupConfig?.sceneConnectionId === "string" && setupConfig.sceneConnectionId.trim()) ||
+      chat.connectionId ||
+      null;
     const context = [
       `Location: ${gameSnapshot?.location ?? "Unknown"}`,
       gameSnapshot?.time ? `Time: ${gameSnapshot.time}` : null,
@@ -6783,18 +6805,35 @@ export function GameSurface({
       .filter(Boolean)
       .join("\n");
 
-    generateMap.mutate({
-      chatId: activeChatId,
-      locationType,
-      context: context || locationType,
-    });
-    setViewedMapId(null);
+    generateMap.mutate(
+      {
+        chatId: activeChatId,
+        locationType,
+        context: context || locationType,
+        connectionId: connectionId ?? undefined,
+      },
+      {
+        onSuccess: () => {
+          if (useChatStore.getState().activeChatId === activeChatId) setViewedMapId(null);
+        },
+        onError: (error) => {
+          if (useChatStore.getState().activeChatId !== activeChatId) return;
+          if (handleJsonRepairError(error)) return;
+          toast.error(error instanceof Error ? error.message : "Failed to generate map.");
+        },
+      },
+    );
   }, [
     activeChatId,
+    chat.connectionId,
+    chatMeta.gameSceneConnectionId,
+    chatMeta.gameSetupConfig,
     gameSnapshot?.location,
     gameSnapshot?.time,
     gameSnapshot?.weather,
     generateMap,
+    generateMap.isPending,
+    handleJsonRepairError,
     isStreaming,
     latestNarrationText,
     sessionInteractive,
@@ -8269,7 +8308,7 @@ export function GameSurface({
                       onMove={handleMapMove}
                       selectedPosition={viewedMapIsActive ? (pendingMapMove?.position ?? null) : null}
                       onGenerateMap={handleGenerateMap}
-                      generateMapDisabled={isStreaming || !sessionInteractive}
+                      generateMapDisabled={isStreaming || !sessionInteractive || generateMap.isPending}
                       disabled={isStreaming || !narrationDone || !sessionInteractive}
                       gameState={gameState}
                       timeOfDay={gameSnapshot?.time ?? metaTime ?? null}
@@ -8289,7 +8328,7 @@ export function GameSurface({
                       onMove={handleMapMove}
                       selectedPosition={viewedMapIsActive ? (pendingMapMove?.position ?? null) : null}
                       onGenerateMap={handleGenerateMap}
-                      generateMapDisabled={isStreaming || !sessionInteractive}
+                      generateMapDisabled={isStreaming || !sessionInteractive || generateMap.isPending}
                       disabled={isStreaming || !narrationDone || !sessionInteractive}
                       gameState={gameState}
                       timeOfDay={gameSnapshot?.time ?? metaTime ?? null}

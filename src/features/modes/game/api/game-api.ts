@@ -70,6 +70,7 @@ import {
   type Journal,
   type JournalEntry,
 } from "../../../../engine/modes/game/world/journal.service";
+import { buildMapGenerationPrompt } from "../../../../engine/modes/game/world/map.service";
 import { withActiveGameMapMeta } from "../../../../engine/modes/game/world/map-position.service";
 import {
   createInitialTime,
@@ -195,7 +196,7 @@ type PromptOverride = {
   prompt?: string;
 };
 
-type GameJsonRepairKind = "game_setup" | "session_conclusion" | "session_lorebook" | "campaign_progression";
+type GameJsonRepairKind = "game_setup" | "game_map" | "session_conclusion" | "session_lorebook" | "campaign_progression";
 
 type GameJsonRepairContext = {
   kind: GameJsonRepairKind;
@@ -386,6 +387,244 @@ function setupMapFromResponse(setup: Record<string, unknown>): GameMap {
     edges,
     partyPosition: nodes[0]!.id,
   } as GameMap;
+}
+
+function readOptionalString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+type GeneratedMapNodeNormalization = {
+  rawId: string | null;
+  node: NonNullable<GameMap["nodes"]>[number];
+};
+
+function readNumber(value: unknown, fallback: number): number {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return fallback;
+  const parsed = typeof value === "number" ? value : Number(value.trim());
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(readNumber(value, fallback))));
+}
+
+function clampPercent(value: unknown, fallback: number): number {
+  return Math.max(0, Math.min(100, readNumber(value, fallback)));
+}
+
+function normalizeGeneratedGridCell(
+  value: unknown,
+  index: number,
+  width: number,
+  height: number,
+): NonNullable<GameMap["cells"]>[number] | null {
+  const record = asRecord(value);
+  const x = clampInteger(record.x, index % width, 0, width - 1);
+  const y = clampInteger(record.y, Math.floor(index / width), 0, height - 1);
+  const label = readOptionalString(record, "label") ?? `Area ${index + 1}`;
+  return {
+    x,
+    y,
+    emoji: readOptionalString(record, "emoji") ?? "",
+    label,
+    discovered: record.discovered !== false,
+    terrain: readOptionalString(record, "terrain") ?? "unknown",
+    ...(readOptionalString(record, "description") ? { description: readOptionalString(record, "description")! } : {}),
+  };
+}
+
+function uniqueGeneratedNodeId(rawId: string, usedIds: Set<string>): string {
+  const base = rawId.trim() || "location";
+  let candidate = base;
+  let suffix = 2;
+  while (usedIds.has(candidate)) {
+    candidate = `${base}-${suffix++}`;
+  }
+  usedIds.add(candidate);
+  return candidate;
+}
+
+function normalizeGeneratedMapNode(
+  value: unknown,
+  index: number,
+  usedIds: Set<string>,
+): GeneratedMapNodeNormalization | null {
+  const record = asRecord(value);
+  const label = readOptionalString(record, "label") ?? readOptionalString(record, "name") ?? `Area ${index + 1}`;
+  const rawId = readOptionalString(record, "id") ?? generatedAssetSlug(label);
+  const id = uniqueGeneratedNodeId(rawId, usedIds);
+  if (!id) return null;
+  return {
+    rawId,
+    node: {
+      id,
+      emoji: readOptionalString(record, "emoji") ?? "",
+      label,
+      x: clampPercent(record.x, 50),
+      y: clampPercent(record.y, 50),
+      discovered: record.discovered !== false,
+      ...(readOptionalString(record, "description") ? { description: readOptionalString(record, "description")! } : {}),
+    },
+  };
+}
+
+function resolveGeneratedNodeReference(
+  rawId: string | null,
+  knownNodeIds: Set<string>,
+  normalizedIdsByRawId: Map<string, string[]>,
+): string | null {
+  if (!rawId) return null;
+  if (knownNodeIds.has(rawId)) return rawId;
+  return normalizedIdsByRawId.get(rawId)?.[0] ?? null;
+}
+
+function normalizeGeneratedMapEdge(
+  value: unknown,
+  knownNodeIds: Set<string>,
+  normalizedIdsByRawId: Map<string, string[]>,
+): NonNullable<GameMap["edges"]>[number] | null {
+  const record = asRecord(value);
+  const rawFrom = readOptionalString(record, "from");
+  const rawTo = readOptionalString(record, "to");
+  const duplicateAliases = rawFrom && rawFrom === rawTo ? normalizedIdsByRawId.get(rawFrom) : null;
+  const from =
+    duplicateAliases && duplicateAliases.length > 1
+      ? duplicateAliases[0]!
+      : resolveGeneratedNodeReference(rawFrom, knownNodeIds, normalizedIdsByRawId);
+  const to =
+    duplicateAliases && duplicateAliases.length > 1
+      ? duplicateAliases[1]!
+      : resolveGeneratedNodeReference(rawTo, knownNodeIds, normalizedIdsByRawId);
+  if (!from || !to || from === to) return null;
+  return {
+    from,
+    to,
+    ...(readOptionalString(record, "label") ? { label: readOptionalString(record, "label")! } : {}),
+  };
+}
+
+function normalizeGridPartyPosition(
+  value: unknown,
+  fallback: { x: number; y: number },
+  width: number,
+  height: number,
+  knownCoordinates: Set<string>,
+): { x: number; y: number } {
+  const record = asRecord(value);
+  const candidate = {
+    x: clampInteger(record.x, fallback.x, 0, width - 1),
+    y: clampInteger(record.y, fallback.y, 0, height - 1),
+  };
+  return knownCoordinates.has(`${candidate.x},${candidate.y}`) ? candidate : fallback;
+}
+
+function normalizeGeneratedMap(raw: unknown, fallback: GameMap): GameMap | null {
+  const record = asRecord(raw);
+  const type = record.type === "grid" || record.type === "node" ? record.type : null;
+  if (!type) return null;
+  const name = readOptionalString(record, "name") ?? fallback.name;
+  const base = {
+    id: readOptionalString(record, "id") ?? generatedAssetSlug(name),
+    type,
+    name,
+    description: readOptionalString(record, "description") ?? fallback.description,
+  };
+  if (type === "grid") {
+    const width = clampInteger(record.width, fallback.width ?? 6, 1, 12);
+    const height = clampInteger(record.height, fallback.height ?? 6, 1, 12);
+    const cellByCoordinate = new Map<string, NonNullable<GameMap["cells"]>[number]>();
+    if (Array.isArray(record.cells)) {
+      record.cells.slice(0, width * height).forEach((cell, index) => {
+        const normalizedCell = normalizeGeneratedGridCell(cell, index, width, height);
+        if (!normalizedCell) return;
+        const key = `${normalizedCell.x},${normalizedCell.y}`;
+        if (!cellByCoordinate.has(key)) cellByCoordinate.set(key, normalizedCell);
+      });
+    }
+    const cells = [...cellByCoordinate.values()];
+    if (cells.length === 0) return null;
+    const fallbackCell = cells.find((cell) => cell.discovered) ?? cells[0]!;
+    const fallbackPosition = { x: fallbackCell.x, y: fallbackCell.y };
+    const knownCoordinates = new Set(cells.map((cell) => `${cell.x},${cell.y}`));
+    const partyPosition = normalizeGridPartyPosition(record.partyPosition, fallbackPosition, width, height, knownCoordinates);
+    return {
+      ...base,
+      type: "grid",
+      width,
+      height,
+      cells: cells.map((cell) =>
+        cell.x === partyPosition.x && cell.y === partyPosition.y ? { ...cell, discovered: true } : cell,
+      ),
+      partyPosition,
+    };
+  }
+  const usedNodeIds = new Set<string>();
+  const nodeEntries = Array.isArray(record.nodes)
+    ? record.nodes
+        .slice(0, 80)
+        .map((node, index) => normalizeGeneratedMapNode(node, index, usedNodeIds))
+        .filter((entry): entry is GeneratedMapNodeNormalization => !!entry)
+    : [];
+  const nodes = nodeEntries.map((entry) => entry.node);
+  if (nodes.length === 0) return null;
+  const knownNodeIds = new Set(nodes.map((node) => node.id));
+  const normalizedIdsByRawId = new Map<string, string[]>();
+  for (const entry of nodeEntries) {
+    if (!entry.rawId) continue;
+    normalizedIdsByRawId.set(entry.rawId, [...(normalizedIdsByRawId.get(entry.rawId) ?? []), entry.node.id]);
+  }
+  const edges = Array.isArray(record.edges)
+    ? record.edges
+        .slice(0, 160)
+        .map((edge) => normalizeGeneratedMapEdge(edge, knownNodeIds, normalizedIdsByRawId))
+        .filter((edge): edge is NonNullable<GameMap["edges"]>[number] => !!edge)
+    : [];
+  const partyPosition =
+    typeof record.partyPosition === "string" && knownNodeIds.has(record.partyPosition.trim())
+      ? record.partyPosition.trim()
+      : nodes[0]!.id;
+  return {
+    ...base,
+    type: "node",
+    nodes,
+    edges,
+    partyPosition,
+  };
+}
+
+function gameMapJsonRepairContext(data: {
+  chatId: string;
+  locationType: string;
+  context: string;
+  connectionId?: string | null;
+}): GameJsonRepairContext {
+  return {
+    kind: "game_map",
+    title: "Repair Game Map JSON",
+    applyBody: {
+      chatId: data.chatId,
+      locationType: data.locationType,
+      context: data.context,
+      connectionId: data.connectionId,
+    },
+  };
+}
+
+function mapJsonCouldNotApplyError(
+  generated: Record<string, unknown>,
+  data: { chatId: string; locationType: string; context: string; connectionId?: string | null },
+): ApiError {
+  const repair = gameMapJsonRepairContext(data);
+  return new ApiError("The model returned map JSON that needs review before it can be applied.", 422, {
+    jsonRepair: {
+      kind: repair.kind,
+      title: repair.title,
+      rawJson: JSON.stringify(generated, null, 2),
+      applyEndpoint: `local://game/${repair.kind}`,
+      applyBody: repair.applyBody,
+    },
+  });
 }
 
 function setupNpcsFromResponse(setup: Record<string, unknown>): GameNpc[] {
@@ -1479,12 +1718,39 @@ export const gameApi = {
     return { previousState, newState, sessionChat };
   },
 
-  async generateMap(data: { chatId: string; locationType: string; context: string }): Promise<MapResponse> {
-    const map = defaultGameMap(data.locationType || "Area", data.context || "");
+  async generateMap(data: {
+    chatId: string;
+    locationType: string;
+    context: string;
+    connectionId?: string | null;
+    generated?: Record<string, unknown>;
+  }): Promise<MapResponse> {
+    const fallbackMap = defaultGameMap(data.locationType || "Area", data.context || "");
+    let map = fallbackMap;
+    if (data.generated || data.connectionId) {
+      const generated =
+        data.generated ??
+        (await llmJson({
+          connectionId: data.connectionId,
+          fallback: fallbackMap as unknown as Record<string, unknown>,
+          system: "You generate compact RPG map JSON for Marinara Engine Game mode.",
+          user: buildMapGenerationPrompt(data.locationType || "Area", data.context || ""),
+          repair: gameMapJsonRepairContext(data),
+        }));
+      const normalizedMap = normalizeGeneratedMap(generated, fallbackMap);
+      if (!normalizedMap) {
+        if (data.generated) throw new Error("The repaired map JSON object could not be applied.");
+        throw mapJsonCouldNotApplyError(generated, data);
+      }
+      map = normalizedMap;
+    }
     const chat = await getChat(data.chatId);
     const meta = withActiveGameMapMeta(chatMeta(chat), map);
     const sessionChat = await patchChatMetadata(data.chatId, meta);
-    return { map, maps: [map], activeGameMapId: map.id ?? null, sessionChat };
+    const savedMap = (meta.gameMap as GameMap | undefined) ?? map;
+    const savedMaps = Array.isArray(meta.gameMaps) ? (meta.gameMaps as GameMap[]) : [savedMap];
+    const activeGameMapId = typeof meta.activeGameMapId === "string" ? meta.activeGameMapId : (savedMap.id ?? null);
+    return { map: savedMap, maps: savedMaps, activeGameMapId, sessionChat };
   },
 
   async moveOnMap(data: {
@@ -2052,6 +2318,14 @@ export async function applyGameJsonRepair(request: JsonRepairRequest, rawJson: s
         preferences: typeof body.preferences === "string" ? body.preferences : "",
         setupConfig: isGameSetupConfig(body.setupConfig) ? body.setupConfig : undefined,
         setup: repaired,
+      });
+    case "game_map":
+      return gameApi.generateMap({
+        chatId,
+        connectionId,
+        locationType: typeof body.locationType === "string" ? body.locationType : "Area",
+        context: typeof body.context === "string" ? body.context : "",
+        generated: repaired,
       });
     case "session_conclusion":
       return gameApi.concludeSession({

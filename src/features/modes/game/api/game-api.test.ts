@@ -51,8 +51,9 @@ vi.mock("../../../../shared/api/integration-utility-api", () => ({
   spotifyApi: {},
 }));
 
-import { gameApi } from "./game-api";
+import { applyGameJsonRepair, gameApi } from "./game-api";
 import { llmApi } from "../../../../shared/api/llm-api";
+import { getJsonRepairRequest } from "../../../../shared/api/api-errors";
 
 function minimalSetupConfig(overrides: Partial<GameSetupConfig> = {}): GameSetupConfig {
   return {
@@ -153,6 +154,7 @@ describe("gameApi.setupGame response contract", () => {
 describe("gameApi metadata mutation response contracts", () => {
   beforeEach(() => {
     Object.values(storageApiMock).forEach((fn) => fn.mockReset());
+    vi.mocked(llmApi.complete).mockReset();
   });
 
   function mockChat(initial: Chat) {
@@ -221,11 +223,247 @@ describe("gameApi metadata mutation response contracts", () => {
       context: "misty trail",
     });
 
+    expect(vi.mocked(llmApi.complete)).not.toHaveBeenCalled();
     expect(result.sessionChat.id).toBe("chat-game");
     expect(result.sessionChat.metadata).toMatchObject({
       gameMap: result.map,
       gameMaps: [result.map],
       activeGameMapId: result.activeGameMapId,
+    });
+  });
+
+  it("uses the map generation prompt helper when a map connection is selected", async () => {
+    mockChat({
+      id: "chat-game",
+      name: "Game",
+      mode: "game",
+      characterIds: [],
+      metadata: {
+        gameSessionStatus: "active",
+      },
+    } as unknown as Chat);
+    vi.mocked(llmApi.complete).mockResolvedValueOnce(
+      JSON.stringify({
+        type: "node",
+        name: "Old Library",
+        description: "Stacks, dust, and a sealed reading room.",
+        nodes: [
+          { id: "entrance", label: "Entrance", x: 50, y: 90, discovered: true },
+          { id: "reading-room", label: "Reading Room", x: 50, y: 45, discovered: false },
+        ],
+        edges: [{ from: "entrance", to: "reading-room" }],
+        partyPosition: "entrance",
+      }),
+    );
+
+    const result = await gameApi.generateMap({
+      chatId: "chat-game",
+      locationType: "Library",
+      context: "Dusty stacks beneath a storm.",
+      connectionId: "connection-map",
+    });
+
+    expect(vi.mocked(llmApi.complete)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: "connection-map",
+        messages: [
+          expect.objectContaining({
+            role: "system",
+            content: expect.stringContaining("RPG map JSON"),
+          }),
+          expect.objectContaining({
+            role: "user",
+            content: expect.stringContaining("Location type: Library"),
+          }),
+        ],
+      }),
+    );
+    expect(vi.mocked(llmApi.complete).mock.calls[0]?.[0]?.messages[1]?.content).toContain(
+      "Context: Dusty stacks beneath a storm.",
+    );
+    expect(result.map).toMatchObject({
+      id: "old-library",
+      type: "node",
+      name: "Old Library",
+      partyPosition: "entrance",
+      nodes: [
+        expect.objectContaining({ id: "entrance", label: "Entrance", discovered: true }),
+        expect.objectContaining({ id: "reading-room", label: "Reading Room", discovered: false }),
+      ],
+      edges: [{ from: "entrance", to: "reading-room" }],
+    });
+    expect(result.sessionChat.metadata).toMatchObject({
+      gameMap: result.map,
+      activeGameMapId: "old-library",
+    });
+  });
+
+  it("surfaces invalid generated map JSON through the repair flow", async () => {
+    mockChat({
+      id: "chat-game",
+      name: "Game",
+      mode: "game",
+      characterIds: [],
+      metadata: {
+        gameSessionStatus: "active",
+      },
+    } as unknown as Chat);
+    vi.mocked(llmApi.complete).mockResolvedValueOnce("this is not json");
+
+    let thrown: unknown = null;
+    try {
+      await gameApi.generateMap({
+        chatId: "chat-game",
+        locationType: "Cave",
+        context: "Wet stone and bad echoes.",
+        connectionId: "connection-map",
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    const repair = getJsonRepairRequest(thrown);
+    expect(repair).toMatchObject({
+      kind: "game_map",
+      title: "Repair Game Map JSON",
+      rawJson: "this is not json",
+      applyEndpoint: "local://game/game_map",
+      applyBody: {
+        chatId: "chat-game",
+        locationType: "Cave",
+        context: "Wet stone and bad echoes.",
+        connectionId: "connection-map",
+      },
+    });
+  });
+
+  it("applies repaired map JSON back through map generation persistence", async () => {
+    mockChat({
+      id: "chat-game",
+      name: "Game",
+      mode: "game",
+      characterIds: [],
+      metadata: {
+        gameSessionStatus: "active",
+      },
+    } as unknown as Chat);
+
+    const result = await applyGameJsonRepair(
+      {
+        kind: "game_map",
+        title: "Repair Game Map JSON",
+        applyEndpoint: "local://game/game_map",
+        applyBody: {
+          chatId: "chat-game",
+          locationType: "Cave",
+          context: "Wet stone and bad echoes.",
+          connectionId: "connection-map",
+        },
+      },
+      JSON.stringify({
+        type: "node",
+        name: "Echo Cave",
+        description: "A repaired cave map.",
+        nodes: [{ id: "mouth", label: "Mouth", x: 50, y: 90, discovered: true }],
+        edges: [],
+        partyPosition: "mouth",
+      }),
+    );
+
+    expect(result).toMatchObject({
+      map: {
+        id: "echo-cave",
+        type: "node",
+        name: "Echo Cave",
+        partyPosition: "mouth",
+      },
+      activeGameMapId: "echo-cave",
+    });
+  });
+
+  it("normalizes generated grid maps to renderable bounds", async () => {
+    mockChat({
+      id: "chat-game",
+      name: "Game",
+      mode: "game",
+      characterIds: [],
+      metadata: {
+        gameSessionStatus: "active",
+      },
+    } as unknown as Chat);
+    vi.mocked(llmApi.complete).mockResolvedValueOnce(
+      JSON.stringify({
+        type: "grid",
+        name: "Storm Road",
+        description: "A broken road in heavy rain.",
+        width: 2,
+        height: 2,
+        cells: [
+          { x: -10, y: 99, emoji: "🌧️", label: "Gate", discovered: false, terrain: "road" },
+          { x: "", y: false, emoji: "⛺", label: "Camp", discovered: true, terrain: "town" },
+        ],
+        partyPosition: { x: 99, y: 99 },
+      }),
+    );
+
+    const result = await gameApi.generateMap({
+      chatId: "chat-game",
+      locationType: "Road",
+      context: "Rain and broken carts.",
+      connectionId: "connection-map",
+    });
+
+    expect(result.map).toMatchObject({
+      type: "grid",
+      width: 2,
+      height: 2,
+      partyPosition: { x: 1, y: 0 },
+      cells: [
+        expect.objectContaining({ x: 0, y: 1, label: "Gate" }),
+        expect.objectContaining({ x: 1, y: 0, label: "Camp", discovered: true }),
+      ],
+    });
+  });
+
+  it("deduplicates generated node ids before saving node maps", async () => {
+    mockChat({
+      id: "chat-game",
+      name: "Game",
+      mode: "game",
+      characterIds: [],
+      metadata: {
+        gameSessionStatus: "active",
+      },
+    } as unknown as Chat);
+    vi.mocked(llmApi.complete).mockResolvedValueOnce(
+      JSON.stringify({
+        type: "node",
+        name: "Mirror Vault",
+        description: "Two mirrored rooms share the same model id.",
+        nodes: [
+          { id: "room", label: "Left Room", x: 25, y: 50, discovered: true },
+          { id: "room", label: "Right Room", x: 75, y: 50, discovered: false },
+        ],
+        edges: [{ from: "room", to: "room" }],
+        partyPosition: "missing",
+      }),
+    );
+
+    const result = await gameApi.generateMap({
+      chatId: "chat-game",
+      locationType: "Vault",
+      context: "Mirrors everywhere.",
+      connectionId: "connection-map",
+    });
+
+    expect(result.map).toMatchObject({
+      type: "node",
+      partyPosition: "room",
+      nodes: [
+        expect.objectContaining({ id: "room", label: "Left Room" }),
+        expect.objectContaining({ id: "room-2", label: "Right Room" }),
+      ],
+      edges: [{ from: "room", to: "room-2" }],
     });
   });
 });
