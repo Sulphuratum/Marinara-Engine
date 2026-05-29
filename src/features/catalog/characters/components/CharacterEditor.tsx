@@ -91,7 +91,7 @@ import { SpriteFrameEditor } from "../../../../shared/components/ui/SpriteFrameE
 import { SpriteWandCleanupEditor } from "../../../../shared/components/ui/sprite-wand-cleanup/SpriteWandCleanupEditor";
 import { ExportFormatDialog, type ExportFormatChoice } from "../../../../shared/components/ui/ExportFormatDialog";
 import type { CharacterCardVersion, CharacterData, RPGStatsConfig } from "../../../../engine/contracts/types/character";
-import { characterDataSchema } from "../../../../engine/contracts/schemas/character.schema";
+import { characterDataSchema, characterExtensionsSchema } from "../../../../engine/contracts/schemas/character.schema";
 import {
   parseTrackerCardColorConfig,
   serializeTrackerCardColorConfig,
@@ -240,9 +240,13 @@ export function CharacterEditor() {
       if (parsed.success) {
         setFormData(parsed.data as CharacterData);
       } else {
+        // Card failed top-level validation (e.g. missing name). Still normalize
+        // extensions through its own schema so nested defaults (talkativeness,
+        // fav, ...) exist and the editor's bare reads don't render NaN/undefined.
+        const ext = characterExtensionsSchema.safeParse(char.data.extensions ?? {});
         setFormData({
           ...char.data,
-          extensions: char.data.extensions ?? ({} as CharacterData["extensions"]),
+          extensions: (ext.success ? ext.data : {}) as CharacterData["extensions"],
         });
       }
     } else {
