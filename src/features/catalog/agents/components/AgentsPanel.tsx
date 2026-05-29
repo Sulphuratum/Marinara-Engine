@@ -252,7 +252,8 @@ export function AgentsPanel() {
         ) : (
           sortedRegexScripts.map((script) => {
             const placements = Array.isArray(script.placement) ? script.placement : [];
-            const enabled = script.enabled === "true";
+            // Stored as a boolean; tolerate the legacy string form too.
+            const enabled = script.enabled === true || script.enabled === "true";
             return (
               <div
                 key={script.id}
