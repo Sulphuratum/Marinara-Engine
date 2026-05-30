@@ -1018,6 +1018,59 @@ describe("assembleGenerationPrompt strict roles", () => {
     ]);
   });
 
+  it("preserves only the responding character as assistant in individual roleplay group history", async () => {
+    const storage = storageWithSectionsAndCharacters(
+      [
+        section({ id: "main", name: "main", role: "system", content: "Main rules.", sortOrder: 0 }),
+        section({
+          id: "history",
+          name: "chat_history",
+          role: "user",
+          markerConfig: { type: "chat_history" },
+          sortOrder: 1,
+        }),
+      ],
+      [
+        { id: "char-dottore", name: "Dottore", description: "Target scientist." },
+        { id: "char-pantalone", name: "Pantalone", description: "Banker." },
+      ],
+    );
+    const input = {
+      chat: {
+        id: "chat",
+        mode: "roleplay",
+        characterIds: ["char-dottore", "char-pantalone"],
+        metadata: { groupChatMode: "individual" },
+      },
+      storedMessages: [
+        { role: "assistant", characterId: "char-dottore", content: "Dottore opens.", contextKind: "history" },
+        { role: "assistant", characterId: "char-pantalone", content: "Pantalone replies.", contextKind: "history" },
+        { role: "user", content: "Mari answers.", contextKind: "history" },
+      ],
+      connection: {},
+      latestUserInput: "Mari answers.",
+    };
+
+    const dottoreAssembly = await assembleGenerationPrompt(storage, {
+      ...input,
+      request: { ...request, forCharacterId: "char-dottore" },
+    });
+    const pantaloneAssembly = await assembleGenerationPrompt(storage, {
+      ...input,
+      request: { ...request, forCharacterId: "char-pantalone" },
+    });
+
+    expect(dottoreAssembly.messages.filter((message) => message.contextKind === "history")).toMatchObject([
+      { role: "assistant", content: "Dottore opens." },
+      { role: "user", content: "Pantalone replies.\n\nMari answers." },
+    ]);
+    expect(pantaloneAssembly.messages.filter((message) => message.contextKind === "history")).toMatchObject([
+      { role: "user", content: "Dottore opens." },
+      { role: "assistant", content: "Pantalone replies." },
+      { role: "user", content: "Mari answers." },
+    ]);
+  });
+
   it("excludes stored reasoning from history by default", async () => {
     const assembly = await assembleGenerationPrompt(storageWithSections([]), {
       chat: { id: "chat", mode: "roleplay", metadata: {} },

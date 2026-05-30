@@ -8,6 +8,7 @@ export type WorldStateTarget = Partial<TrackerSnapshotTarget>;
 type ResolvedWorldStateTarget = { messageId: string; swipeIndex: number };
 
 const VISIBLE_TARGET_MESSAGE_LIMIT = 200;
+const VISIBLE_TARGET_MESSAGE_FIELDS = ["id", "role", "activeSwipeIndex", "swipeIndex", "createdAt"];
 const OPERATIONAL_PATCH_KEYS = new Set(["manual", "clearOverrides", "targetVisible"]);
 const MANUAL_OVERRIDE_FIELDS = ["date", "time", "location", "weather", "temperature"] as const;
 
@@ -132,6 +133,7 @@ async function visibleTargetContext(chatId: string): Promise<{
 }> {
   const messages = await storageApi.listChatMessages<Record<string, unknown>>(chatId, {
     limit: VISIBLE_TARGET_MESSAGE_LIMIT,
+    fields: VISIBLE_TARGET_MESSAGE_FIELDS,
   });
   const activeTargetKeys = new Set<string>();
   let target: ResolvedWorldStateTarget | null = null;

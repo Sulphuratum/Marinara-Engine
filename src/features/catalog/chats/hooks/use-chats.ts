@@ -55,6 +55,8 @@ export type { BulkChatExportFormat, ChatTranscriptExportFormat } from "../lib/ch
 const RECENT_MESSAGE_CONTENT_EDIT_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_CHAT_MESSAGE_PAGE_SIZE = 20;
 
+type MessageCountResult = { count: number };
+
 interface RecentMessageContentEdit {
   chatId: string;
   content: string;
@@ -79,6 +81,42 @@ function findCachedMessage(data: InfiniteData<Message[]> | undefined, messageId:
     if (found) return found;
   }
   return null;
+}
+
+function removeCachedMessages(
+  old: InfiniteData<Message[]> | undefined,
+  messageIds: Set<string>,
+): InfiniteData<Message[]> | undefined {
+  if (!old?.pages || messageIds.size === 0) return old;
+  let changed = false;
+  const pages = old.pages.map((page) => {
+    const next = page.filter((message) => !messageIds.has(message.id));
+    if (next.length !== page.length) changed = true;
+    return next;
+  });
+  return changed ? { ...old, pages } : old;
+}
+
+function updateCachedMessageCount(qc: QueryClient, chatId: string, delta: number) {
+  qc.setQueryData<MessageCountResult | undefined>(chatKeys.messageCount(chatId), (current) => {
+    if (!current || typeof current.count !== "number") return current;
+    return { ...current, count: Math.max(0, current.count + delta) };
+  });
+}
+
+function deletedCountFromResult(result: unknown): number | null {
+  if (!result || typeof result !== "object" || !("deleted" in result)) return null;
+  const deleted = (result as { deleted?: unknown }).deleted;
+  if (typeof deleted === "boolean") return deleted ? 1 : 0;
+  if (typeof deleted === "number" && Number.isFinite(deleted)) return Math.max(0, Math.floor(deleted));
+  return null;
+}
+
+function assertDeletedMessages(result: unknown, expectedCount: number) {
+  const deletedCount = deletedCountFromResult(result);
+  if (deletedCount !== null && deletedCount < expectedCount) {
+    throw new Error(expectedCount === 1 ? "Message was not found." : "Some selected messages were not found.");
+  }
 }
 
 function rememberRecentMessageContentEdit(
@@ -711,8 +749,30 @@ export function useCreateMessage(chatId: string | null) {
 export function useDeleteMessage(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageId: string) => storageApi.deleteChatMessage(messageId),
-    onSuccess: () => {
+    mutationFn: async (messageId: string) => {
+      if (!chatId) throw new Error("Chat was not found.");
+      const result = await chatCommandApi.bulkDeleteMessages(chatId, [messageId]);
+      assertDeletedMessages(result, 1);
+      return result;
+    },
+    onMutate: (messageId: string) => {
+      if (!chatId) return;
+      void qc.cancelQueries({ queryKey: chatKeys.messages(chatId), exact: true }).catch(() => undefined);
+      const previousMessages = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
+      const previousCount = qc.getQueryData<MessageCountResult>(chatKeys.messageCount(chatId));
+      forgetRecentMessageContentEdit(chatId, messageId);
+      qc.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) =>
+        removeCachedMessages(old, new Set([messageId])),
+      );
+      updateCachedMessageCount(qc, chatId, -1);
+      return { previousMessages, previousCount };
+    },
+    onError: (_err, _messageId, context) => {
+      if (!chatId) return;
+      if (context?.previousMessages) qc.setQueryData(chatKeys.messages(chatId), context.previousMessages);
+      if (context?.previousCount) qc.setQueryData(chatKeys.messageCount(chatId), context.previousCount);
+    },
+    onSettled: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
@@ -725,8 +785,31 @@ export function useDeleteMessage(chatId: string | null) {
 export function useDeleteMessages(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageIds: string[]) => chatCommandApi.bulkDeleteMessages(chatId, messageIds),
-    onSuccess: () => {
+    mutationFn: async (messageIds: string[]) => {
+      if (!chatId) throw new Error("Chat was not found.");
+      const uniqueIds = Array.from(new Set(messageIds.filter((id) => id.trim().length > 0)));
+      const result = await chatCommandApi.bulkDeleteMessages(chatId, uniqueIds);
+      assertDeletedMessages(result, uniqueIds.length);
+      return result;
+    },
+    onMutate: (messageIds: string[]) => {
+      if (!chatId) return;
+      const uniqueIds = Array.from(new Set(messageIds.filter((id) => id.trim().length > 0)));
+      const idSet = new Set(uniqueIds);
+      void qc.cancelQueries({ queryKey: chatKeys.messages(chatId), exact: true }).catch(() => undefined);
+      const previousMessages = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
+      const previousCount = qc.getQueryData<MessageCountResult>(chatKeys.messageCount(chatId));
+      for (const messageId of uniqueIds) forgetRecentMessageContentEdit(chatId, messageId);
+      qc.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) => removeCachedMessages(old, idSet));
+      updateCachedMessageCount(qc, chatId, -uniqueIds.length);
+      return { previousMessages, previousCount };
+    },
+    onError: (_err, _messageIds, context) => {
+      if (!chatId) return;
+      if (context?.previousMessages) qc.setQueryData(chatKeys.messages(chatId), context.previousMessages);
+      if (context?.previousCount) qc.setQueryData(chatKeys.messageCount(chatId), context.previousCount);
+    },
+    onSettled: () => {
       if (chatId) {
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });

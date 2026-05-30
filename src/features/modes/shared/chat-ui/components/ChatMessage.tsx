@@ -80,8 +80,117 @@ const MESSAGE_ACTION_ICON_SIZE = "1em";
 const MESSAGE_SWIPE_ICON_SIZE = "1.15em";
 const MESSAGE_EDIT_GESTURE_IGNORE_SELECTOR =
   "button, a, textarea, input, select, label, [role='button'], [contenteditable='true'], .mari-message-actions";
-const normalizeEditableQuotes = (value: string) =>
-  value.replace(/["\u201c\u201d\u201e\u201f]/g, '"').replace(/['\u2018\u2019\u201a\u201b]/g, "'");
+
+export function formatEditableMessageText(value: string, quoteFormat: QuoteFormat): string {
+  return formatTextQuotes(value, quoteFormat);
+}
+
+type GenerationLabelRecord = Record<string, unknown>;
+
+function generationRecord(value: unknown): GenerationLabelRecord | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as GenerationLabelRecord) : null;
+}
+
+function generationString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function generationNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string" || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function firstGenerationString(records: readonly GenerationLabelRecord[], keys: readonly string[]): string | null {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = generationString(record[key]);
+      if (value) return value;
+    }
+  }
+  return null;
+}
+
+function firstGenerationNumber(records: readonly GenerationLabelRecord[], keys: readonly string[]): number | null {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = generationNumber(record[key]);
+      if (value != null) return value;
+    }
+    const usage = generationRecord(record.usage);
+    if (!usage) continue;
+    for (const key of keys) {
+      const value = generationNumber(usage[key]);
+      if (value != null) return value;
+    }
+  }
+  return null;
+}
+
+export function formatGenerationLabelForMessage(
+  message: Message,
+  showModelName: boolean,
+  showTokenUsage: boolean,
+): string | null {
+  if (message.role === "user" || (!showModelName && !showTokenUsage)) return null;
+  const extra = generationRecord(message.extra);
+  const snapshot = generationRecord(extra?.generationPromptSnapshot);
+  const records = [
+    generationRecord(extra?.generationInfo),
+    generationRecord(snapshot?.generationInfo),
+    generationRecord((message as Message & { generationInfo?: unknown }).generationInfo),
+  ].filter((record): record is GenerationLabelRecord => !!record);
+  if (records.length === 0) return null;
+
+  const parts: string[] = [];
+  if (showModelName) {
+    const model = firstGenerationString(records, ["model", "modelName"]);
+    if (model) parts.push(model);
+  }
+  if (showTokenUsage) {
+    const tokensPrompt = firstGenerationNumber(records, [
+      "tokensPrompt",
+      "promptTokens",
+      "prompt_tokens",
+      "inputTokens",
+      "input_tokens",
+    ]);
+    const tokensCompletion = firstGenerationNumber(records, [
+      "tokensCompletion",
+      "completionTokens",
+      "completion_tokens",
+      "outputTokens",
+      "output_tokens",
+    ]);
+    const tokensCachedPrompt = firstGenerationNumber(records, [
+      "tokensCachedPrompt",
+      "cachedPromptTokens",
+      "cached_prompt_tokens",
+      "cacheReadInputTokens",
+      "cache_read_input_tokens",
+    ]);
+    const tokensCacheWritePrompt = firstGenerationNumber(records, [
+      "tokensCacheWritePrompt",
+      "cacheWritePromptTokens",
+      "cache_write_prompt_tokens",
+      "cacheCreationInputTokens",
+      "cache_creation_input_tokens",
+    ]);
+    const durationMs = firstGenerationNumber(records, ["durationMs", "duration_ms"]);
+
+    if (tokensPrompt != null || tokensCompletion != null) {
+      parts.push(tokensPrompt != null ? `${tokensPrompt}\u2192${tokensCompletion ?? "?"} tok` : `${tokensCompletion} tok`);
+    }
+    if ((tokensCachedPrompt ?? 0) > 0) parts.push(`cache hit ${tokensCachedPrompt!.toLocaleString()}`);
+    if ((tokensCacheWritePrompt ?? 0) > 0) parts.push(`cache write ${tokensCacheWritePrompt!.toLocaleString()}`);
+    if (durationMs != null) parts.push(`${(durationMs / 1000).toFixed(1)}s`);
+  }
+
+  return parts.length > 0 ? parts.join(" \u00b7 ") : null;
+}
 
 function HiddenFromAIBadge({
   roleplay,
@@ -127,11 +236,13 @@ function HiddenFromAIBadge({
 const EditTextarea = memo(function EditTextarea({
   initialContent,
   fontSize,
+  quoteFormat,
   onSave,
   onCancel,
 }: {
   initialContent: string;
   fontSize: string | number | undefined;
+  quoteFormat: QuoteFormat;
   onSave: (content: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
@@ -163,19 +274,19 @@ const EditTextarea = memo(function EditTextarea({
     setSaving(true);
     setError(null);
     try {
-      await onSave(normalizeEditableQuotes(ref.current.value));
+      await onSave(formatEditableMessageText(ref.current.value, quoteFormat));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not save edit.");
     } finally {
       setSaving(false);
     }
-  }, [onSave, saving]);
+  }, [onSave, quoteFormat, saving]);
 
   const handleInput = useCallback(
     (event: FormEvent<HTMLTextAreaElement>) => {
       const el = event.currentTarget;
       const raw = el.value;
-      const normalized = normalizeEditableQuotes(raw);
+      const normalized = formatEditableMessageText(raw, quoteFormat);
       if (normalized !== raw) {
         const start = el.selectionStart;
         const end = el.selectionEnd;
@@ -185,14 +296,14 @@ const EditTextarea = memo(function EditTextarea({
       }
       autoResize();
     },
-    [autoResize],
+    [autoResize, quoteFormat],
   );
 
   return (
     <div className="flex flex-col gap-2">
       <textarea
         ref={ref}
-        defaultValue={normalizeEditableQuotes(initialContent)}
+        defaultValue={formatEditableMessageText(initialContent, quoteFormat)}
         rows={1}
         onInput={handleInput}
         onKeyDown={(e) => {
@@ -849,6 +960,7 @@ export const ChatMessage = memo(function ChatMessage({
     theme,
     collapseHiddenMessages,
     editMessagesOnDoubleClick,
+    quoteFormat,
   } = useUIStore(
     useShallow((s) => ({
       chatFontSize: s.chatFontSize,
@@ -866,6 +978,7 @@ export const ChatMessage = memo(function ChatMessage({
       theme: s.theme,
       collapseHiddenMessages: s.summaryPopoverSettings.collapseHiddenMessages,
       editMessagesOnDoubleClick: s.editMessagesOnDoubleClick,
+      quoteFormat: s.quoteFormat,
     })),
   );
   const isGuided = guideGenerations;
@@ -1089,30 +1202,10 @@ export const ChatMessage = memo(function ChatMessage({
     [extra.attachments, message.chatId, message.id, qc],
   );
 
-  // Model name display
-  const _modelName = !isUser && showModelName ? (extra.generationInfo?.model ?? null) : null;
-  void _modelName;
-  const genInfo = !isUser && (showModelName || showTokenUsage) ? extra.generationInfo : null;
-  const genLabel = useMemo(() => {
-    if (!genInfo) return null;
-    const parts: string[] = [];
-    if (showModelName && genInfo.model) parts.push(genInfo.model);
-    if (showTokenUsage) {
-      if (genInfo.tokensPrompt != null || genInfo.tokensCompletion != null) {
-        const p = genInfo.tokensPrompt != null ? genInfo.tokensPrompt : null;
-        const c = genInfo.tokensCompletion ?? "?";
-        parts.push(p != null ? `${p}→${c} tok` : `${c} tok`);
-      }
-      if ((genInfo.tokensCachedPrompt ?? 0) > 0) {
-        parts.push(`cache hit ${genInfo.tokensCachedPrompt!.toLocaleString()}`);
-      }
-      if ((genInfo.tokensCacheWritePrompt ?? 0) > 0) {
-        parts.push(`cache write ${genInfo.tokensCacheWritePrompt!.toLocaleString()}`);
-      }
-      if (genInfo.durationMs != null) parts.push(`${(genInfo.durationMs / 1000).toFixed(1)}s`);
-    }
-    return parts.length > 0 ? parts.join(" · ") : null;
-  }, [genInfo, showModelName, showTokenUsage]);
+  const genLabel = useMemo(
+    () => formatGenerationLabelForMessage(message, showModelName, showTokenUsage),
+    [message, showModelName, showTokenUsage],
+  );
   // useLayoutEffect runs after DOM mutation but before browser paint — prevents visible scroll jump
   useLayoutEffect(() => {
     // Restore scroll position saved before the state change
@@ -1425,7 +1518,6 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Render content with dialogue highlighting (or HTML rendering)
   const text = typeof displayContent === "string" ? displayContent : message.content;
-  const quoteFormat = useUIStore((s) => s.quoteFormat);
   const isHtmlContent = HTML_TAG_RE.test(text);
   const htmlScopeClass = useMemo(() => {
     const suffix = message.id.replace(/[^a-zA-Z0-9_-]/g, "");
@@ -1528,6 +1620,7 @@ export const ChatMessage = memo(function ChatMessage({
     <EditTextarea
       initialContent={message.content}
       fontSize={chatFontSize}
+      quoteFormat={quoteFormat}
       onSave={handleSaveEdit}
       onCancel={handleCancelEdit}
     />
@@ -1656,6 +1749,14 @@ export const ChatMessage = memo(function ChatMessage({
                 <span className="h-px flex-1 bg-amber-400/20" />
                 {hiddenFromAIHeader}
                 Narrator
+                {genLabel && (
+                  <span
+                    className="max-w-[15.625rem] truncate text-[0.5625rem] font-medium normal-case tracking-normal text-amber-100/50"
+                    title={genLabel}
+                  >
+                    {genLabel}
+                  </span>
+                )}
                 <span className="h-px flex-1 bg-amber-400/20" />
               </div>
               {!isHiddenCollapsed && (
@@ -1809,7 +1910,7 @@ export const ChatMessage = memo(function ChatMessage({
                 </span>
                 <span className="text-[0.625rem] text-white/30">{formatTime(message.createdAt)}</span>
                 {genLabel && (
-                  <span className="text-[0.5625rem] text-white/25 italic truncate max-w-[15.625rem]" title={genLabel}>
+                  <span className="max-w-[15.625rem] truncate text-[0.5625rem] italic text-white/45" title={genLabel}>
                     {genLabel}
                   </span>
                 )}
@@ -2345,6 +2446,7 @@ export const ChatMessage = memo(function ChatMessage({
               <EditTextarea
                 initialContent={message.content}
                 fontSize={chatFontSize}
+                quoteFormat={quoteFormat}
                 onSave={handleSaveEdit}
                 onCancel={handleCancelEdit}
               />

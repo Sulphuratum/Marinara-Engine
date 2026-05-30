@@ -31,6 +31,10 @@ function stopSequences(parameters: JsonRecord): string[] | null {
   return stops.length > 0 ? stops.map((entry) => entry.trim()) : null;
 }
 
+function shouldShowThoughts(parameters: JsonRecord): boolean {
+  return boolish(parameters.showThoughts ?? parameters.show_thoughts, true);
+}
+
 function requestMaxTokens(connection: JsonRecord, parameters: JsonRecord, fallback = 1024): number {
   const requested =
     parameterNumber(parameters, ["maxTokens", "max_tokens", "maxOutputTokens", "max_output_tokens"]) ?? fallback;
@@ -224,7 +228,7 @@ function visibleAnthropicParameters(
   if (effort) {
     if (adaptiveThinking) {
       const thinking: Record<string, unknown> = { type: "adaptive" };
-      if (boolish(parameters.showThoughts, false)) thinking.display = "summarized";
+      if (shouldShowThoughts(parameters)) thinking.display = "summarized";
       body.thinking = thinking;
       body.output_config = { effort };
     } else {

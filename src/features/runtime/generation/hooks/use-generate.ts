@@ -228,20 +228,23 @@ function upsertCachedMessage(
   return true;
 }
 
-function runDeferredGenerationWork(label: string, task: () => Promise<void> | void): void {
-  const run = () => {
-    void Promise.resolve()
-      .then(task)
-      .catch((error) => console.warn(`[generation] ${label} failed`, error));
-  };
-  const idleWindow = window as Window & {
-    requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
-  };
-  if (typeof idleWindow.requestIdleCallback === "function") {
-    idleWindow.requestIdleCallback(run, { timeout: 1_500 });
-  } else {
-    window.setTimeout(run, 16);
-  }
+function runDeferredGenerationWork(label: string, task: () => Promise<void> | void): Promise<void> {
+  return new Promise((resolve) => {
+    const run = () => {
+      void Promise.resolve()
+        .then(task)
+        .catch((error) => console.warn(`[generation] ${label} failed`, error))
+        .finally(resolve);
+    };
+    const idleWindow = window as Window & {
+      requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number;
+    };
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      idleWindow.requestIdleCallback(run, { timeout: 1_500 });
+    } else {
+      window.setTimeout(run, 16);
+    }
+  });
 }
 
 function flushQueuedAgentDebugEntries(): void {
@@ -652,6 +655,22 @@ function trackerTargetFromMessagePayload(value: unknown): WorldStateTarget | nul
     messageId,
     swipeIndex: readNonNegativeInteger(record.activeSwipeIndex, fallbackSwipeIndex),
   };
+}
+
+function retryRefreshTargetFromCache(
+  queryClient: QueryClient,
+  chatId: string,
+  options?: Record<string, unknown>,
+): WorldStateTarget | null {
+  if (options?.lorebookKeeperBackfill === true) return null;
+  const cached = queryClient.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
+  const messages = cached?.pages.flat() ?? [];
+  if (messages.length === 0) return null;
+  const requestedId = readString(options?.forMessageId).trim();
+  const target = requestedId
+    ? messages.find((message) => readString(message.id).trim() === requestedId)
+    : [...messages].reverse().find((message) => readString(message.role).trim() === "assistant");
+  return target ? trackerTargetFromMessagePayload(target) : null;
 }
 
 async function refreshGameStateFromStorage(chatId: string, target?: WorldStateTarget | null) {
@@ -1406,6 +1425,7 @@ export function useGenerate() {
           // Full retry: clear everything; the result loop repopulates anything still failing.
           agentStore.clearFailedAgentTypes();
         }
+        const refreshTarget = retryRefreshTargetFromCache(queryClient, chatId, options);
         const { results, events } = await retryGenerationAgents(
           { storage: storageApi, llm: llmApi, integrations: integrationGateway, visuals: visualAssetsApi },
           {
@@ -1431,11 +1451,6 @@ export function useGenerate() {
             result.agentType;
           failedRetries.push(toAgentFailure({ agentType: result.agentType, agentName, error: result.error }));
         }
-        for (const result of results) {
-          runDeferredGenerationWork("agent retry result effects", () =>
-            applyAgentResultEffects(queryClient, chatId, result),
-          );
-        }
         if (failedRetries.length > 0) {
           toast.error(formatAgentFailuresToast(failedRetries), { duration: 10_000 });
         }
@@ -1452,11 +1467,19 @@ export function useGenerate() {
             toast.error(readString(data.error, "Illustration generation failed."));
           }
         }
-        runDeferredGenerationWork("agent retry refresh", async () => {
-          await refreshGameStateFromStorage(chatId);
-          await queryClient.invalidateQueries({ queryKey: ["agents"] });
-        });
+        const deferredTasks = results.map((result) =>
+          runDeferredGenerationWork("agent retry result effects", () =>
+            applyAgentResultEffects(queryClient, chatId, result),
+          ),
+        );
+        deferredTasks.push(
+          runDeferredGenerationWork("agent retry refresh", async () => {
+            await refreshGameStateFromStorage(chatId, refreshTarget);
+            await queryClient.invalidateQueries({ queryKey: ["agents"] });
+          }),
+        );
         scheduleChatQueryRefresh(queryClient, chatId);
+        await Promise.all(deferredTasks);
       } catch (error) {
         toast.error(errorMessage(error));
         throw error;

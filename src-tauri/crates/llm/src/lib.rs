@@ -3110,6 +3110,50 @@ data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text
     }
 
     #[test]
+    fn anthropic_stream_sse_emits_summarized_thinking_shape() {
+        let mut emitted = Vec::new();
+        let mut emit = |value: Value| {
+            emitted.push(value);
+            Ok(())
+        };
+
+        process_anthropic_sse_block(
+            r#"event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}"#,
+            &mut emit,
+        )
+        .expect("empty thinking block start should parse");
+        process_anthropic_sse_block(
+            r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"summary chunk"}}"#,
+            &mut emit,
+        )
+        .expect("summarized thinking delta should parse");
+        process_anthropic_sse_block(
+            r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"opaque"}}"#,
+            &mut emit,
+        )
+        .expect("signature delta should parse");
+        process_anthropic_sse_block(
+            r#"event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"answer"}}"#,
+            &mut emit,
+        )
+        .expect("text delta should parse");
+
+        assert_eq!(emitted.len(), 2);
+        assert_eq!(
+            emitted[0],
+            json!({ "type": "thinking", "text": "summary chunk", "data": "summary chunk" })
+        );
+        assert_eq!(
+            emitted[1],
+            json!({ "type": "token", "text": "answer", "data": "answer" })
+        );
+    }
+
+    #[test]
     fn claude_subscription_without_runtime_chat_uses_transcript_fold() {
         let request = LlmRequest {
             connection: test_connection(),

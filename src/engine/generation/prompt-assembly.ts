@@ -2281,9 +2281,10 @@ export async function assembleGenerationPrompt(
     messages = scopeIndividualGroupHistoryRoles(messages, individualGroupTarget);
   }
   const previewMessages = previewMessagesForPrompt(messages);
-  const strictRoleFormatting = boolish(promptParameters?.strictRoleFormatting, true) && chatMode === "roleplay";
-  messages = strictRoleFormatting ? enforceStrictRoles(messages) : mergeAdjacentMessages(messages);
-  if (!strictRoleFormatting && boolish(promptParameters?.squashSystemMessages, false)) {
+  const shouldEnforceStrictRoles =
+    boolish(promptParameters?.strictRoleFormatting, true) && chatMode === "roleplay" && !individualGroupTarget;
+  messages = shouldEnforceStrictRoles ? enforceStrictRoles(messages) : mergeAdjacentMessages(messages);
+  if (!shouldEnforceStrictRoles && boolish(promptParameters?.squashSystemMessages, false)) {
     messages = squashLeadingSystemMessages(messages);
   }
   if (boolish(promptParameters?.singleUserMessage, false)) {

@@ -32,6 +32,46 @@ describe("providerVisibleLlmParameters", () => {
     expect(info.showThoughts).toBe(true);
   });
 
+  it("requests Anthropic summarized thinking by default for adaptive models", () => {
+    const visible = providerVisibleLlmParameters(
+      { provider: "anthropic", model: "claude-opus-4-8" },
+      {
+        maxTokens: 4096,
+        reasoningEffort: "xhigh",
+      },
+      { stream: true },
+    );
+
+    expect(visible).toMatchObject({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "xhigh" },
+    });
+
+    const info = generationInfoFromVisibleParameters({ provider: "anthropic", model: "claude-opus-4-8" }, visible);
+    expect(info.showThoughts).toBe(true);
+  });
+
+  it("omits Anthropic summarized thinking display when thoughts are disabled", () => {
+    const visible = providerVisibleLlmParameters(
+      { provider: "anthropic", model: "claude-opus-4-8" },
+      {
+        maxTokens: 4096,
+        reasoningEffort: "xhigh",
+        showThoughts: false,
+      },
+      { stream: true },
+    );
+
+    expect(visible).toMatchObject({
+      thinking: { type: "adaptive" },
+      output_config: { effort: "xhigh" },
+    });
+    expect(visible.thinking).not.toHaveProperty("display");
+
+    const info = generationInfoFromVisibleParameters({ provider: "anthropic", model: "claude-opus-4-8" }, visible);
+    expect(info.showThoughts).toBe(false);
+  });
+
   it("strips OpenRouter Claude Opus sampling parameters from the peekable request shape", () => {
     const visible = providerVisibleLlmParameters(
       { provider: "openrouter", model: "anthropic/claude-opus-4-8", openrouterProvider: "anthropic" },

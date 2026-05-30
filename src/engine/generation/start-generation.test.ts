@@ -71,7 +71,7 @@ function generationDepsForChat(
     { id: "assistant-1", chatId: "chat-1", role: "assistant", content: "What now?" },
   ];
   const messagesById = new Map(initialMessages.map((message) => [String(message.id), message]));
-  const listChatMessages = vi.fn(async () =>
+  const listChatMessages = vi.fn(async (_chatId: string, _options?: Parameters<StorageGateway["listChatMessages"]>[1]) =>
     listChatMessages.mock.calls.length > 1 && options.messagesAfterSave ? options.messagesAfterSave : initialMessages,
   );
   const streamedRequests: unknown[] = [];
@@ -211,6 +211,45 @@ const illustratorDrawData = {
   reason: "Important visual beat",
   prompt: "moonlit tavern confrontation",
 };
+
+function expectGenerationMessageProjection(
+  options: Parameters<StorageGateway["listChatMessages"]>[1],
+  expected: Partial<NonNullable<Parameters<StorageGateway["listChatMessages"]>[1]>> = {},
+) {
+  expect(options).toEqual(
+    expect.objectContaining({
+      ...expected,
+      fields: expect.arrayContaining(["id", "role", "content", "activeSwipeIndex", "swipeCount", "extra"]),
+      fieldSelections: expect.objectContaining({
+        extra: expect.arrayContaining(["hiddenFromAI", "thinking", "contextInjections"]),
+      }),
+    }),
+  );
+  expect(options?.fields).not.toContain("swipes");
+}
+
+describe("generation message loading", () => {
+  it("loads projected active-swipe history fields instead of full swipe payloads", async () => {
+    const { deps, listChatMessages } = generationDepsForChat({
+      initialMessages: [
+        {
+          id: "assistant-1",
+          chatId: "chat-1",
+          role: "assistant",
+          content: "What now?",
+          activeSwipeIndex: 3,
+          swipes: [{ content: "large inactive retry", extra: { generationPromptSnapshot: { messages: [] } } }],
+          extra: { hiddenFromAI: false, generationPromptSnapshotsBySwipe: { "3": { messages: [] } } },
+        },
+      ],
+    });
+
+    await drainGeneration(startGeneration(deps, { chatId: "chat-1", userMessage: "continue" }));
+
+    const options = listChatMessages.mock.calls[0]?.[1];
+    expectGenerationMessageProjection(options);
+  });
+});
 
 describe("startGeneration concluded roleplay guard", () => {
   it("rejects concluded roleplay scenes before saving user messages", async () => {
@@ -370,7 +409,7 @@ describe("startGeneration chat message loading", () => {
     );
 
     expect(listChatMessages).toHaveBeenCalledTimes(1);
-    expect(listChatMessages).toHaveBeenCalledWith("chat-1", undefined);
+    expectGenerationMessageProjection(listChatMessages.mock.calls[0]?.[1]);
     expect(streamedRequests).toHaveLength(1);
     expect(streamedRequests[0]).toMatchObject({
       messages: expect.arrayContaining([expect.objectContaining({ role: "user", content: "hello" })]),
@@ -504,7 +543,7 @@ describe("startGeneration chat message loading", () => {
       }),
     );
 
-    expect(listChatMessages).toHaveBeenCalledWith("chat-1", { limit: 40 });
+    expectGenerationMessageProjection(listChatMessages.mock.calls[0]?.[1], { limit: 40 });
     const prompt = JSON.stringify(streamedRequests[0]);
     expect(prompt).toContain("fresh turn");
     expect(prompt).not.toContain("Old context should stay out.");
@@ -1218,7 +1257,7 @@ describe("startGeneration generation replay metadata", () => {
 
     await drainGeneration(startGeneration(deps, { chatId: "chat-1", regenerateMessageId: "assistant-1" }));
 
-    expect(listChatMessages).toHaveBeenCalledWith("chat-1", undefined);
+    expectGenerationMessageProjection(listChatMessages.mock.calls[0]?.[1]);
     expect(streamedRequests[0]).toMatchObject({
       messages: expect.arrayContaining([expect.objectContaining({ role: "user", content: "Keep the reply clipped." })]),
     });
