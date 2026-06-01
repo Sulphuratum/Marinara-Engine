@@ -27,6 +27,7 @@ import { imageGenerationApi, spriteApi } from "../../../../shared/api/image-gene
 import { integrationGateway } from "../../../../shared/api/integration-gateway";
 import { spotifyApi } from "../../../../shared/api/integration-utility-api";
 import { llmApi } from "../../../../shared/api/llm-api";
+import { chatCommandApi } from "../../../../shared/api/chat-command-api";
 import { storageApi } from "../../../../shared/api/storage-api";
 import {
   createLorebookEntrySchema,
@@ -214,6 +215,7 @@ type ChatMessage = {
   id?: string;
   role?: string;
   content?: string;
+  createdAt?: string;
   [key: string]: unknown;
 };
 
@@ -335,6 +337,49 @@ async function listMessages(chatId: string, limit?: number): Promise<ChatMessage
   return storageApi.list<ChatMessage>("messages", { filters: { chatId }, limit });
 }
 
+const RESTORED_CHECKPOINT_ANCHOR_META_KEY = "gameRestoredCheckpointAnchorMessageId";
+const RESTORED_CHECKPOINT_LEGACY_META_KEY = "gameRestoredCheckpointLegacyAnchorMissing";
+
+function latestMessage(messages: ChatMessage[]): ChatMessage | null {
+  let fallback: ChatMessage | null = null;
+  let latestTimed: { message: ChatMessage; createdAt: string } | null = null;
+  for (const message of messages) {
+    const id = message.id;
+    if (typeof id !== "string" || !id.trim()) continue;
+    fallback = message;
+    const createdAt = typeof message.createdAt === "string" ? message.createdAt : "";
+    if (!createdAt) continue;
+    if (!latestTimed || createdAt >= latestTimed.createdAt) {
+      latestTimed = { message, createdAt };
+    }
+  }
+  return latestTimed?.message ?? fallback;
+}
+
+function messageId(message: ChatMessage | null | undefined): string {
+  const id = message?.id;
+  return typeof id === "string" ? id.trim() : "";
+}
+
+function isCheckpointRestoreMessage(message: ChatMessage | null | undefined): boolean {
+  return message?.role === "system" && /^\[Checkpoint restored:/i.test(String(message.content ?? "").trimStart());
+}
+
+function checkpointAnchorFromMeta(meta: Record<string, unknown>, latest: ChatMessage | null): string {
+  if (!isCheckpointRestoreMessage(latest)) return messageId(latest);
+  const restoredAnchor = meta[RESTORED_CHECKPOINT_ANCHOR_META_KEY];
+  if (typeof restoredAnchor === "string" && restoredAnchor.trim()) return restoredAnchor.trim();
+  if (meta[RESTORED_CHECKPOINT_LEGACY_META_KEY] === true) return "";
+  return messageId(latest);
+}
+
+function checkpointSnapshotMetadata(meta: Record<string, unknown>): Record<string, unknown> {
+  const snapshotMeta = { ...meta };
+  delete snapshotMeta[RESTORED_CHECKPOINT_ANCHOR_META_KEY];
+  delete snapshotMeta[RESTORED_CHECKPOINT_LEGACY_META_KEY];
+  return snapshotMeta;
+}
+
 async function createChatRecord(value: Record<string, unknown>): Promise<Chat> {
   return storageApi.create<Chat>("chats", value);
 }
@@ -349,18 +394,21 @@ async function createGameCheckpoint(data: {
   triggerType: string;
 }): Promise<{ id: string }> {
   const chat = await getChat(data.chatId);
+  const meta = chatMeta(chat);
+  const messages = await listMessages(data.chatId);
+  const messageId = checkpointAnchorFromMeta(meta, latestMessage(messages));
   const snapshot = await storageApi.create<{ id: string }>("game-state-snapshots", {
     chatId: data.chatId,
-    messageId: null,
+    messageId: messageId || null,
     gameState: (chat as { gameState?: unknown }).gameState ?? {},
-    metadata: chatMeta(chat),
+    metadata: checkpointSnapshotMetadata(meta),
   });
   let record: { id: string };
   try {
     record = await storageApi.create<{ id: string }>("game-checkpoints", {
       chatId: data.chatId,
       snapshotId: snapshot.id,
-      messageId: "",
+      messageId,
       label: data.label || "Checkpoint",
       triggerType: data.triggerType || "manual",
       location: null,
@@ -2343,10 +2391,13 @@ export const gameApi = {
   },
 
   async loadCheckpoint(data: { chatId: string; checkpointId: string }) {
-    const checkpoint = await storageApi.get<{ id: string; chatId?: string; label?: string; snapshotId?: string }>(
-      "game-checkpoints",
-      data.checkpointId,
-    );
+    const checkpoint = await storageApi.get<{
+      id: string;
+      chatId?: string;
+      label?: string;
+      snapshotId?: string;
+      messageId?: string | null;
+    }>("game-checkpoints", data.checkpointId);
     if (!checkpoint) throw new Error("Checkpoint was not found.");
     if (checkpoint.chatId !== data.chatId) throw new Error("Checkpoint does not belong to this chat.");
     if (!checkpoint.snapshotId) throw new Error("Checkpoint is missing its state snapshot.");
@@ -2358,9 +2409,14 @@ export const gameApi = {
     }>("game-state-snapshots", checkpoint.snapshotId);
     if (!snapshot) throw new Error("Checkpoint snapshot was not found.");
     if (snapshot.chatId !== data.chatId) throw new Error("Checkpoint snapshot does not belong to this chat.");
+    const checkpointAnchor = typeof checkpoint.messageId === "string" ? checkpoint.messageId.trim() : "";
     await patchChat(data.chatId, {
       gameState: snapshot.gameState ?? {},
-      metadata: snapshot.metadata ?? {},
+      metadata: {
+        ...(snapshot.metadata ?? {}),
+        [RESTORED_CHECKPOINT_ANCHOR_META_KEY]: checkpointAnchor || null,
+        [RESTORED_CHECKPOINT_LEGACY_META_KEY]: !checkpointAnchor,
+      },
     });
     const message = await createChatMessage(data.chatId, {
       role: "system",
@@ -2368,6 +2424,44 @@ export const gameApi = {
       content: `[Checkpoint restored: ${checkpoint.label || "Checkpoint"}]`,
     });
     return { ok: true, messageId: message.id, gameState: snapshot.gameState ?? {}, metadata: snapshot.metadata ?? {} };
+  },
+
+  async branchFromCheckpoint(data: { chatId: string; checkpointId: string }): Promise<Chat> {
+    const checkpoint = await storageApi.get<{
+      id: string;
+      chatId?: string;
+      label?: string;
+      snapshotId?: string;
+      messageId?: string | null;
+    }>("game-checkpoints", data.checkpointId);
+    if (!checkpoint) throw new Error("Checkpoint was not found.");
+    if (checkpoint.chatId !== data.chatId) throw new Error("Checkpoint does not belong to this chat.");
+    if (!checkpoint.snapshotId) throw new Error("Checkpoint is missing its state snapshot.");
+    const messageId = typeof checkpoint.messageId === "string" ? checkpoint.messageId.trim() : "";
+    if (!messageId) {
+      throw new Error(
+        "This checkpoint was saved before branch anchors were recorded. Load it, save a new checkpoint, then branch from that checkpoint.",
+      );
+    }
+    const snapshot = await storageApi.get<{
+      id: string;
+      chatId?: string;
+      gameState?: unknown;
+      metadata?: Record<string, unknown>;
+    }>("game-state-snapshots", checkpoint.snapshotId);
+    if (!snapshot) throw new Error("Checkpoint snapshot was not found.");
+    if (snapshot.chatId !== data.chatId) throw new Error("Checkpoint snapshot does not belong to this chat.");
+    const branch = await chatCommandApi.branch<Chat>(data.chatId, messageId);
+    return patchChat(branch.id, {
+      gameState: snapshot.gameState ?? {},
+      metadata: {
+        ...(snapshot.metadata ?? {}),
+        branchedFromCheckpointId: checkpoint.id,
+        branchedFromCheckpointLabel: checkpoint.label ?? "Checkpoint",
+        [RESTORED_CHECKPOINT_ANCHOR_META_KEY]: null,
+        [RESTORED_CHECKPOINT_LEGACY_META_KEY]: null,
+      },
+    });
   },
 
   async deleteCheckpoint(id: string) {
