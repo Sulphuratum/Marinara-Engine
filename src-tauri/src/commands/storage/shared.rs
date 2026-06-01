@@ -575,7 +575,7 @@ pub(crate) fn normalize_typed_json_fields(
             normalize_nullable_json_object_fields(object, &["snapshot", "metadata"])?;
         }
         "chat-presets" => {
-            normalize_json_object_fields(object, &["parameters"])?;
+            normalize_json_object_fields(object, &["parameters", "settings"])?;
             normalize_boolish_fields(object, &["isDefault", "default", "isActive", "active"]);
         }
         "prompts" => {
@@ -896,6 +896,24 @@ pub(crate) fn with_entity_defaults(collection: &str, body: Value) -> AppResult<V
                 .or_insert_with(|| json!({}));
             object
                 .entry("isDefault".to_string())
+                .or_insert(Value::Bool(false));
+        }
+        "chat-presets" => {
+            normalize_typed_json_fields(collection, &mut object)?;
+            object
+                .entry("settings".to_string())
+                .or_insert_with(|| json!({}));
+            object
+                .entry("isDefault".to_string())
+                .or_insert(Value::Bool(false));
+            object
+                .entry("default".to_string())
+                .or_insert(Value::Bool(false));
+            object
+                .entry("isActive".to_string())
+                .or_insert(Value::Bool(false));
+            object
+                .entry("active".to_string())
                 .or_insert(Value::Bool(false));
         }
         "prompt-sections" | "prompt-variables" => {

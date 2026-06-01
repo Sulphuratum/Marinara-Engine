@@ -1,6 +1,6 @@
 use super::{
     avatars, characters, chats, connection_secrets, game_state_snapshots, lorebook_images,
-    media_uploads, shared,
+    media_uploads, prompts, shared,
 };
 use crate::builtins::is_protected_record;
 use crate::state::AppState;
@@ -263,6 +263,9 @@ fn storage_update_inner(
     if entity == "characters" {
         return characters::update_character(state, &id, patch);
     }
+    if entity == "chat-presets" {
+        return patch_chat_preset(state, &id, patch);
+    }
     validate_connection_folder_for_patch(state, &entity, &patch)?;
     let updated = if entity == "connections" {
         connection_secrets::patch_connection(
@@ -473,6 +476,11 @@ pub(crate) fn delete_entity(
             "Protected records cannot be deleted",
         ));
     }
+    if entity == "chat-presets" && chat_preset_is_default_id(state, id)? {
+        return Err(AppError::invalid_input(
+            "Default chat presets cannot be deleted",
+        ));
+    }
     let existing = owned_record_for_delete(state, entity, id)?;
     let message_chat_id = if entity == "messages" {
         existing
@@ -487,6 +495,14 @@ pub(crate) fn delete_entity(
     if deleted {
         if entity == "lorebooks" {
             delete_lorebook_children(state, id)?;
+        }
+        if entity == "prompts" {
+            prompts::delete_prompt_preset_children(state, id)?;
+        }
+        if entity == "chat-presets" {
+            if let Some(record) = existing.as_ref() {
+                activate_default_chat_preset_if_needed(state, record)?;
+            }
         }
         if entity == "connection-folders" {
             unfile_connections_in_folder(state, id)?;
@@ -596,9 +612,8 @@ fn owned_record_for_delete(
     id: &str,
 ) -> Result<Option<Value>, AppError> {
     match entity {
-        "characters" | "personas" | "lorebooks" | "messages" | "gallery" | "character-gallery" => {
-            state.storage.get(entity, id)
-        }
+        "characters" | "personas" | "lorebooks" | "messages" | "gallery" | "character-gallery"
+        | "chat-presets" => state.storage.get(entity, id),
         _ => Ok(None),
     }
 }
@@ -636,6 +651,12 @@ pub(crate) fn duplicate_entity(
     if entity == "characters" {
         return characters::duplicate_character(state, id);
     }
+    if entity == "prompts" {
+        return prompts::duplicate_prompt_preset(state, id);
+    }
+    if entity == "chat-presets" {
+        return duplicate_chat_preset(state, id);
+    }
     let duplicated = shared::duplicate_record(state, entity, id)?;
     if entity == "connections" {
         let mut masked = duplicated;
@@ -643,6 +664,107 @@ pub(crate) fn duplicate_entity(
         return Ok(masked);
     }
     Ok(duplicated)
+}
+
+fn patch_chat_preset(state: &AppState, id: &str, patch: Value) -> Result<Value, AppError> {
+    let existing = shared::get_required(state, "chat-presets", id)?;
+    let normalized = shared::normalize_update_patch("chat-presets", patch)?;
+    if chat_preset_is_default(&existing) && chat_preset_patch_mutates_default_fields(&normalized) {
+        return Err(AppError::invalid_input(
+            "Default chat presets cannot be updated",
+        ));
+    }
+    state.storage.patch("chat-presets", id, normalized)
+}
+
+fn duplicate_chat_preset(state: &AppState, id: &str) -> Result<Value, AppError> {
+    let mut record = shared::get_required(state, "chat-presets", id)?;
+    let object = record
+        .as_object_mut()
+        .ok_or_else(|| AppError::invalid_input("Chat preset is not an object"))?;
+    object.remove("id");
+    if let Some(name) = object
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        object.insert("name".to_string(), Value::String(format!("{name} Copy")));
+    }
+    object.insert("isDefault".to_string(), Value::Bool(false));
+    object.insert("default".to_string(), Value::Bool(false));
+    object.insert("isActive".to_string(), Value::Bool(false));
+    object.insert("active".to_string(), Value::Bool(false));
+    state.storage.create("chat-presets", record)
+}
+
+fn chat_preset_patch_mutates_default_fields(patch: &Value) -> bool {
+    let Some(object) = patch.as_object() else {
+        return true;
+    };
+    object
+        .keys()
+        .any(|key| !matches!(key.as_str(), "isActive" | "active" | "updatedAt"))
+}
+
+fn chat_preset_is_default_id(state: &AppState, id: &str) -> Result<bool, AppError> {
+    Ok(state
+        .storage
+        .get("chat-presets", id)?
+        .as_ref()
+        .is_some_and(chat_preset_is_default))
+}
+
+fn chat_preset_is_default(record: &Value) -> bool {
+    value_truthy(record.get("isDefault")) || value_truthy(record.get("default"))
+}
+
+fn chat_preset_is_active(record: &Value) -> bool {
+    value_truthy(record.get("isActive")) || value_truthy(record.get("active"))
+}
+
+fn value_truthy(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::String(value)) => {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            )
+        }
+        Some(Value::Number(value)) => value.as_i64().is_some_and(|number| number != 0),
+        _ => false,
+    }
+}
+
+fn activate_default_chat_preset_if_needed(
+    state: &AppState,
+    deleted: &Value,
+) -> Result<(), AppError> {
+    if !chat_preset_is_active(deleted) {
+        return Ok(());
+    }
+    let Some(mode) = deleted.get("mode").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let default = state.storage.list("chat-presets")?.into_iter().find(|row| {
+        row.get("mode").and_then(Value::as_str) == Some(mode) && chat_preset_is_default(row)
+    });
+    let Some(default_id) = default
+        .as_ref()
+        .and_then(|row| row.get("id"))
+        .and_then(Value::as_str)
+    else {
+        return Ok(());
+    };
+    state.storage.patch(
+        "chat-presets",
+        default_id,
+        json!({
+            "isActive": true,
+            "active": true
+        }),
+    )?;
+    Ok(())
 }
 
 fn compare_json_values(left: Option<&Value>, right: Option<&Value>) -> std::cmp::Ordering {
