@@ -38,6 +38,7 @@ import {
   timelineMessageProjection,
 } from "../../../catalog/chats/index";
 import { characterKeys } from "../../../catalog/characters/index";
+import { personaKeys } from "../../../catalog/personas/index";
 import {
   applyLorebookKeeperUpdate,
   buildPendingLorebookUpdates,
@@ -49,6 +50,7 @@ import {
   type GenerationReplayInput,
   type GenerationReplay,
 } from "../../../../engine/generation/generation-replay";
+import { findPersonaSnapshotForChat } from "../../../../engine/generation/persona-snapshot";
 import { readNonNegativeInteger } from "../../../../engine/generation/runtime-records";
 import {
   applyQuestUpdatesToPlayerStats,
@@ -81,6 +83,18 @@ const AGENT_DEBUG_FLUSH_CONTINUE_DELAY_MS = 16;
 const scheduledChatRefreshTimers = new Map<string, number>();
 const queuedAgentDebugEntries: Array<Omit<AgentDebugEntry, "timestamp"> & { timestamp?: number }> = [];
 let agentDebugFlushTimer: number | null = null;
+
+function eventCharacters(event: StreamEvent): string[] {
+  const value = parseMaybeRecord(event.data).characters;
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && !!entry.trim())
+    : [];
+}
+
+function characterLabel(names: string[], fallback = "Character"): string {
+  if (names.length === 1) return names[0]!;
+  return names.length > 1 ? names.join(", ") : fallback;
+}
 
 function errorMessage(error: unknown): string {
   if (error instanceof ApiError) return error.message;
@@ -131,11 +145,42 @@ function sortMessagesByCreatedAt(messages: Message[]): Message[] {
   });
 }
 
-function optimisticUserMessage(args: GenerateArgs): Message | null {
+function addPersonaRows(target: unknown[], rows: unknown): void {
+  if (Array.isArray(rows)) {
+    target.push(...rows.filter(isRecord));
+  } else if (isRecord(rows)) {
+    target.push(rows);
+  }
+}
+
+function cachedChatForPersonaSnapshot(queryClient: QueryClient, chatId: string): unknown {
+  const detail = queryClient.getQueryData<Chat>(chatKeys.detail(chatId));
+  if (detail) return detail;
+  const list = queryClient.getQueryData<Chat[]>(chatKeys.list());
+  return Array.isArray(list) ? list.find((chat) => readString(chat.id).trim() === chatId) : null;
+}
+
+function cachedPersonaSnapshot(queryClient: QueryClient, chatId: string) {
+  const chat = cachedChatForPersonaSnapshot(queryClient, chatId);
+  const chatRecord = isRecord(chat) ? chat : {};
+  const personaId = readString(chatRecord.personaId).trim();
+  const personas: unknown[] = [];
+  addPersonaRows(personas, queryClient.getQueryData(personaKeys.list));
+  addPersonaRows(personas, queryClient.getQueryData(personaKeys.summaries));
+  addPersonaRows(personas, queryClient.getQueryData(personaKeys.active));
+  if (personaId) {
+    addPersonaRows(personas, queryClient.getQueryData(personaKeys.detail(personaId)));
+    addPersonaRows(personas, queryClient.getQueryData(personaKeys.summaryDetail(personaId)));
+  }
+  return findPersonaSnapshotForChat(personas, chat);
+}
+
+function optimisticUserMessage(queryClient: QueryClient, args: GenerateArgs): Message | null {
   if (args.impersonate === true || readString(args.regenerateMessageId).trim()) return null;
   const content = readString(args.userMessage).trim() || readString(args.message).trim();
   if (!content) return null;
   const attachments = Array.isArray(args.attachments) ? args.attachments : [];
+  const personaSnapshot = cachedPersonaSnapshot(queryClient, args.chatId);
   const createdAt = new Date().toISOString();
   return {
     id: `__optimistic_${Date.now()}`,
@@ -149,6 +194,7 @@ function optimisticUserMessage(args: GenerateArgs): Message | null {
       isGenerated: false,
       tokenCount: null,
       generationInfo: null,
+      personaSnapshot,
       ...(attachments.length ? { attachments } : {}),
     },
     createdAt,
@@ -169,7 +215,7 @@ async function assertChatCanGenerate(queryClient: QueryClient, chatId: string) {
 }
 
 function insertOptimisticUserMessage(queryClient: QueryClient, args: GenerateArgs) {
-  const optimistic = optimisticUserMessage(args);
+  const optimistic = optimisticUserMessage(queryClient, args);
   if (!optimistic) return;
   queryClient.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(args.chatId), (old) => {
     if (!old?.pages?.length) return old;
@@ -943,6 +989,8 @@ export async function runGenerationWithUi(
   useAgentStore.getState().setProcessing(true);
 
   let received = "";
+  let receivedAnyContent = false;
+  let receivedTurnContent = false;
   let receivedThinking = false;
   let visibleStreamText = "";
   let committedStreamText = "";
@@ -1107,7 +1155,37 @@ export async function runGenerationWithUi(
     await flushVisibleStreamText();
   };
 
+  const resetLiveGenerationBuffers = () => {
+    cancelTypewriterFrame();
+    received = "";
+    receivedTurnContent = false;
+    receivedThinking = false;
+    visibleStreamText = "";
+    committedStreamText = "";
+    lastStreamBufferCommitAt = 0;
+    thinkingText = "";
+    committedThinkingText = "";
+    lastThinkingBufferCommitAt = null;
+    pendingReveal = "";
+    typewriterActive = false;
+    lastTypewriterPaintAt = 0;
+    typewriterRemainder = 0;
+    resolveAllRevealWaiters();
+    useChatStore.getState().setStreamBuffer("", chatId);
+    useChatStore.getState().setThinkingBuffer("", chatId);
+  };
+
   const ownsChatController = () => useChatStore.getState().abortControllers.get(chatId) === controller;
+
+  const clearChatAvailabilityState = () => {
+    const state = useChatStore.getState();
+    state.setPerChatTyping(chatId, null);
+    state.setPerChatDelayed(chatId, null);
+    if (state.activeChatId === chatId) {
+      state.setTypingCharacterName(null);
+      state.setDelayedCharacterInfo(null);
+    }
+  };
 
   const queueAgentResultEffect = (rawResult: unknown) => {
     pendingAgentResultEffects.push(rawResult);
@@ -1131,6 +1209,7 @@ export async function runGenerationWithUi(
   };
 
   let foregroundGenerationReleased = false;
+  let groupTurnActive = false;
 
   const releaseForegroundGenerationUi = () => {
     if (foregroundGenerationReleased) return;
@@ -1139,11 +1218,11 @@ export async function runGenerationWithUi(
     foregroundGenerationReleased = true;
     state.setAbortController(chatId, null);
     state.setMariPhase(chatId, "idle");
+    clearChatAvailabilityState();
     if (state.streamingChatId === chatId) {
       state.setStreaming(false, chatId);
       state.setRegenerateMessageId(null);
       state.setGenerationPhase(null);
-      state.setTypingCharacterName(null);
       state.setStreamingCharacterId(null);
     }
     if (useChatStore.getState().abortControllers.size === 0) {
@@ -1178,9 +1257,9 @@ export async function runGenerationWithUi(
           if (!foregroundGenerationReleased && typeof event.data === "string") {
             if (!receivedThinking) {
               receivedThinking = true;
+              clearChatAvailabilityState();
               const state = useChatStore.getState();
-              state.setTypingCharacterName(null);
-              state.setGenerationPhase("Thinking...");
+              if (state.activeChatId === chatId) state.setGenerationPhase("Thinking...");
               state.setMariPhase(chatId, "thinking");
             }
             appendThinkingText(event.data);
@@ -1189,6 +1268,12 @@ export async function runGenerationWithUi(
         case "token":
         case "delta":
           if (!foregroundGenerationReleased && typeof event.data === "string") {
+            const firstVisibleToken = !receivedTurnContent;
+            receivedTurnContent = true;
+            receivedAnyContent = true;
+            if (firstVisibleToken) {
+              clearChatAvailabilityState();
+            }
             received += event.data;
             enqueueVisibleStreamText(event.data);
           }
@@ -1199,7 +1284,7 @@ export async function runGenerationWithUi(
             if (event.type === "user_message") await flushLiveGenerationBuffers();
             upsertCachedMessage(queryClient, chatId, event.data);
             scheduleChatQueryRefresh(queryClient, chatId);
-            releaseForegroundGenerationUi();
+            if (event.type !== "user_message") releaseForegroundGenerationUi();
             drainAgentResultEffects();
           }
           break;
@@ -1210,10 +1295,61 @@ export async function runGenerationWithUi(
             scheduleChatQueryRefresh(queryClient, chatId);
             const trackerTarget = trackerTargetFromMessagePayload(event.data);
             runDeferredGenerationWork("game state refresh", () => refreshGameStateFromStorage(chatId, trackerTarget));
-            releaseForegroundGenerationUi();
+            if (groupTurnActive) {
+              resetLiveGenerationBuffers();
+            } else {
+              releaseForegroundGenerationUi();
+            }
             drainAgentResultEffects();
           }
           break;
+        case "group_turn": {
+          groupTurnActive = true;
+          await flushLiveGenerationBuffers();
+          resetLiveGenerationBuffers();
+          const data = parseMaybeRecord(event.data);
+          const characterId = readString(data.characterId).trim();
+          const characterName = readString(data.characterName).trim();
+          if (useChatStore.getState().activeChatId === chatId) {
+            useChatStore.getState().setStreamingCharacterId(characterId || null);
+          }
+          if (characterName) {
+            const state = useChatStore.getState();
+            state.setPerChatTyping(chatId, characterName);
+            if (state.activeChatId === chatId) state.setTypingCharacterName(characterName);
+          }
+          break;
+        }
+        case "typing": {
+          const label = characterLabel(eventCharacters(event));
+          const state = useChatStore.getState();
+          state.setPerChatTyping(chatId, label);
+          state.setPerChatDelayed(chatId, null);
+          if (state.activeChatId === chatId) {
+            state.setDelayedCharacterInfo(null);
+            state.setTypingCharacterName(label);
+          }
+          break;
+        }
+        case "delayed": {
+          const label = characterLabel(eventCharacters(event));
+          const status = readString(parseMaybeRecord(event.data).status, "idle");
+          const info = { name: label, status };
+          const state = useChatStore.getState();
+          state.setPerChatDelayed(chatId, info);
+          if (state.activeChatId === chatId) state.setDelayedCharacterInfo(info);
+          runDeferredGenerationWork("character status refresh", () =>
+            queryClient.invalidateQueries({ queryKey: characterKeys.list() }),
+          );
+          break;
+        }
+        case "offline": {
+          const label = characterLabel(eventCharacters(event), "Characters");
+          const verb = label === "Characters" || label.includes(",") ? "are" : "is";
+          toast(`${label} ${verb} offline. They'll respond when they're back online.`);
+          clearChatAvailabilityState();
+          break;
+        }
         case "agent_result":
           queueAgentResultEffect(event.data);
           break;
@@ -1314,7 +1450,7 @@ export async function runGenerationWithUi(
     }
     await flushLiveGenerationBuffers();
     scheduleChatQueryRefresh(queryClient, chatId);
-    return received.length > 0;
+    return receivedAnyContent;
   } catch (error) {
     if (!isAbortError(error)) {
       const message = errorMessage(error);
