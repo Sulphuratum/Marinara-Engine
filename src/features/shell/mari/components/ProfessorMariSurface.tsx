@@ -17,6 +17,7 @@ import { ConversationMessage } from "../../../modes/conversation/message-shell";
 import type { CharacterMap, PersonaInfo } from "../../../modes/shared/chat-ui/types";
 import type { Message } from "../../../../engine/contracts/types/chat";
 import { filterLanguageGenerationConnections } from "../../../../shared/lib/connection-filters";
+import { isSendShortcut } from "../../../../shared/lib/send-shortcuts";
 import { cn, getAvatarCropStyle, parseAvatarCropJson } from "../../../../shared/lib/utils";
 import { useUIStore } from "../../../../shared/stores/ui.store";
 
@@ -664,7 +665,7 @@ export function ProfessorMariSurface() {
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              if (isSendShortcut(event, true)) {
                 event.preventDefault();
                 void send();
               }

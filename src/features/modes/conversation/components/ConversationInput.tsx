@@ -45,6 +45,7 @@ import {
 import { createInputMacroResolverForChat, isPromptPreviewMacro } from "../../../../shared/lib/chat-macros";
 import { parseChatMetadata } from "../../../../shared/lib/chat-display";
 import { formatTextQuotes } from "../../../../shared/lib/dialogue-quotes";
+import { isSendShortcut } from "../../../../shared/lib/send-shortcuts";
 import { cn, getAvatarCropStyle, type AvatarCropValue } from "../../../../shared/lib/utils";
 import { blobToDataUrl, loadUrlBlob } from "../../../../shared/lib/url-blob";
 import { prepareImageAttachment } from "../../../../shared/lib/chat-attachment-images";
@@ -1122,8 +1123,7 @@ export function ConversationInput({
         }
       }
 
-      const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
-      if (shouldSend) {
+      if (isSendShortcut(e, enterToSend)) {
         e.preventDefault();
         handleSend();
       }

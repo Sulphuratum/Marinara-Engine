@@ -4,6 +4,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo, type KeyboardEvent } from "react";
 import { Send, Dices, Paperclip, Smile, Users, MessageCircle, MessageSquare, Languages, Loader2 } from "lucide-react";
 import { cn } from "../../../../shared/lib/utils";
+import { isSendShortcut } from "../../../../shared/lib/send-shortcuts";
 import { EmojiPicker } from "../../../../shared/components/ui/EmojiPicker";
 import { SpeechToTextButton } from "../../../../shared/components/ui/SpeechToTextButton";
 import { useUIStore } from "../../../../shared/stores/ui.store";
@@ -242,8 +243,7 @@ export function GameInput({
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    const shouldSend = enterToSend ? e.key === "Enter" && !e.shiftKey : e.key === "Enter" && (e.metaKey || e.ctrlKey);
-    if (shouldSend) {
+    if (isSendShortcut(e, enterToSend)) {
       e.preventDefault();
       void handleSend();
     }

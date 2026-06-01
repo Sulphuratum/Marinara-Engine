@@ -1005,7 +1005,7 @@ function GeneralSettings() {
       <div className="flex flex-col gap-1.5 rounded-lg p-1 transition-colors hover:bg-[var(--secondary)]/50">
         <div className="flex items-center gap-2">
           <span className="text-xs">Send on Enter</span>
-          <HelpTooltip text="Choose which chat modes send on Enter. When off, Enter creates a new line and you have to press the send button manually." />
+          <HelpTooltip text="Choose which chat modes send on Enter. When off, Enter creates a new line; Ctrl+Enter or Command+Enter still sends." />
         </div>
         <div className="flex items-center gap-1.5">
           <button
