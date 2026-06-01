@@ -1,4 +1,6 @@
-use super::{avatars, characters, chats, game_state_snapshots, lorebook_images, shared};
+use super::{
+    avatars, characters, chats, game_state_snapshots, lorebook_images, media_uploads, shared,
+};
 use crate::builtins::is_protected_record;
 use crate::state::AppState;
 use marinara_core::AppError;
@@ -369,12 +371,29 @@ pub(crate) fn delete_entity(
         if let Some(record) = existing.as_ref() {
             remove_owned_media(state, entity, record);
         }
+        if entity == "characters" {
+            delete_character_gallery(state, id)?;
+        }
         if let Some(chat_id) = message_chat_id {
             game_state_snapshots::delete_tracker_snapshots_for_message(state, &chat_id, id)?;
             game_state_snapshots::sync_chat_game_state_to_visible_tracker(state, &chat_id)?;
         }
     }
     Ok(json!({ "deleted": deleted }))
+}
+
+fn delete_character_gallery(state: &AppState, character_id: &str) -> Result<(), AppError> {
+    let mut filters = Map::new();
+    filters.insert(
+        "characterId".to_string(),
+        Value::String(character_id.to_string()),
+    );
+    let rows = state.storage.list_where("character-gallery", &filters)?;
+    for row in &rows {
+        remove_gallery_file(state, row);
+    }
+    state.storage.delete_where("character-gallery", &filters)?;
+    Ok(())
 }
 
 fn delete_lorebook_children(state: &AppState, lorebook_id: &str) -> Result<(), AppError> {
@@ -394,7 +413,9 @@ fn owned_record_for_delete(
     id: &str,
 ) -> Result<Option<Value>, AppError> {
     match entity {
-        "characters" | "personas" | "lorebooks" | "messages" => state.storage.get(entity, id),
+        "characters" | "personas" | "lorebooks" | "messages" | "gallery" | "character-gallery" => {
+            state.storage.get(entity, id)
+        }
         _ => Ok(None),
     }
 }
@@ -403,8 +424,13 @@ fn remove_owned_media(state: &AppState, entity: &str, record: &Value) {
     match entity {
         "characters" | "personas" => avatars::remove_avatar_file(state, entity, record),
         "lorebooks" => lorebook_images::remove_lorebook_image_file(state, record),
+        "gallery" | "character-gallery" => remove_gallery_file(state, record),
         _ => {}
     }
+}
+
+fn remove_gallery_file(state: &AppState, record: &Value) {
+    media_uploads::remove_managed_record_file(state, "gallery", record, "filePath", "filename");
 }
 
 #[tauri::command]
@@ -533,6 +559,59 @@ mod tests {
             .expect("connection should read")
             .and_then(|row| row.get("defaultForAgents").and_then(Value::as_bool))
             .unwrap_or(false)
+    }
+
+    #[test]
+    fn deleting_character_removes_character_gallery_records_and_managed_files() {
+        let state = test_state("character-gallery-delete");
+        state
+            .storage
+            .create(
+                "characters",
+                json!({
+                    "id": "character-1",
+                    "data": { "name": "Gallery Character" }
+                }),
+            )
+            .expect("character should be created");
+        let gallery_dir = state.data_dir.join("gallery");
+        std::fs::create_dir_all(&gallery_dir).expect("gallery dir should be created");
+        let image_path = gallery_dir.join("character.png");
+        std::fs::write(&image_path, b"managed").expect("managed image should be written");
+        state
+            .storage
+            .create(
+                "character-gallery",
+                json!({
+                    "id": "character-image-1",
+                    "characterId": "character-1",
+                    "filePath": "character.png",
+                    "filename": "character.png",
+                    "url": "data:image/png;base64,bWFuYWdlZA=="
+                }),
+            )
+            .expect("character gallery row should be created");
+
+        delete_entity(&state, "characters", "character-1", false)
+            .expect("character delete should succeed");
+
+        let mut filters = Map::new();
+        filters.insert(
+            "characterId".to_string(),
+            Value::String("character-1".to_string()),
+        );
+        assert!(
+            state
+                .storage
+                .list_where("character-gallery", &filters)
+                .expect("character gallery should be readable")
+                .is_empty(),
+            "character gallery rows should be removed"
+        );
+        assert!(
+            !image_path.exists(),
+            "managed gallery file should be removed"
+        );
     }
 
     #[test]
