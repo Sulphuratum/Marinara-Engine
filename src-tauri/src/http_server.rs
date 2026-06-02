@@ -171,6 +171,7 @@ async fn managed_asset(
             ErrorKind::NotFound => AppError::not_found("Managed asset was not found"),
             _ => AppError::from(error),
         })?;
+    let metadata = file.metadata().await.map_err(AppError::from)?;
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, std::io::Error>>(2);
     tokio::spawn(async move {
         let mut buffer = vec![0; 64 * 1024];
@@ -189,11 +190,45 @@ async fn managed_asset(
             }
         }
     });
-    Ok((
-        [(header::CONTENT_TYPE, content_type_for_path(&path))],
-        Body::from_stream(ReceiverStream::new(rx)),
-    )
-        .into_response())
+    let mut response = Body::from_stream(ReceiverStream::new(rx)).into_response();
+    apply_managed_asset_headers(response.headers_mut(), &kind, &path, &metadata);
+    Ok(response)
+}
+
+fn apply_managed_asset_headers(
+    headers: &mut HeaderMap,
+    kind: &str,
+    path: &FsPath,
+    metadata: &std::fs::Metadata,
+) {
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(content_type_for_path(path)),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(cache_control_for_managed_asset(kind)),
+    );
+    if let Some(etag) = asset_etag(metadata) {
+        headers.insert(header::ETAG, etag);
+    }
+}
+
+fn cache_control_for_managed_asset(kind: &str) -> &'static str {
+    match kind {
+        "avatar" | "avatar-thumbnail" => "no-cache",
+        _ => "public, max-age=86400",
+    }
+}
+
+fn asset_etag(metadata: &std::fs::Metadata) -> Option<HeaderValue> {
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    HeaderValue::from_str(&format!("\"{:x}-{modified:x}\"", metadata.len())).ok()
 }
 
 fn managed_asset_path(state: &AppState, kind: &str, path: &str) -> Result<PathBuf, AppError> {
@@ -312,8 +347,37 @@ fn avatar_asset_path(state: &AppState, path: &str) -> Result<PathBuf, AppError> 
 
 fn avatar_thumbnail_asset_path(state: &AppState, path: &str) -> Result<PathBuf, AppError> {
     let (size, avatar_path) = avatar_thumbnail_request(path)?;
+    if let Some(filename) = avatar_path.strip_prefix("inline/") {
+        return inline_avatar_thumbnail_asset_path(state, size, filename);
+    }
     let source = avatar_asset_path(state, avatar_path)?;
     avatars::avatar_thumbnail_path_for_source(state, &source, size)
+}
+
+fn inline_avatar_thumbnail_asset_path(
+    state: &AppState,
+    size: u32,
+    filename: &str,
+) -> Result<PathBuf, AppError> {
+    if !matches!(size, 64 | 96 | 128 | 256) {
+        return Err(AppError::invalid_input("Unsupported avatar thumbnail size"));
+    }
+    if !is_inline_avatar_thumbnail_filename(filename) {
+        return Err(AppError::not_found("Avatar thumbnail asset was not found"));
+    }
+    Ok(state
+        .data_dir
+        .join(".avatar-thumbnails")
+        .join(size.to_string())
+        .join("inline")
+        .join(filename))
+}
+
+fn is_inline_avatar_thumbnail_filename(filename: &str) -> bool {
+    let Some(hash) = filename.strip_suffix(".thumb.png") else {
+        return false;
+    };
+    hash.len() == 64 && hash.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 fn avatar_thumbnail_request(path: &str) -> Result<(u32, &str), AppError> {
@@ -1284,6 +1348,81 @@ mod tests {
             )
             .into_bytes(),
         }
+    }
+
+    #[test]
+    fn inline_avatar_thumbnail_asset_path_serves_cached_thumbnail() {
+        let state = test_state("inline-thumbnail-asset");
+        let filename = format!("{}.thumb.png", "a".repeat(64));
+
+        let path = avatar_thumbnail_asset_path(&state, &format!("128/inline/{filename}"))
+            .expect("inline thumbnail route should map to cache file");
+
+        assert_eq!(
+            path,
+            state
+                .data_dir
+                .join(".avatar-thumbnails")
+                .join("128")
+                .join("inline")
+                .join(filename)
+        );
+    }
+
+    #[test]
+    fn inline_avatar_thumbnail_asset_path_rejects_non_cache_names() {
+        let state = test_state("inline-thumbnail-asset-invalid");
+
+        for request_path in [
+            "128/inline/../avatar.thumb.png",
+            "128/inline/not-a-hash.thumb.png",
+            "128/inline/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
+            "512/inline/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.thumb.png",
+        ] {
+            assert!(
+                avatar_thumbnail_asset_path(&state, request_path).is_err(),
+                "{request_path} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_asset_headers_include_cache_and_validation_metadata() {
+        let state = test_state("managed-asset-headers");
+        let avatar_dir = state.data_dir.join("avatars").join("characters");
+        std::fs::create_dir_all(&avatar_dir).expect("avatar dir should be created");
+        let asset_path = avatar_dir.join("hero.png");
+        std::fs::write(&asset_path, b"avatar").expect("asset should be written");
+        let metadata = std::fs::metadata(&asset_path).expect("asset metadata should load");
+
+        let mut headers = HeaderMap::new();
+        apply_managed_asset_headers(&mut headers, "avatar", &asset_path, &metadata);
+
+        assert_eq!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("image/png")
+        );
+        assert_eq!(
+            headers
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-cache")
+        );
+        assert!(
+            headers.get(header::ETAG).is_some(),
+            "managed assets should expose validation metadata"
+        );
+
+        let mut gallery_headers = HeaderMap::new();
+        apply_managed_asset_headers(&mut gallery_headers, "gallery", &asset_path, &metadata);
+        assert_eq!(
+            gallery_headers
+                .get(header::CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("public, max-age=86400")
+        );
     }
 
     #[tokio::test]
