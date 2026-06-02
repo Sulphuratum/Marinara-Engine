@@ -1,6 +1,6 @@
 use super::{
-    avatars, characters, chats, connection_secrets, game_state_snapshots, lorebook_images,
-    media_uploads, prompts, shared,
+    avatars, characters, chats, connection_secrets, contracts, game_state_snapshots,
+    lorebook_images, media_uploads, prompts, shared,
 };
 use crate::builtins::is_protected_record;
 use crate::state::AppState;
@@ -9,44 +9,8 @@ use serde_json::{json, Map, Value};
 use std::collections::HashSet;
 use tauri::State;
 
-const SUPPORTED_STORAGE_ENTITIES: &[&str] = &[
-    "agents",
-    "agent-memory",
-    "agent-runs",
-    "app-settings",
-    "characters",
-    "character-gallery",
-    "character-groups",
-    "character-versions",
-    "chat-folders",
-    "chat-presets",
-    "chats",
-    "connections",
-    "connection-folders",
-    "custom-tools",
-    "extensions",
-    "gallery",
-    "game-checkpoints",
-    "game-state-snapshots",
-    "knowledge-sources",
-    "lorebooks",
-    "lorebook-entries",
-    "lorebook-folders",
-    "messages",
-    "personas",
-    "persona-groups",
-    "prompts",
-    "prompt-groups",
-    "prompt-overrides",
-    "prompt-sections",
-    "prompt-variables",
-    "regex-scripts",
-    "sprites",
-    "themes",
-];
-
 fn validate_storage_entity(entity: &str) -> Result<(), AppError> {
-    if SUPPORTED_STORAGE_ENTITIES.contains(&entity) {
+    if contracts::collection_contract(entity).is_some() {
         Ok(())
     } else {
         Err(AppError::invalid_input(format!(
