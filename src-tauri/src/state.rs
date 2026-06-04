@@ -77,6 +77,9 @@ impl AppState {
         migrate_legacy_chat_group_roots(&storage)?;
         migrate_local_media_references(&storage, &data_dir)?;
         recover_legacy_chat_gallery_files(&storage, &data_dir)?;
+        crate::storage_commands::startup_migrations::migrate_inline_image_references(
+            &storage, &data_dir,
+        )?;
 
         Ok(Self {
             storage,
@@ -921,6 +924,19 @@ mod tests {
         storage.flush().expect("fixture writes should persist");
     }
 
+    const INLINE_PNG_DATA_URL: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lTmZsgAAAABJRU5ErkJggg==";
+
+    fn assert_managed_image_url(value: &str) {
+        assert!(
+            !value.starts_with("data:image/"),
+            "inline image data should not remain in hot storage"
+        );
+        assert!(
+            value.starts_with("asset://localhost") || value.starts_with("http://asset.localhost"),
+            "migrated image should be served as a managed asset URL"
+        );
+    }
+
     #[test]
     fn llm_stream_pending_cancellations_inside_ttl_are_retained() {
         let now = Instant::now();
@@ -1183,6 +1199,337 @@ mod tests {
         assert!(avatar_file_path.starts_with(root.0.join("avatars/characters")));
         assert!(avatar_file_path.is_file());
         assert_eq!(character["avatar"], character["avatarPath"]);
+    }
+
+    #[test]
+    fn app_state_startup_persists_inline_character_and_persona_avatars() {
+        let root = temp_root("inline-avatar-repair");
+        let storage = FileStorage::new(root.0.join("data")).expect("storage should initialize");
+        storage
+            .create(
+                "characters",
+                json!({
+                    "id": "char-inline",
+                    "data": { "name": "Inline Character" },
+                    "comment": "",
+                    "avatarPath": INLINE_PNG_DATA_URL,
+                    "avatar": INLINE_PNG_DATA_URL
+                }),
+            )
+            .expect("character should be inserted");
+        storage
+            .create(
+                "personas",
+                json!({
+                    "id": "persona-inline",
+                    "name": "Inline Persona",
+                    "avatarPath": INLINE_PNG_DATA_URL,
+                    "avatarUrl": INLINE_PNG_DATA_URL
+                }),
+            )
+            .expect("persona should be inserted");
+        persist_fixture_storage(&storage);
+
+        let state = AppState::from_data_dir(&root.0, Vec::new()).expect("state should initialize");
+        let character = state
+            .storage
+            .get("characters", "char-inline")
+            .expect("character should load")
+            .expect("character should exist");
+        let persona = state
+            .storage
+            .get("personas", "persona-inline")
+            .expect("persona should load")
+            .expect("persona should exist");
+
+        let character_avatar = character["avatarPath"]
+            .as_str()
+            .expect("character avatar path should be stored");
+        let character_file = PathBuf::from(
+            character["avatarFilePath"]
+                .as_str()
+                .expect("character avatar file path should be stored"),
+        );
+        assert_managed_image_url(character_avatar);
+        assert_eq!(character["avatar"], character["avatarPath"]);
+        assert!(character_file.starts_with(root.0.join("avatars/characters")));
+        assert!(character_file.is_file());
+
+        let persona_avatar = persona["avatarPath"]
+            .as_str()
+            .expect("persona avatar path should be stored");
+        let persona_file = PathBuf::from(
+            persona["avatarFilePath"]
+                .as_str()
+                .expect("persona avatar file path should be stored"),
+        );
+        assert_managed_image_url(persona_avatar);
+        assert_eq!(persona["avatarUrl"], persona["avatarPath"]);
+        assert!(persona_file.starts_with(root.0.join("avatars/personas")));
+        assert!(persona_file.is_file());
+    }
+
+    #[test]
+    fn app_state_startup_persists_inline_game_avatar_state() {
+        let root = temp_root("inline-game-avatar-repair");
+        let storage = FileStorage::new(root.0.join("data")).expect("storage should initialize");
+        storage
+            .create(
+                "chats",
+                json!({
+                    "id": "chat-1",
+                    "mode": "game",
+                    "characterIds": [],
+                    "gameState": {
+                        "presentCharacters": [
+                            { "name": "Tracker NPC", "avatarPath": INLINE_PNG_DATA_URL }
+                        ]
+                    },
+                    "metadata": {
+                        "gameNpcs": [
+                            {
+                                "id": "npc-1",
+                                "name": "Generated NPC",
+                                "avatarUrl": INLINE_PNG_DATA_URL,
+                                "avatarPath": INLINE_PNG_DATA_URL
+                            }
+                        ],
+                        "gameState": {
+                            "presentCharacters": [
+                                { "name": "Metadata Tracker NPC", "avatarPath": INLINE_PNG_DATA_URL }
+                            ]
+                        }
+                    }
+                }),
+            )
+            .expect("chat should be inserted");
+        storage
+            .create(
+                "game-state-snapshots",
+                json!({
+                    "id": "snapshot-1",
+                    "chatId": "chat-1",
+                    "messageId": "message-1",
+                    "kind": "tracker",
+                    "presentCharacters": [
+                        { "name": "Snapshot NPC", "avatarPath": INLINE_PNG_DATA_URL }
+                    ],
+                    "recentEvents": [],
+                    "metadata": null
+                }),
+            )
+            .expect("snapshot should be inserted");
+        persist_fixture_storage(&storage);
+
+        let state = AppState::from_data_dir(&root.0, Vec::new()).expect("state should initialize");
+        let chat = state
+            .storage
+            .get("chats", "chat-1")
+            .expect("chat should load")
+            .expect("chat should exist");
+        let snapshot = state
+            .storage
+            .get("game-state-snapshots", "snapshot-1")
+            .expect("snapshot should load")
+            .expect("snapshot should exist");
+
+        let tracker_avatar = chat["gameState"]["presentCharacters"][0]["avatarPath"]
+            .as_str()
+            .expect("tracker avatar path should be stored");
+        let npc_avatar = chat["metadata"]["gameNpcs"][0]["avatarUrl"]
+            .as_str()
+            .expect("npc avatar url should be stored");
+        let metadata_tracker_avatar = chat["metadata"]["gameState"]["presentCharacters"][0]
+            ["avatarPath"]
+            .as_str()
+            .expect("metadata tracker avatar path should be stored");
+        let snapshot_avatar = snapshot["presentCharacters"][0]["avatarPath"]
+            .as_str()
+            .expect("snapshot avatar path should be stored");
+
+        assert_managed_image_url(tracker_avatar);
+        assert_managed_image_url(npc_avatar);
+        assert_eq!(
+            chat["metadata"]["gameNpcs"][0]["avatarPath"],
+            chat["metadata"]["gameNpcs"][0]["avatarUrl"]
+        );
+        assert_managed_image_url(metadata_tracker_avatar);
+        assert_managed_image_url(snapshot_avatar);
+        assert!(
+            std::fs::read_dir(root.0.join("avatars/npc"))
+                .expect("npc avatar directory should exist")
+                .filter_map(Result::ok)
+                .count()
+                >= 4
+        );
+    }
+
+    #[test]
+    fn app_state_startup_persists_inline_message_attachment_urls() {
+        let root = temp_root("inline-message-attachment-repair");
+        let storage = FileStorage::new(root.0.join("data")).expect("storage should initialize");
+        storage
+            .create(
+                "gallery",
+                json!({
+                    "id": "gallery-existing",
+                    "chatId": "chat-1",
+                    "filename": "existing-inline.png",
+                    "url": INLINE_PNG_DATA_URL,
+                    "prompt": "existing prompt"
+                }),
+            )
+            .expect("gallery row should be inserted");
+        storage
+            .create(
+                "messages",
+                json!({
+                    "id": "message-1",
+                    "chatId": "chat-1",
+                    "role": "assistant",
+                    "content": "generated images",
+                    "attachments": [
+                        {
+                            "type": "image",
+                            "galleryId": "gallery-existing",
+                            "url": INLINE_PNG_DATA_URL,
+                            "data": INLINE_PNG_DATA_URL,
+                            "prompt": "existing prompt"
+                        },
+                        {
+                            "type": "image",
+                            "imageUrl": INLINE_PNG_DATA_URL,
+                            "data": INLINE_PNG_DATA_URL,
+                            "prompt": "new prompt",
+                            "provider": "test-provider",
+                            "model": "test-model",
+                            "width": 512,
+                            "height": 768
+                        },
+                        {
+                            "type": "image",
+                            "data": INLINE_PNG_DATA_URL,
+                            "filename": "data-only.png",
+                            "prompt": "data-only prompt"
+                        }
+                    ],
+                    "extra": {
+                        "attachments": [
+                            {
+                                "type": "image",
+                                "url": INLINE_PNG_DATA_URL,
+                                "data": INLINE_PNG_DATA_URL,
+                                "prompt": "extra prompt"
+                            }
+                        ]
+                    }
+                }),
+            )
+            .expect("message should be inserted");
+        storage
+            .replace_all(
+                crate::storage_commands::message_swipes::COLLECTION,
+                vec![json!({
+                    "id": "message-1::swipe::0",
+                    "chatId": "chat-1",
+                    "messageId": "message-1",
+                    "index": 0,
+                    "content": "alternate generated images",
+                    "extra": {
+                        "attachments": [
+                            {
+                                "type": "image",
+                                "data": INLINE_PNG_DATA_URL,
+                                "filename": "sidecar.png",
+                                "prompt": "sidecar prompt"
+                            }
+                        ]
+                    }
+                })],
+            )
+            .expect("sidecar swipe should be inserted");
+        persist_fixture_storage(&storage);
+
+        let state = AppState::from_data_dir(&root.0, Vec::new()).expect("state should initialize");
+        let gallery_existing = state
+            .storage
+            .get("gallery", "gallery-existing")
+            .expect("gallery row should load")
+            .expect("gallery row should exist");
+        let existing_url = gallery_existing["url"]
+            .as_str()
+            .expect("gallery url should be stored");
+        let message = state
+            .storage
+            .get("messages", "message-1")
+            .expect("message should load")
+            .expect("message should exist");
+        let attachments = message["attachments"]
+            .as_array()
+            .expect("attachments should remain an array");
+        let extra_attachments = message["extra"]["attachments"]
+            .as_array()
+            .expect("extra attachments should remain an array");
+
+        assert_managed_image_url(existing_url);
+        assert_eq!(attachments[0]["url"], gallery_existing["url"]);
+        assert!(attachments[0]["data"].is_null());
+
+        let new_url = attachments[1]["url"]
+            .as_str()
+            .expect("new attachment url should be stored");
+        assert_managed_image_url(new_url);
+        assert_eq!(attachments[1]["imageUrl"], attachments[1]["url"]);
+        assert!(attachments[1]["galleryId"].as_str().is_some());
+        assert!(attachments[1]["data"].is_null());
+        let new_gallery_id = attachments[1]["galleryId"]
+            .as_str()
+            .expect("new attachment gallery id should be stored");
+        let new_gallery = state
+            .storage
+            .get("gallery", new_gallery_id)
+            .expect("new gallery row should load")
+            .expect("new gallery row should exist");
+        assert_eq!(new_gallery["provider"].as_str(), Some("test-provider"));
+        assert_eq!(new_gallery["model"].as_str(), Some("test-model"));
+        assert_eq!(new_gallery["width"].as_u64(), Some(512));
+        assert_eq!(new_gallery["height"].as_u64(), Some(768));
+
+        let data_only_url = attachments[2]["url"]
+            .as_str()
+            .expect("data-only attachment url should be stored");
+        assert_managed_image_url(data_only_url);
+        assert!(attachments[2]["galleryId"].as_str().is_some());
+        assert!(attachments[2]["filePath"].as_str().is_some());
+        assert!(attachments[2]["filename"].as_str().is_some());
+        assert!(attachments[2]["data"].is_null());
+
+        let extra_url = extra_attachments[0]["url"]
+            .as_str()
+            .expect("extra attachment url should be stored");
+        assert_managed_image_url(extra_url);
+        assert!(extra_attachments[0]["galleryId"].as_str().is_some());
+        assert!(extra_attachments[0]["data"].is_null());
+
+        let sidecars = state
+            .storage
+            .list(crate::storage_commands::message_swipes::COLLECTION)
+            .expect("sidecar rows should list");
+        let sidecar_attachment = &sidecars[0]["extra"]["attachments"][0];
+        let sidecar_url = sidecar_attachment["url"]
+            .as_str()
+            .expect("sidecar attachment url should be stored");
+        assert_managed_image_url(sidecar_url);
+        assert!(sidecar_attachment["galleryId"].as_str().is_some());
+        assert!(sidecar_attachment["data"].is_null());
+        assert_eq!(
+            state
+                .storage
+                .list("gallery")
+                .expect("gallery rows should list")
+                .len(),
+            5
+        );
     }
 
     #[test]

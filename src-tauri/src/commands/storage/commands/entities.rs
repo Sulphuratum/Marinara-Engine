@@ -431,7 +431,12 @@ pub(crate) fn storage_create_inner(
     if entity == "lorebook-entries" {
         return create_lorebook_entry_with_character_book_sync(state, prepared);
     }
-    let created = match state.storage.create(&entity, prepared.clone()) {
+    let create_result = if should_remove_prepared_gallery_file {
+        state.storage.create_immediate(&entity, prepared.clone())
+    } else {
+        state.storage.create(&entity, prepared.clone())
+    };
+    let created = match create_result {
         Ok(created) => created,
         Err(error) => {
             if should_remove_prepared_gallery_file {
@@ -2041,6 +2046,37 @@ mod tests {
             }),
         )
         .expect_err("duplicate gallery row should fail after persisting the image");
+
+        assert!(
+            !state.data_dir.join("gallery").join("rollback.png").exists(),
+            "failed gallery create should remove the managed file it wrote"
+        );
+    }
+
+    #[test]
+    fn gallery_create_removes_managed_file_when_collection_write_fails() {
+        let state = test_state("gallery-create-managed-file-write-rollback");
+        let image =
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lTmZsgAAAABJRU5ErkJggg==";
+        std::fs::create_dir_all(
+            state
+                .data_dir
+                .join("data")
+                .join("collections")
+                .join("gallery.json"),
+        )
+        .expect("collection path should be made unwritable as a file");
+
+        storage_create_inner(
+            &state,
+            "gallery".to_string(),
+            json!({
+                "chatId": "chat-1",
+                "filename": "rollback.png",
+                "url": image,
+            }),
+        )
+        .expect_err("gallery collection write should fail after persisting the image");
 
         assert!(
             !state.data_dir.join("gallery").join("rollback.png").exists(),
