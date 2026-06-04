@@ -148,11 +148,9 @@ export interface ChatMetadata {
   tags: string[];
   /** When true, this chat is pinned to the top of the sidebar for its mode. */
   pinned?: boolean;
-  /** Whether agents are enabled for this chat */
-  enableAgents: boolean;
   /** Per-agent enable overrides (agentId → boolean) */
   agentOverrides: Record<string, boolean>;
-  /** Agent IDs scoped to this chat. Non-empty = only these agents run; empty = use globally-enabled agents. */
+  /** Agent IDs scoped to this chat. Only these agents run automatically; empty = no automatic agents. */
   activeAgentIds: string[];
   /** Explicit target lorebook for the Lorebook Keeper in this chat. Null/omitted = use a scoped active lorebook when available. */
   lorebookKeeperTargetLorebookId?: string | null;

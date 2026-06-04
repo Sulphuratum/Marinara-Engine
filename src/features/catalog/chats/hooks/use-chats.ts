@@ -63,6 +63,7 @@ const RECENT_MESSAGE_CONTENT_EDIT_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_CHAT_MESSAGE_PAGE_SIZE = 20;
 const MAX_MEMORY_RECALL_IMPORT_BYTES = 25 * 1024 * 1024;
 const scheduledDeleteRefreshTimers = new Map<string, number>();
+let optimisticMessageSequence = 0;
 
 type MessageCountResult = { count: number };
 
@@ -132,6 +133,38 @@ function appendCachedMessage(
     ...old,
     pages: old.pages.map((page, index) => (index === 0 ? [...page, message] : page)),
   };
+}
+
+function optimisticChatMessage(
+  chatId: string,
+  data: { role: string; content: string; characterId?: string | null },
+): Message {
+  optimisticMessageSequence += 1;
+  return {
+    id: `__optimistic_create_${Date.now()}_${optimisticMessageSequence}`,
+    chatId,
+    role: data.role as Message["role"],
+    characterId: data.characterId ?? null,
+    content: data.content,
+    activeSwipeIndex: 0,
+    extra: {
+      displayText: null,
+      isGenerated: false,
+      tokenCount: null,
+      generationInfo: null,
+    },
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function replaceOptimisticCreatedMessage(
+  old: InfiniteData<Message[]> | undefined,
+  optimisticId: string | null | undefined,
+  saved: Message,
+): InfiniteData<Message[]> | undefined {
+  if (!optimisticId) return appendCachedMessage(old, saved);
+  const replaced = replaceCachedMessage(old, optimisticId, () => saved);
+  return replaced === old ? appendCachedMessage(old, saved) : replaced;
 }
 
 function updateCachedMessageCount(qc: QueryClient, chatId: string, delta: number) {
@@ -474,14 +507,33 @@ export function useCreateMessage(chatId: string | null) {
       const payload = createMessageSchema.parse({ chatId: chatId!, ...data });
       return storageApi.createChatMessage<Message>(payload.chatId, payload);
     },
-    onSuccess: (created) => {
+    onMutate: (data) => {
+      if (!chatId) return;
+      const previousMessages = qc.getQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId));
+      const previousCount = qc.getQueryData<MessageCountResult>(chatKeys.messageCount(chatId));
+      const optimistic = optimisticChatMessage(chatId, data);
+      qc.setQueryData<InfiniteData<Message[]>>(chatKeys.messages(chatId), (old) =>
+        appendCachedMessage(old, optimistic),
+      );
+      updateCachedMessageCount(qc, chatId, 1);
+      return { previousMessages, previousCount, optimisticId: optimistic.id };
+    },
+    onError: (_error, _data, context) => {
+      if (!chatId) return;
+      if (context?.previousMessages) qc.setQueryData(chatKeys.messages(chatId), context.previousMessages);
+      if (context?.previousCount) qc.setQueryData(chatKeys.messageCount(chatId), context.previousCount);
+    },
+    onSuccess: (created, _data, context) => {
       if (chatId) {
         qc.setQueryData<InfiniteData<Message[]> | undefined>(chatKeys.messages(chatId), (old) =>
           created
-            ? appendCachedMessage(old, preserveRecentMessageContentEdit(chatId, sanitizeTimelineMessage(created)))
+            ? replaceOptimisticCreatedMessage(
+                old,
+                context?.optimisticId,
+                preserveRecentMessageContentEdit(chatId, sanitizeTimelineMessage(created)),
+              )
             : old,
         );
-        if (created) updateCachedMessageCount(qc, chatId, 1);
         qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.messageCount(chatId) });
         qc.invalidateQueries({ queryKey: chatKeys.list() });

@@ -484,6 +484,7 @@ export interface UIState {
   // ── EchoChamber ──
   echoChamberOpen: boolean;
   echoChamberSide: EchoChamberSide;
+  echoChamberDismissedChatIds: Record<string, boolean>;
 
   // ── User Status ──
   /** The user's sticky manual status. "dnd" locks presence; "active" allows automatic idle. Persisted. */
@@ -663,7 +664,8 @@ export interface UIState {
   setHasCompletedOnboarding: (v: boolean) => void;
   setGameTutorialDisabled: (v: boolean) => void;
   dismissLinkApiBanner: () => void;
-  toggleEchoChamber: () => void;
+  setEchoChamberOpen: (open: boolean, chatId?: string | null) => void;
+  toggleEchoChamber: (chatId?: string | null) => void;
   setEchoChamberSide: (side: EchoChamberSide) => void;
   setUserStatus: (status: UserStatus) => void;
   /** Sets sticky DND, or clears DND and applies an immediate active/idle effective status. */

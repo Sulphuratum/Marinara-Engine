@@ -53,7 +53,7 @@ interface RoleplayHUDActionsMenuProps {
   enabledAgentTypes?: Set<string>;
   showEcho: boolean;
   echoChamberOpen: boolean;
-  toggleEchoChamber: () => void;
+  toggleEchoChamber: (chatId?: string | null) => void;
   echoMessageCount: number;
   clearGameState: () => void;
   onRetriggerTrackers?: () => void;
@@ -334,7 +334,7 @@ export function RoleplayHUDActionsMenu({
           )}
           {showEcho && (
             <button
-              onClick={toggleEchoChamber}
+              onClick={() => toggleEchoChamber(chatId)}
               className="flex w-full items-center gap-2 px-3 py-2 text-[0.625rem] transition-colors hover:bg-white/5"
             >
               <MessageCircle size="0.75rem" className={echoChamberOpen ? "text-foreground/75" : "text-foreground/50"} />

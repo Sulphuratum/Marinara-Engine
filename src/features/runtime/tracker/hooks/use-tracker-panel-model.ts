@@ -112,7 +112,6 @@ export function useTrackerPanelModel(): TrackerPanelModel {
 
   const enabledAgentTypes = useMemo(() => {
     const set = new Set<string>();
-    if (!chatMeta.enableAgents) return set;
     const activeAgentIds = Array.isArray(chatMeta.activeAgentIds) ? chatMeta.activeAgentIds : [];
     for (const id of activeAgentIds) {
       if (typeof id === "string") set.add(id);

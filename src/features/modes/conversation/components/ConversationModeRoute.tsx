@@ -48,13 +48,13 @@ export function ConversationModeRoute({ activeChatId }: ConversationModeRoutePro
       : [];
     const set = new Set<string>();
     for (const id of activeAgentIds) set.add(id.trim());
-    const agentsEnabled = Boolean(data.chatMeta.enableAgents) || activeAgentIds.length > 0;
+    const agentsEnabled = activeAgentIds.length > 0;
     return {
       agentsEnabled,
       enabledAgentTypes: agentsEnabled ? set : new Set<string>(),
-      agentThoughtBubbleTypes: agentsEnabled && activeAgentIds.length === 0 ? undefined : set,
+      agentThoughtBubbleTypes: set,
     };
-  }, [data.chatMeta.activeAgentIds, data.chatMeta.enableAgents]);
+  }, [data.chatMeta.activeAgentIds]);
   const timeline = useChatTimelineActions({
     activeChatId,
     messages: data.messages,
@@ -93,9 +93,7 @@ export function ConversationModeRoute({ activeChatId }: ConversationModeRoutePro
     ?.connectedChatId;
   const activeSceneChatId =
     typeof data.chatMeta.activeSceneChatId === "string" ? data.chatMeta.activeSceneChatId : null;
-  const activeSceneChat = activeSceneChatId
-    ? data.chatList.find((item) => item.id === activeSceneChatId)
-    : undefined;
+  const activeSceneChat = activeSceneChatId ? data.chatList.find((item) => item.id === activeSceneChatId) : undefined;
   const activeSceneMeta = parseChatMetadata(activeSceneChat?.metadata);
   const hasActiveLinkedScene = activeSceneChat && activeSceneMeta.sceneStatus === "active";
   const sceneInfo =

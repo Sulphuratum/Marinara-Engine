@@ -1,7 +1,9 @@
 import type { LorebookEntryTimingState } from "../contracts/types/lorebook";
 import type { ChatMLMessage, MarkerConfig, WrapFormat } from "../contracts/types/prompt";
 import type { CharacterData } from "../contracts/types/character";
+import { BUILT_IN_AGENTS } from "../contracts/types/agent";
 import type { StorageGateway } from "../capabilities/storage";
+import { stripAvatarPathsReplacer } from "../agents-runtime/strip-avatar-paths";
 import { getCharacterDescriptionWithExtensions } from "../generation-core/prompt/character-description-extensions";
 import { injectAtDepth } from "../generation-core/lorebooks/prompt-injector";
 import { wrapContent, wrapGroup } from "../generation-core/prompt/format-engine";
@@ -174,6 +176,26 @@ interface SelectedPromptPreset {
 }
 
 const PARTY_NPC_ID_PREFIX = "npc:";
+const TRACKER_AGENT_IDS = new Set(
+  BUILT_IN_AGENTS.filter((agent) => agent.category === "tracker").map((agent) => agent.id),
+);
+const TRACKER_PROMPT_METADATA_KEYS = new Set([
+  "id",
+  "chatId",
+  "createdAt",
+  "updatedAt",
+  "target",
+  "targetKind",
+  "targetMessageId",
+  "messageId",
+  "assistantMessageId",
+  "turnId",
+  "swipeIndex",
+  "committed",
+  "manual",
+  "targetVisible",
+  "version",
+]);
 
 function dataRecord(record: JsonRecord): JsonRecord {
   const data = parseRecord(record.data);
@@ -1141,6 +1163,155 @@ function renderJsonBlock(label: string, value: unknown): string {
   return `${label}:\n${JSON.stringify(record, null, 2).slice(0, 4000)}`;
 }
 
+function activeTrackerAgentIds(meta: JsonRecord): string[] {
+  return stringArray(meta.activeAgentIds).filter((id) => TRACKER_AGENT_IDS.has(id));
+}
+
+type TrackerPromptSection = {
+  key: string;
+  label: string;
+  value: unknown;
+};
+
+function trackerPromptValue(value: unknown, key = ""): unknown {
+  if (TRACKER_PROMPT_METADATA_KEYS.has(key)) return undefined;
+  if (value == null) return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : undefined;
+  }
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    const entries = value.map((entry) => trackerPromptValue(entry)).filter((entry) => entry !== undefined);
+    return entries.length > 0 ? entries : undefined;
+  }
+  if (!isRecord(value)) return undefined;
+
+  const next: JsonRecord = {};
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    const cleaned = trackerPromptValue(entryValue, entryKey);
+    if (cleaned !== undefined) next[entryKey] = cleaned;
+  }
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
+function trackerSection(key: string, label: string, value: unknown): TrackerPromptSection | null {
+  const cleaned = trackerPromptValue(value);
+  return cleaned === undefined ? null : { key, label, value: cleaned };
+}
+
+function pickTrackerFields(source: JsonRecord, keys: string[]): JsonRecord {
+  const next: JsonRecord = {};
+  for (const key of keys) {
+    const cleaned = trackerPromptValue(source[key], key);
+    if (cleaned !== undefined) next[key] = cleaned;
+  }
+  return next;
+}
+
+function trackerPromptSections(state: JsonRecord, activeIds: Set<string>): TrackerPromptSection[] {
+  const playerStats = parseRecord(state.playerStats);
+  const sections: Array<TrackerPromptSection | null> = [];
+
+  if (activeIds.has("world-state")) {
+    sections.push(
+      trackerSection(
+        "world_state",
+        "World State",
+        pickTrackerFields(state, ["date", "time", "location", "weather", "temperature", "recentEvents"]),
+      ),
+    );
+  }
+
+  if (activeIds.has("character-tracker")) {
+    sections.push(trackerSection("character_tracker", "Character Tracker", state.presentCharacters));
+  }
+
+  const playerStatsCore = pickTrackerFields(playerStats, ["status", "stats", "attributes", "skills", "inventory"]);
+  sections.push(trackerSection("player_stats", "Player Stats", playerStatsCore));
+
+  if (activeIds.has("persona-stats")) {
+    sections.push(trackerSection("persona_stats", "Persona Stats", state.personaStats));
+  }
+
+  if (activeIds.has("quest")) {
+    sections.push(trackerSection("quest_tracker", "Quest Tracker", playerStats.activeQuests));
+  }
+
+  if (activeIds.has("custom-tracker")) {
+    sections.push(trackerSection("custom_tracker", "Custom Tracker", playerStats.customTrackerFields));
+  }
+
+  const other = { ...state };
+  for (const key of [
+    "date",
+    "time",
+    "location",
+    "weather",
+    "temperature",
+    "recentEvents",
+    "presentCharacters",
+    "playerStats",
+    "personaStats",
+  ]) {
+    delete other[key];
+  }
+  sections.push(trackerSection("other_trackers", "Other Trackers", other));
+
+  return sections.filter((section): section is TrackerPromptSection => section !== null);
+}
+
+function trackerSectionText(section: TrackerPromptSection): string {
+  return JSON.stringify(section.value, stripAvatarPathsReplacer, 2).slice(0, 2000);
+}
+
+function formattedTrackersContent(sections: TrackerPromptSection[], wrapFormat: WrapFormat): string {
+  if (sections.length === 0) return "";
+
+  if (wrapFormat === "xml") {
+    const children = sections
+      .map((section) => wrapContent(trackerSectionText(section), section.key, "xml", 1))
+      .filter(Boolean)
+      .join("\n\n");
+    return wrapContent(children, "trackers", "xml");
+  }
+
+  if (wrapFormat === "markdown") {
+    const children = sections
+      .map((section) => wrapContent(trackerSectionText(section), section.label, "markdown", 1))
+      .filter(Boolean)
+      .join("\n\n");
+    return wrapContent(children, "Trackers", "markdown");
+  }
+
+  return [
+    "Trackers",
+    ...sections.map((section) => `${section.label}\n${trackerSectionText(section)}`),
+  ]
+    .filter((part) => part.trim())
+    .join("\n\n")
+    .slice(0, 6000);
+}
+
+function committedTrackerStatePromptMessage(input: PromptAssemblyInput, wrapFormat: WrapFormat): ChatMLMessage | null {
+  const meta = parseRecord(input.chat.metadata);
+  const activeIds = new Set(activeTrackerAgentIds(meta));
+  if (activeIds.size === 0) return null;
+
+  const state = trackerPromptValue(input.chat.gameState ?? meta.gameState);
+  if (!isRecord(state) || Object.keys(state).length === 0) return null;
+
+  const content = formattedTrackersContent(trackerPromptSections(state, activeIds), wrapFormat);
+  if (!content.trim()) return null;
+  return {
+    role: "user",
+    content,
+    contextKind: "injection",
+    displayName: "Trackers",
+  };
+}
+
 function fallbackSystemPrompt(
   input: PromptAssemblyInput,
   args: {
@@ -1994,6 +2165,19 @@ function insertBeforeLastUser(messages: ChatMLMessage[], blocks: ChatMLMessage[]
   messages.splice(insertAt >= 0 ? insertAt : messages.length, 0, ...blocks);
 }
 
+function insertAfterLastHistoryUser(messages: ChatMLMessage[], block: ChatMLMessage): void {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.contextKind === "history" && message.role === "user") {
+      messages.splice(index + 1, 0, block);
+      return;
+    }
+  }
+
+  const lastHistoryIndex = messages.map((message) => message.contextKind).lastIndexOf("history");
+  messages.splice(lastHistoryIndex >= 0 ? lastHistoryIndex + 1 : messages.length, 0, block);
+}
+
 function normalizeRole(value: unknown): "system" | "user" | "assistant" {
   return value === "system" || value === "assistant" ? value : "user";
 }
@@ -2630,6 +2814,11 @@ export async function assembleGenerationPrompt(
 
   if (!insertedHistory) {
     messages.push(...history);
+  }
+
+  const trackerStateBlock = committedTrackerStatePromptMessage(input, wrapFormat);
+  if (trackerStateBlock) {
+    insertAfterLastHistoryUser(messages, trackerStateBlock);
   }
 
   if (chatMode === "game") {

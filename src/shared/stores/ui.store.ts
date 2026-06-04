@@ -218,6 +218,7 @@ export const useUIStore = create<UIState>()(
       linkApiBannerDismissed: false,
       echoChamberOpen: false,
       echoChamberSide: "bottom-right" as EchoChamberSide,
+      echoChamberDismissedChatIds: {},
       userStatusManual: "active" as const,
       userStatus: "active" as UserStatus,
       userActivity: "",
@@ -534,7 +535,22 @@ export const useUIStore = create<UIState>()(
       setHasCompletedOnboarding: (v) => set({ hasCompletedOnboarding: v }),
       setGameTutorialDisabled: (v) => set({ gameTutorialDisabled: v }),
       dismissLinkApiBanner: () => set({ linkApiBannerDismissed: true }),
-      toggleEchoChamber: () => set((s) => ({ echoChamberOpen: !s.echoChamberOpen })),
+      setEchoChamberOpen: (open, chatId) =>
+        set((state) => {
+          const chatKey = typeof chatId === "string" ? chatId.trim() : "";
+          if (!chatKey) return { echoChamberOpen: open };
+          const dismissed = { ...state.echoChamberDismissedChatIds };
+          if (open) {
+            delete dismissed[chatKey];
+          } else {
+            dismissed[chatKey] = true;
+          }
+          return { echoChamberOpen: open, echoChamberDismissedChatIds: dismissed };
+        }),
+      toggleEchoChamber: (chatId) => {
+        const nextOpen = !get().echoChamberOpen;
+        get().setEchoChamberOpen(nextOpen, chatId);
+      },
       setEchoChamberSide: (side) => set({ echoChamberSide: side }),
       setUserStatus: (status) =>
         set((state) => {

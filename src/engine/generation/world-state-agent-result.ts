@@ -11,7 +11,7 @@ type StableExplicitField = (typeof STABLE_EXPLICIT_FIELDS)[number];
 export interface WorldStateAgentPatchOptions {
   allowFreeform?: boolean;
   sourceText?: string | null;
-  previousWorldState?: Partial<Record<StableExplicitField, unknown>> | null;
+  previousWorldState?: Partial<Record<WorldStateAgentField, unknown>> | null;
 }
 
 function readNullableWorldStateString(value: unknown): string | null {
@@ -115,9 +115,9 @@ function looksLikeTemperature(text: string): boolean {
   );
 }
 
-function readPreviousStableField(
+function readPreviousField(
   previousWorldState: WorldStateAgentPatchOptions["previousWorldState"],
-  field: StableExplicitField,
+  field: WorldStateAgentField,
 ): string | null {
   if (!previousWorldState) return null;
   return readNullableWorldStateString(previousWorldState[field]);
@@ -222,7 +222,14 @@ function stabilizeExplicitFields(
 
     if (!Object.prototype.hasOwnProperty.call(nextPatch, field)) continue;
     if (sourceMentionsStableField(options.sourceText, field)) continue;
-    const previous = readPreviousStableField(options.previousWorldState, field);
+    const previous = readPreviousField(options.previousWorldState, field);
+    if (previous) nextPatch[field] = previous;
+  }
+
+  for (const field of WORLD_STATE_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(nextPatch, field)) continue;
+    if (readNullableWorldStateString(nextPatch[field])) continue;
+    const previous = readPreviousField(options.previousWorldState, field);
     if (previous) nextPatch[field] = previous;
   }
 

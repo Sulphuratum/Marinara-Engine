@@ -1,6 +1,6 @@
 import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { MessageCircle, Sparkles, Trash2 } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
 import { cn } from "../../../../shared/lib/utils";
 import type { AgentFailure } from "../../../../shared/lib/agent-failures";
 import { useAgentStore } from "../../../../shared/stores/agent.store";
@@ -131,7 +131,7 @@ export function ActionsGroup({
 
   // Badge count — unique agent types that produced results
   const uniqueAgentCount = new Set(thoughtBubbles.map((b) => b.agentId)).size;
-  const badgeCount = uniqueAgentCount + customAgentRuns.length + (echoMessages.length > 0 ? 1 : 0);
+  const generatedAgentCount = uniqueAgentCount + customAgentRuns.length + (echoMessages.length > 0 ? 1 : 0);
 
   // ── Shared dropdown portal (used by both desktop & mobile) ──
   const dropdownContent =
@@ -184,35 +184,29 @@ export function ActionsGroup({
           "group flex items-center gap-1.5 md:gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)]/80 backdrop-blur-md px-2 py-1.5 md:px-2 md:py-2 md:h-10 transition-all hover:bg-[var(--card)] dark:border-foreground/10 dark:bg-black/40 dark:hover:bg-black/60 cursor-pointer select-none",
           agentsOpen && "bg-[var(--card)] border-[var(--border)] dark:bg-black/60 dark:border-foreground/20",
         )}
-        title="Agents & Actions"
+        title={`Agents & Actions${generatedAgentCount > 0 ? ` - ${generatedAgentCount} generated` : ""}${
+          failedAgentTypes.length > 0 ? ` - ${failedAgentTypes.length} failed` : ""
+        }`}
       >
-        <Sparkles
-          size="0.875rem"
-          strokeWidth={2.5}
-          className={cn(
-            "shrink-0 transition-colors group-hover:text-foreground/75",
-            agentsOpen || isAgentProcessing ? "text-foreground/75" : "text-foreground/55",
-            isAgentProcessing && "animate-pulse",
-          )}
-        />
-        {showEcho && (
-          <MessageCircle
-            size="0.8125rem"
+        {isAgentProcessing ? (
+          <Loader2
+            size="0.875rem"
+            strokeWidth={2.5}
+            className="shrink-0 animate-spin text-foreground/75 transition-colors group-hover:text-foreground/80"
+          />
+        ) : (
+          <Sparkles
+            size="0.875rem"
             strokeWidth={2.5}
             className={cn(
-              "shrink-0 transition-colors group-hover:text-foreground/70",
-              echoChamberOpen ? "text-foreground/75" : "text-foreground/45",
+              "shrink-0 transition-colors group-hover:text-foreground/75",
+              agentsOpen ? "text-foreground/75" : "text-foreground/55",
             )}
           />
         )}
-        <Trash2
-          size="0.8125rem"
-          strokeWidth={2.5}
-          className="shrink-0 text-foreground/45 transition-colors group-hover:text-foreground/70"
-        />
-        {badgeCount > 0 && (
+        {generatedAgentCount > 0 && (
           <span className="hidden md:flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-foreground/15 px-1 text-[0.5rem] font-bold text-foreground/80 ring-1 ring-foreground/10">
-            {badgeCount}
+            {generatedAgentCount}
           </span>
         )}
         {failedAgentTypes.length > 0 && (

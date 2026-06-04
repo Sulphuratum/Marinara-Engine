@@ -59,6 +59,7 @@ import { readNonNegativeInteger } from "../../../../engine/generation/runtime-re
 import { worldStatePatchFromAgentData } from "../../../../engine/generation/world-state-agent-result";
 import {
   applyQuestUpdatesToPlayerStats,
+  mergeCustomTrackerFieldsFromAgent,
   parseCustomTrackerField,
   parseInventoryItem,
   parseStat,
@@ -873,7 +874,9 @@ function retryRefreshTargetFromCache(
 
 async function refreshGameStateFromStorage(chatId: string, target?: WorldStateTarget | null) {
   try {
-    const state = target ? await worldStateApi.get(chatId, target) : await worldStateApi.get(chatId);
+    const state = target
+      ? ((await worldStateApi.get(chatId, target)) ?? (await worldStateApi.get(chatId)))
+      : await worldStateApi.get(chatId);
     if (useChatStore.getState().activeChatId === chatId) {
       useGameStateStore.getState().setGameState(state ?? null);
     }
@@ -914,10 +917,12 @@ function gameStatePatchFromAgentResult(
   result: AgentResult,
   chatId: string,
   persona?: ReturnType<typeof cachedPersonaSnapshot>,
+  previousWorldState?: GameState | null,
 ): Record<string, unknown> | null {
   if (result.agentType === "world-state" || result.type === "game_state_update") {
     return worldStatePatchFromAgentData(result.data, {
       allowFreeform: result.agentType === "world-state",
+      previousWorldState,
     });
   }
 
@@ -956,9 +961,10 @@ function gameStatePatchFromAgentResult(
     const existingPlayerStats = current?.chatId === chatId ? current.playerStats : null;
     const playerStats: PlayerStats = { ...(existingPlayerStats ?? createEmptyPlayerStats()) };
     if (Array.isArray(data.fields)) {
-      playerStats.customTrackerFields = data.fields
+      const agentFields = data.fields
         .map(parseCustomTrackerField)
         .filter((field): field is CustomTrackerField => !!field);
+      playerStats.customTrackerFields = mergeCustomTrackerFieldsFromAgent(playerStats.customTrackerFields, agentFields);
       return { playerStats };
     }
   }
@@ -967,11 +973,11 @@ function gameStatePatchFromAgentResult(
 }
 
 async function applyTrackerResultToGameState(queryClient: QueryClient, chatId: string, result: AgentResult) {
-  const patch = gameStatePatchFromAgentResult(result, chatId, cachedPersonaSnapshot(queryClient, chatId));
-  if (!patch) return;
-
   const store = useGameStateStore.getState();
   const previous = store.current?.chatId === chatId ? store.current : createEmptyGameState(chatId);
+  const patch = gameStatePatchFromAgentResult(result, chatId, cachedPersonaSnapshot(queryClient, chatId), previous);
+  if (!patch) return;
+
   const visiblePatch = preserveManualWorldStatePatch(previous, patch);
   store.setGameState({ ...previous, ...visiblePatch } as GameState);
 
@@ -1374,7 +1380,6 @@ export async function runGenerationWithUi(
         await applyAgentResultEffects(queryClient, chatId, rawResult, {
           cacheBackgroundResults: false,
           showTrackerBubbles: false,
-          skipTrackerSync: true,
         });
       }
       if (pendingAgentResultEffects.length > 0) drainAgentResultEffects();

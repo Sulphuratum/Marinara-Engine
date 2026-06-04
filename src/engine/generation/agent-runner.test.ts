@@ -47,7 +47,7 @@ const integrations = {} as IntegrationGateway;
 const chat = {
   id: "chat-1",
   mode: "roleplay",
-  metadata: { enableAgents: true },
+  metadata: { activeAgentIds: ["director"] },
 };
 const connection = { id: "conn-1", provider: "mock", model: "mock-model" };
 const storedMessages = [

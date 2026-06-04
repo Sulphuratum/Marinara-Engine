@@ -23,7 +23,6 @@ export { chatPresetKeys } from "../query-keys";
 
 const EXCLUDED_METADATA_KEYS = new Set<string>(CHAT_PRESET_EXCLUDED_METADATA_KEYS);
 const CHAT_PRESET_METADATA_DEFAULTS: Record<string, unknown> = {
-  enableAgents: true,
   agentOverrides: {},
   activeAgentIds: [],
   activeToolIds: [],

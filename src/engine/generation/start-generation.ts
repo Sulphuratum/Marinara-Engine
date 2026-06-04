@@ -2200,7 +2200,7 @@ function chatHasLorebookKeeperEnabled(chat: JsonRecord, agent: JsonRecord): bool
     const id = readString(agent.id).trim();
     return activeAgentIds.has(LOREBOOK_KEEPER_AGENT_TYPE) || (id ? activeAgentIds.has(id) : false);
   }
-  return boolish(parseRecord(chat.metadata).enableAgents, false);
+  return false;
 }
 
 async function lorebookKeeperAgent(storage: StorageGateway, chat: JsonRecord): Promise<JsonRecord | null> {

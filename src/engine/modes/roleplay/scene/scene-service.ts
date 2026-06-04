@@ -883,13 +883,8 @@ function sceneCarryoverOptions(originMeta: JsonRecord): JsonRecord {
   const options = copyOptional(source, [...SCENE_CARRYOVER_METADATA_KEYS]);
   const activeAgentIds = stringArray(source.activeAgentIds);
   const activeToolIds = stringArray(source.activeToolIds);
-  if (source.enableAgents === false) {
-    options.enableAgents = false;
-  } else if (activeAgentIds.length > 0) {
+  if (activeAgentIds.length > 0) {
     options.activeAgentIds = activeAgentIds;
-    options.enableAgents = true;
-  } else if (typeof source.enableAgents === "boolean") {
-    options.enableAgents = source.enableAgents;
   }
   if (source.enableTools === false) {
     options.enableTools = false;

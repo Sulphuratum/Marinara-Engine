@@ -735,7 +735,7 @@ function ChatSettingsDrawerInner({
     [chatCharIds, inactiveCharacterIdSet],
   );
   const activeToolIds = metadataStringArray(metadata.activeToolIds);
-  const agentsEnabled = isEnabledFlag(metadata.enableAgents, false);
+  const agentsEnabled = activeAgentIds.length > 0;
   const toolsEnabled = isEnabledFlag(metadata.enableTools, false);
   const manualTrackersEnabled = isEnabledFlag(metadata.manualTrackers, false);
   const hapticFeedbackEnabled = isEnabledFlag(metadata.enableHapticFeedback, false);
@@ -780,7 +780,7 @@ function ChatSettingsDrawerInner({
     typeof metadata.gameSpotifyPlaylistId === "string" ? metadata.gameSpotifyPlaylistId : "";
   const gameSpotifyArtist = typeof metadata.gameSpotifyArtist === "string" ? metadata.gameSpotifyArtist : "";
   const gameAgentFeatureCount =
-    (agentsEnabled ? 1 : 0) + (gameLorebookKeeperEnabled ? 1 : 0) + (gameUseSpotifyMusic ? 1 : 0);
+    activeAgentIds.length + (gameLorebookKeeperEnabled ? 1 : 0) + (gameUseSpotifyMusic ? 1 : 0);
   const spriteCharacterIds = useMemo<string[]>(
     () => (Array.isArray(metadata.spriteCharacterIds) ? metadata.spriteCharacterIds : []),
     [metadata.spriteCharacterIds],
@@ -1771,7 +1771,6 @@ function ChatSettingsDrawerInner({
       await ensureSpotifyAgent();
       await updateMeta.mutateAsync({
         id: chat.id,
-        enableAgents: true,
         gameUseSpotifyMusic: true,
         gameSpotifySourceType,
         activeAgentIds: Array.from(new Set([...activeAgentIds, "spotify"])),
@@ -4217,64 +4216,12 @@ function ChatSettingsDrawerInner({
               label="Agents"
               icon={<Sparkles size="0.875rem" />}
               count={isGame ? gameAgentFeatureCount : activeAgentIds.length}
-              help="When enabled, AI agents run automatically during generation to enrich the chat with world state tracking, expression detection, and more."
+              help="Agents added to this chat run automatically during generation to enrich the chat with world state tracking, expression detection, and more."
             >
               <div className="space-y-2">
-                {isGame && agentsEnabled && (
-                  <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
-                    Toggle agents for this game session. Only the ones below are allowed to ensure the game's format
-                    doesn't break.
-                  </p>
-                )}
-                <button
-                  onClick={() => {
-                    updateMeta.mutate({ id: chat.id, enableAgents: !agentsEnabled });
-                  }}
-                  className={cn(
-                    "flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition-all",
-                    agentsEnabled
-                      ? "bg-[var(--primary)]/10 ring-1 ring-[var(--primary)]/30"
-                      : "bg-[var(--secondary)] hover:bg-[var(--accent)]",
-                  )}
-                >
-                  <div className="flex-1 min-w-0">
-                    <span className="text-xs font-medium">{isGame ? "Enable Scene Analysis" : "Enable Agents"}</span>
-                    <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-                      {isGame
-                        ? "Analyse scenes for backgrounds, music, weather, and cinematic effects after each GM turn."
-                        : "Run AI agents during generation (world state, expressions, etc.)"}
-                    </p>
-                    {isGame &&
-                      agentsEnabled &&
-                      (() => {
-                        const setupCfg = metadata.gameSetupConfig as Record<string, unknown> | undefined;
-                        const sceneConnId =
-                          (metadata.gameSceneConnectionId as string) || (setupCfg?.sceneConnectionId as string) || null;
-                        const sceneConn = sceneConnId
-                          ? ((connections ?? []) as Array<{ id: string; name: string; model?: string }>).find(
-                              (c) => c.id === sceneConnId,
-                            )
-                          : null;
-                        const label = sceneConn
-                          ? `${sceneConn.name}${sceneConn.model ? ` — ${sceneConn.model}` : ""}`
-                          : "Chat/default connection";
-                        return <p className="mt-0.5 text-[0.55rem] text-[var(--primary)]/70">{label}</p>;
-                      })()}
-                  </div>
-                  <div
-                    className={cn(
-                      "h-5 w-9 shrink-0 rounded-full p-0.5 transition-colors",
-                      agentsEnabled ? "bg-[var(--primary)]" : "bg-[var(--muted-foreground)]/50",
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        "h-4 w-4 rounded-full bg-white shadow-sm transition-transform",
-                        agentsEnabled && "translate-x-3.5",
-                      )}
-                    />
-                  </div>
-                </button>
+                <p className="rounded-lg bg-[var(--secondary)] px-3 py-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                  Agents run only when they are added to this chat. Add or remove individual agents below.
+                </p>
                 {isGame && agentsEnabled && (
                   <div className="mt-1.5 px-3">
                     <select
@@ -5123,7 +5070,7 @@ function ChatSettingsDrawerInner({
                 )}
 
                 {/* Categorized agent sub-sections */}
-                {agentsEnabled && (
+                {availableAgents.length > 0 && (
                   <>
                     {isGame ? (
                       <div className="space-y-1">
@@ -5204,7 +5151,7 @@ function ChatSettingsDrawerInner({
 
                         {activeAgentIds.length === 0 && (
                           <p className="text-[0.6875rem] text-[var(--muted-foreground)] px-1">
-                            No per-chat agent overrides. Workspace default agents will be used for this chat.
+                            No agents are active in this chat. Add one below to run it during generation.
                           </p>
                         )}
 

@@ -65,14 +65,17 @@ function CornerPicker({ current, onChange }: { current: EchoChamberSide; onChang
 }
 
 export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelProps) {
+  const activeChatId = useChatStore((s) => s.activeChatId);
   const echoChamberOpen = useUIStore((s) => s.echoChamberOpen);
   const echoChamberSide = useUIStore((s) => s.echoChamberSide);
-  const toggleEchoChamber = useUIStore((s) => s.toggleEchoChamber);
+  const echoDismissedForChat = useUIStore((s) =>
+    activeChatId ? s.echoChamberDismissedChatIds[activeChatId] === true : false,
+  );
+  const setEchoChamberOpen = useUIStore((s) => s.setEchoChamberOpen);
   const setEchoChamberSide = useUIStore((s) => s.setEchoChamberSide);
   const echoMessages = useAgentStore((s) => s.echoMessages);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const activeChatId = useChatStore((s) => s.activeChatId);
   const { data: chat } = useChat(activeChatId);
   const { data: agentConfigs } = useAgentConfigs();
 
@@ -81,16 +84,18 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
     if (!chat) return false;
     const raw = (chat as unknown as { metadata?: string | Record<string, unknown> }).metadata;
     const meta = readEchoRecord(raw);
-    if (!meta.enableAgents) return false;
     const activeAgentIds: string[] = Array.isArray(meta.activeAgentIds) ? meta.activeAgentIds : [];
-    if (activeAgentIds.length > 0) {
-      return activeAgentIds.includes("echo-chamber");
-    }
-    // Fallback: check global agent config
-    if (!agentConfigs) return false;
-    const cfg = (agentConfigs as Array<{ type: string; enabled?: unknown }>).find((a) => a.type === "echo-chamber");
-    return cfg ? agentConfigEnabled(cfg.enabled, true) : false;
+    if (!activeAgentIds.includes("echo-chamber")) return false;
+    const cfg = ((agentConfigs ?? []) as Array<{ type: string; enabled?: unknown }>).find(
+      (a) => a.type === "echo-chamber",
+    );
+    return cfg ? agentConfigEnabled(cfg.enabled, true) : true;
   }, [chat, agentConfigs]);
+
+  useEffect(() => {
+    if (!activeChatId || !echoEnabled || echoDismissedForChat || echoChamberOpen) return;
+    setEchoChamberOpen(true, activeChatId);
+  }, [activeChatId, echoEnabled, echoDismissedForChat, echoChamberOpen, setEchoChamberOpen]);
 
   // ── Timed reveal: show one more message every 30 s ──
   // visibleCount and baseline live in the Zustand store so they survive
@@ -253,7 +258,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
     });
   }, [echoChamberOpen, echoChamberSide]);
 
-  if (!echoChamberOpen || !echoEnabled || (isMobile && hiddenOnMobile)) return null;
+  if (!echoChamberOpen || !echoEnabled || echoDismissedForChat || (isMobile && hiddenOnMobile)) return null;
   const visibleMessages = echoMessages
     .map((message) => ({
       characterName: readEchoText(message.characterName),
@@ -308,7 +313,7 @@ export function EchoChamberPanel({ hiddenOnMobile = false }: EchoChamberPanelPro
             <CornerPicker current={echoChamberSide} onChange={setEchoChamberSide} />
           </span>
           <button
-            onClick={toggleEchoChamber}
+            onClick={() => setEchoChamberOpen(false, activeChatId)}
             className="rounded p-0.5 text-white/20 transition-colors hover:bg-white/10 hover:text-white/50"
           >
             <X size="0.625rem" />

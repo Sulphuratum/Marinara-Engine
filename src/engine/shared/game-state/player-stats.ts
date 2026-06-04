@@ -163,6 +163,62 @@ export function parseCustomTrackerField(value: unknown): CustomTrackerField | nu
   return { customFieldId: readString(record.customFieldId).trim(), name, value: readString(record.value).trim() };
 }
 
+function customTrackerFieldKey(field: CustomTrackerField | undefined): string | null {
+  const id = readString(field?.customFieldId).trim();
+  if (id) return `id:${id}`;
+  const name = readString(field?.name).trim().toLowerCase();
+  return name ? `name:${name}` : null;
+}
+
+function customTrackerFieldNameKey(field: CustomTrackerField | undefined): string | null {
+  const name = readString(field?.name).trim().toLowerCase();
+  return name || null;
+}
+
+function isManualCustomTrackerField(field: CustomTrackerField): boolean {
+  return readString(field.customFieldId).startsWith("manual-");
+}
+
+export function mergeCustomTrackerFieldsFromAgent(
+  previousFields: readonly CustomTrackerField[] | null | undefined,
+  agentFields: readonly CustomTrackerField[] | null | undefined,
+): CustomTrackerField[] {
+  const previous = previousFields ?? [];
+  const incoming = agentFields ?? [];
+  if (incoming.length === 0) return previous.map((field) => ({ ...field }));
+
+  const previousByKey = new Map<string, CustomTrackerField>();
+  const previousByName = new Map<string, CustomTrackerField>();
+  for (const field of previous) {
+    const key = customTrackerFieldKey(field);
+    const nameKey = customTrackerFieldNameKey(field);
+    if (key) previousByKey.set(key, field);
+    if (nameKey && !previousByName.has(nameKey)) previousByName.set(nameKey, field);
+  }
+
+  const usedPrevious = new Set<CustomTrackerField>();
+  const merged = incoming.map((field) => {
+    const previousMatch =
+      previousByKey.get(customTrackerFieldKey(field) ?? "") ??
+      previousByName.get(customTrackerFieldNameKey(field) ?? "");
+    if (previousMatch) usedPrevious.add(previousMatch);
+    const previousValue = readString(previousMatch?.value).trim();
+    const agentValue = readString(field.value).trim();
+    return {
+      customFieldId: readString(field.customFieldId).trim() || readString(previousMatch?.customFieldId).trim(),
+      name: readString(field.name).trim() || readString(previousMatch?.name).trim() || "Field",
+      value: agentValue || previousValue,
+    };
+  });
+
+  for (const field of previous) {
+    if (!isManualCustomTrackerField(field) || usedPrevious.has(field)) continue;
+    merged.push({ ...field });
+  }
+
+  return merged;
+}
+
 function parseRpgAttributes(value: unknown): RPGAttributes | null {
   const record = parseRecord(value);
   if (!RPG_ATTRIBUTE_KEYS.some((key) => Object.prototype.hasOwnProperty.call(record, key))) return null;

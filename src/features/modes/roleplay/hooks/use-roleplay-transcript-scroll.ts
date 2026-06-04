@@ -105,10 +105,23 @@ export function useRoleplayTranscriptScroll({
     });
   }, [activeChatId, messages?.length, newestMsgId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (isLoadingMoreRef.current) return;
     if (forceScrollToNewest || (isNearBottomRef.current && !userScrolledAwayRef.current)) {
-      messagesEndRef.current?.scrollIntoView({ behavior: isStreaming ? "auto" : "smooth" });
+      const element = scrollRef.current;
+      if (!element) return;
+      lastScrollTopRef.current = scrollTranscriptToBottom(element);
+      isNearBottomRef.current = true;
+      userScrolledAwayRef.current = false;
+      const frame = requestAnimationFrame(() => {
+        const currentElement = scrollRef.current;
+        if (!currentElement || currentElement !== element || isLoadingMoreRef.current || userScrolledAwayRef.current) {
+          return;
+        }
+        lastScrollTopRef.current = scrollTranscriptToBottom(currentElement);
+        isNearBottomRef.current = true;
+      });
+      return () => cancelAnimationFrame(frame);
     }
   }, [newestMsgId, newestMsgSwipeIndex, streamBuffer, thinkingBuffer, isStreaming, forceScrollToNewest]);
 

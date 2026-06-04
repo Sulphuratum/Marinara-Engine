@@ -126,6 +126,9 @@ const KNOWLEDGE_ROUTER_AGENT_TYPE = "knowledge-router";
 const KNOWLEDGE_AGENT_TYPES = new Set([KNOWLEDGE_RETRIEVAL_AGENT_TYPE, KNOWLEDGE_ROUTER_AGENT_TYPE]);
 const ASSISTANT_INTERVAL_AGENT_TYPES = new Set([DIRECTOR_AGENT_TYPE, ILLUSTRATOR_AGENT_TYPE]);
 const STATIC_CONTEXT_INJECTION_AGENT_TYPES = new Set<string>([BUILT_IN_AGENT_IDS.HTML]);
+const TRACKER_AGENT_TYPES = new Set(
+  BUILT_IN_AGENTS.filter((agent) => agent.category === "tracker").map((agent) => agent.id),
+);
 const MAX_ASSISTANT_RUN_INTERVAL = 100;
 const MAX_CUSTOM_AGENT_USER_RUN_INTERVAL = 200;
 const MAX_AGENT_PARALLEL_JOBS = 16;
@@ -333,10 +336,9 @@ function chatMetadata(input: GenerationAgentRuntimeInput): JsonRecord {
   return parseRecord(input.chat.metadata);
 }
 
-function chatAgentsEnabled(input: GenerationAgentRuntimeInput): boolean {
+function chatHasActiveAgents(input: GenerationAgentRuntimeInput): boolean {
   if (input.agentTypes && input.agentTypes.size > 0) return true;
-  if (chatActiveAgentIds(input).size > 0) return true;
-  return boolish(chatMetadata(input).enableAgents, false);
+  return chatActiveAgentIds(input).size > 0;
 }
 
 function chatActiveAgentIds(input: GenerationAgentRuntimeInput): Set<string> {
@@ -871,6 +873,8 @@ function skippedLorebookKeeperTargetResult(agent: JsonRecord): AgentResult {
 function suppressAgentForTurn(input: GenerationAgentRuntimeInput, type: string): boolean {
   const isRegeneration = !!readString(input.regenerateMessageId).trim();
   if (isRegeneration && type === "echo-chamber") return true;
+  if (!input.agentTypes && boolish(chatMetadata(input).manualTrackers, false) && TRACKER_AGENT_TYPES.has(type))
+    return true;
   if (type === HAPTIC_AGENT_TYPE) return !boolish(chatMetadata(input).enableHapticFeedback, false);
   return false;
 }
@@ -888,7 +892,7 @@ async function resolveLorebookKeeperRuntimeTarget(
 }
 
 async function resolveAgents(deps: AgentDeps, input: GenerationAgentRuntimeInput): Promise<ResolvedAgentsResult> {
-  if (!chatAgentsEnabled(input)) return { agents: [], skippedResults: [], staticInjections: [] };
+  if (!chatHasActiveAgents(input)) return { agents: [], skippedResults: [], staticInjections: [] };
   const scopedAgentIds = chatActiveAgentIds(input);
   const activationMessages = activationScanMessages(input);
   const requestedAgentTypes = input.agentTypes ?? null;

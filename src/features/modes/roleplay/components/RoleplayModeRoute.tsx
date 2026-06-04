@@ -96,7 +96,7 @@ export function RoleplayModeRoute({ activeChatId, fallbackChatMode = "roleplay" 
   const enabledAgentTypes = useMemo(() => {
     const set = new Set<string>();
     const activeAgentIds: string[] = Array.isArray(data.chatMeta.activeAgentIds) ? data.chatMeta.activeAgentIds : [];
-    if (!data.chatMeta.enableAgents && activeAgentIds.length === 0) return set;
+    if (activeAgentIds.length === 0) return set;
     const enabledById = new Map<string, boolean>();
     for (const config of (agentConfigs ?? []) as AgentConfigRow[]) {
       const enabled = agentConfigEnabled(config.enabled, true);
@@ -107,8 +107,8 @@ export function RoleplayModeRoute({ activeChatId, fallbackChatMode = "roleplay" 
       if (enabledById.get(id) !== false) set.add(id);
     }
     return set;
-  }, [agentConfigs, data.chatMeta.activeAgentIds, data.chatMeta.enableAgents]);
-  const agentsUiEnabled = Boolean(data.chatMeta.enableAgents) || enabledAgentTypes.size > 0;
+  }, [agentConfigs, data.chatMeta.activeAgentIds]);
+  const agentsUiEnabled = enabledAgentTypes.size > 0;
   const expressionAgentEnabled = enabledAgentTypes.has("expression");
   const combatAgentEnabled = enabledAgentTypes.has("combat");
   const timeline = useChatTimelineActions({

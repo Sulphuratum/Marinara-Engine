@@ -2917,7 +2917,7 @@ export function GameSurface({
   void _journalEntry;
   const transitionGameState = useTransitionGameState();
   const sceneAnalysis = useGameSceneAnalysis();
-  const sceneAnalysisEnabled = chatMeta.enableAgents === true || chatMeta.enableAgents === "true";
+  const sceneAnalysisEnabled = Array.isArray(chatMeta.activeAgentIds) && chatMeta.activeAgentIds.length > 0;
 
   // Process GM tags from the latest assistant message
   const latestAssistantMsg = useMemo(() => {

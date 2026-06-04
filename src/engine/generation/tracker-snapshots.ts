@@ -13,6 +13,7 @@ import { worldStatePatchFromAgentData } from "./world-state-agent-result";
 import {
   applyQuestUpdatesToPlayerStats,
   clonePlayerStats,
+  mergeCustomTrackerFieldsFromAgent,
   parseCustomTrackerField,
   parseInventoryItem,
   parseStat,
@@ -468,9 +469,10 @@ function gameStatePatchFromAgentResult(
   if (result.agentType === "custom-tracker" || result.type === "custom_tracker_update") {
     if (!Array.isArray(data.fields)) return null;
     const playerStats = clonePlayerStats(snapshot.playerStats);
-    playerStats.customTrackerFields = data.fields
+    const agentFields = data.fields
       .map(parseCustomTrackerField)
       .filter((field): field is CustomTrackerField => !!field);
+    playerStats.customTrackerFields = mergeCustomTrackerFieldsFromAgent(playerStats.customTrackerFields, agentFields);
     return { playerStats };
   }
 

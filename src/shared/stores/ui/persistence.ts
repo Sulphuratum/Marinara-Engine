@@ -33,6 +33,16 @@ function normalizePersistedWidth(value: unknown, fallback: number, min: number, 
   return Math.max(min, Math.min(max, width));
 }
 
+function normalizeBooleanRecord(value: unknown): Record<string, boolean> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).flatMap(([key, entry]) => {
+      const id = key.trim();
+      return id && entry === true ? [[id, true] as const] : [];
+    }),
+  );
+}
+
 export function createDebouncedUiStorage() {
   return createJSONStorage(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -159,6 +169,7 @@ export function partializeUiState(state: UIState) {
     gameTutorialDisabled: state.gameTutorialDisabled,
     linkApiBannerDismissed: state.linkApiBannerDismissed,
     echoChamberSide: state.echoChamberSide,
+    echoChamberDismissedChatIds: state.echoChamberDismissedChatIds,
     userStatusManual: state.userStatusManual === "dnd" ? "dnd" : "active",
     userActivity: state.userActivity,
     convoNotificationSound: state.convoNotificationSound,
@@ -213,6 +224,7 @@ export function migrateUiState(persistedState: unknown): Partial<UIState> {
   persisted.editMessagesOnDoubleClick = persisted.editMessagesOnDoubleClick !== false;
   persisted.imagePromptIncludeAppearances = persisted.imagePromptIncludeAppearances !== false;
   persisted.imagePromptFormat = persisted.imagePromptFormat === "tags" ? "tags" : "descriptive";
+  persisted.echoChamberDismissedChatIds = normalizeBooleanRecord(persisted.echoChamberDismissedChatIds);
   persisted.userStatusManual = persisted.userStatusManual === "dnd" ? "dnd" : "active";
   persisted.userStatus = persisted.userStatusManual === "dnd" ? "dnd" : "active";
   persisted.notificationSound = normalizeNotificationSoundId(persisted.notificationSound);

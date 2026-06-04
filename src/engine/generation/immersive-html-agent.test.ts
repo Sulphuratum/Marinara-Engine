@@ -53,7 +53,7 @@ describe("Immersive HTML agent", () => {
       chat: {
         id: "chat-1",
         mode: "roleplay",
-        metadata: { enableAgents: true, activeAgentIds: ["html"] },
+        metadata: { activeAgentIds: ["html"] },
       },
       connection: {},
       storedMessages: [{ id: "m1", role: "user", content: "Show me the sign." }],
