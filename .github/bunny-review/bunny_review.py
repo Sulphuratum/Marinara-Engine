@@ -1,5 +1,6 @@
 # .github/bunny-review/bunny_review.py
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -17,6 +18,7 @@ BUNNY_MARKER = "<!-- bunny-review:walkthrough -->"
 COMMAND_STATUS_MARKER = "<!-- bunny-review:command-status -->"
 FINDING_MARKER_RE = re.compile(r"<!-- bunny-review:finding=([0-9a-f]{16}) -->")
 STATE_MARKER_RE = re.compile(r"<!-- bunny-review:last-reviewed-sha=([0-9a-f]{40}) -->")
+CONTRACT_STATE_RE = re.compile(r"<!-- bunny-review:contract-state=([A-Za-z0-9_=-]+) -->")
 MAX_REVIEW_PACKET_CHARS = 180_000
 MAX_SECTION_CHARS = 60_000
 MAX_CONTEXT_FILES = 5
@@ -32,6 +34,10 @@ MAX_FILE_PATCH_CHARS = 55_000
 MAX_FILE_SUMMARY_CHARS = 9_000
 MAX_REVIEW_CHUNKS = 8
 MAX_CHUNK_PATCH_CHARS = 90_000
+MAX_INLINE_COMMENT_CHARS = 1_200
+MAX_CONTRACT_STATE_ENTRIES = 12
+MAX_CONTRACT_STATE_TEXT_CHARS = 320
+MAX_CONTRACT_STATE_LIST_ITEMS = 3
 
 
 class ReviewTooLarge(Exception):
@@ -104,6 +110,30 @@ def truncate(text, limit):
         text[:limit]
         + f"\n\n[truncated: section was {len(text)} chars, limit is {limit} chars]\n"
     )
+
+
+def inline_truncate(text, limit=MAX_INLINE_COMMENT_CHARS):
+    if len(text) <= limit:
+        return text
+    suffix = f"\n\n[truncated: inline finding was {len(text)} chars, limit is {limit} chars]"
+    keep = max(0, limit - len(suffix))
+    return text[:keep].rstrip() + suffix
+
+
+def compact_state_text(value, limit=MAX_CONTRACT_STATE_TEXT_CHARS):
+    text = " ".join(str(value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)].rstrip() + "..."
+
+
+def compact_state_values(value):
+    values = compact_list(value)
+    return [
+        compact_state_text(item)
+        for item in values[:MAX_CONTRACT_STATE_LIST_ITEMS]
+        if compact_state_text(item)
+    ]
 
 
 def read_text(path, limit=MAX_SECTION_CHARS):
@@ -826,19 +856,18 @@ def render_finding_body(finding):
         "",
         blockquote(finding.body),
     ]
-    contract = render_repair_contract(finding)
-    if contract:
-        parts.extend(["", contract])
     if finding.fix_hint:
         parts.extend([""] + alert_block("TIP", [f"**Suggested fix:** {finding.fix_hint}"]))
-    parts.extend(["", render_agent_prompt_details([finding], "🤖 Repair prompt for agents")])
-    return "\n".join(parts).strip()
+    return inline_truncate("\n".join(parts).strip())
+
+
+def finding_id(finding):
+    raw = f"{finding.path}:{finding.line}:{finding.title}".encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest()[:16]
 
 
 def finding_marker(finding):
-    raw = f"{finding.path}:{finding.line}:{finding.title}".encode("utf-8", "replace")
-    digest = hashlib.sha256(raw).hexdigest()[:16]
-    return f"<!-- bunny-review:finding={digest} -->"
+    return f"<!-- bunny-review:finding={finding_id(finding)} -->"
 
 
 def short_ref(value):
@@ -893,33 +922,6 @@ def compact_list(value):
     return []
 
 
-def render_repair_contract(finding):
-    contract = finding.repair_contract or {}
-    if not contract or finding.severity == "nitpick":
-        return ""
-    labels = [
-        ("invariant", "Invariant"),
-        ("related_failure_paths", "Related failure paths"),
-        ("adjacent_traps", "Adjacent traps"),
-        ("acceptable_fix_shapes", "Acceptable fix shapes"),
-        ("expected_proof", "Expected proof"),
-    ]
-    lines = ["<details>", "<summary>Repair contract</summary>", ""]
-    for key, label in labels:
-        values = compact_list(contract.get(key))
-        if not values:
-            continue
-        if len(values) == 1:
-            lines.append(f"- **{label}:** {values[0]}")
-            continue
-        lines.append(f"- **{label}:**")
-        lines.extend(f"  - {item}" for item in values[:5])
-    if len(lines) <= 3:
-        return ""
-    lines.extend(["", "</details>"])
-    return "\n".join(lines)
-
-
 def severity_meta(severity):
     return {
         "blocking": {"icon": "🚫", "label": "BLOCKING", "rank": 0},
@@ -971,6 +973,17 @@ def control_type(item):
 
 def warn_is_proof_gap(item):
     return status_meta(item.get("status"))["label"] in {"WARN", "WARNING", "PENDING", "UNKNOWN"} and control_type(item) == "Proof Gap"
+
+
+def warn_is_blocking_proof_gap(item):
+    if not warn_is_proof_gap(item):
+        return False
+    combined = " ".join(
+        str(item.get(key, "")) for key in ("name", "detail", "blocking", "severity")
+    ).lower()
+    if "non-blocking" in combined or "not blocking" in combined:
+        return False
+    return "blocking" in combined or "merge-blocking" in combined
 
 
 def finding_summary(findings):
@@ -1034,12 +1047,12 @@ def merge_signal(review_obj, findings, nitpicks, pre_merge):
             "admonition": "CAUTION",
             "detail": "Repair blocking/high findings or failed controls before merge.",
         }
-    if findings or any(warn_is_proof_gap(item) for item in pre_merge):
+    if findings or any(warn_is_blocking_proof_gap(item) for item in pre_merge):
         return {
             "label": "ACTION NEEDED",
             "title": "Action Needed",
             "admonition": "WARNING",
-            "detail": "Actionable findings or proof gaps remain for this head.",
+            "detail": "Actionable findings or blocking proof gaps remain for this head.",
         }
     has_notes = nitpicks or any(
         status_meta(item.get("status"))["label"] in {"WARN", "WARNING", "PENDING", "UNKNOWN"}
@@ -1155,59 +1168,141 @@ def render_review_metadata(review_obj, head_sha):
     )
 
 
-def code_block_text(text):
-    return text.replace("```", "'''").strip()
+CONTRACT_LABELS = (
+    ("invariant", "Invariant"),
+    ("related_failure_paths", "Related failure paths"),
+    ("adjacent_traps", "Adjacent traps"),
+    ("acceptable_fix_shapes", "Acceptable fix shapes"),
+    ("expected_proof", "Expected proof"),
+)
+CONTRACT_LABEL_TO_KEY = {label.lower(): key for key, label in CONTRACT_LABELS}
 
 
-def agent_prompt_for_finding(finding):
-    lines = [
-        f"Task: verify and repair `{finding.path}` around line {finding.line}.",
-        f"Finding: {finding.title}",
-        f"Severity: {finding.severity}",
-    ]
-    if finding.fix_hint:
-        lines.append(f"Suggested repair: {finding.fix_hint}")
-    if finding.repair_contract and finding.severity != "nitpick":
-        lines.append("Repair contract:")
-        for key, label in (
-            ("invariant", "Invariant"),
-            ("related_failure_paths", "Related failure paths"),
-            ("adjacent_traps", "Adjacent traps"),
-            ("acceptable_fix_shapes", "Acceptable fix shapes"),
-            ("expected_proof", "Expected proof"),
-        ):
-            values = compact_list(finding.repair_contract.get(key))
-            if values:
-                lines.append(f"- {label}: " + "; ".join(values[:5]))
-    lines.extend(
-        [
-            "Validate the fix with the narrowest relevant check.",
-            "If the finding is stale, leave the code unchanged and record why.",
-        ]
-    )
-    return "\n".join(lines)
+def compact_contract_for_state(contract):
+    if not isinstance(contract, dict):
+        return None
+    compact = {}
+    for key, _ in CONTRACT_LABELS:
+        values = compact_state_values(contract.get(key))
+        if values:
+            compact[key] = values
+    return compact or None
 
 
-def render_agent_prompt(findings):
-    sections = [agent_prompt_for_finding(finding) for finding in findings]
-    return code_block_text("\n\n".join(sections))
+def contract_state_entry_from_finding(finding, *, status="open"):
+    contract = compact_contract_for_state(finding.repair_contract)
+    if not contract or finding.severity == "nitpick":
+        return None
+    return {
+        "id": finding_id(finding),
+        "status": status,
+        "severity": str(finding.severity or "medium"),
+        "path": finding.path,
+        "line": finding.line,
+        "title": compact_state_text(finding.title, 180),
+        "fix_hint": compact_state_text(finding.fix_hint, 260),
+        "repair_contract": contract,
+    }
 
 
-def render_agent_prompt_details(findings, summary):
-    if not findings:
+def normalize_contract_state_entries(entries):
+    normalized = []
+    if not isinstance(entries, list):
+        return normalized
+    for raw in entries:
+        if not isinstance(raw, dict):
+            continue
+        contract = compact_contract_for_state(raw.get("repair_contract"))
+        if not contract:
+            continue
+        normalized.append(
+            {
+                "id": compact_state_text(raw.get("id"), 40),
+                "status": compact_state_text(raw.get("status") or "prior", 40),
+                "severity": compact_state_text(raw.get("severity") or "medium", 24),
+                "path": compact_state_text(raw.get("path"), 260),
+                "line": raw.get("line") if isinstance(raw.get("line"), int) else None,
+                "title": compact_state_text(raw.get("title"), 180),
+                "fix_hint": compact_state_text(raw.get("fix_hint"), 260),
+                "repair_contract": contract,
+            }
+        )
+        if len(normalized) >= MAX_CONTRACT_STATE_ENTRIES:
+            break
+    return normalized
+
+
+def merge_contract_state(current_findings, prior_entries):
+    merged = []
+    seen = set()
+    for finding in current_findings:
+        entry = contract_state_entry_from_finding(finding, status="open")
+        if not entry:
+            continue
+        seen.add(entry["id"])
+        merged.append(entry)
+    for entry in normalize_contract_state_entries(prior_entries):
+        entry_id = entry.get("id")
+        if entry_id and entry_id in seen:
+            continue
+        if entry_id:
+            seen.add(entry_id)
+        merged.append(entry)
+        if len(merged) >= MAX_CONTRACT_STATE_ENTRIES:
+            break
+    return merged
+
+
+def encode_contract_state(entries):
+    normalized = normalize_contract_state_entries(entries)
+    if not normalized:
         return ""
-    return "\n".join(
-        [
-            "<details>",
-            f"<summary>{summary}</summary>",
-            "",
-            "```text",
-            render_agent_prompt(findings),
-            "```",
-            "",
-            "</details>",
-        ]
-    )
+    payload = {"version": 1, "contracts": normalized}
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii")
+    return f"<!-- bunny-review:contract-state={encoded} -->"
+
+
+def decode_contract_state_from_body(body):
+    matches = CONTRACT_STATE_RE.findall(body or "")
+    if not matches:
+        return []
+    encoded = matches[-1]
+    try:
+        decoded = base64.urlsafe_b64decode(encoded.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except Exception:
+        return []
+    return normalize_contract_state_entries(payload.get("contracts"))
+
+
+def format_contract_entries_for_prompt(entries, limit=12_000):
+    entries = normalize_contract_state_entries(entries)
+    if not entries:
+        return "No prior Bunny repair contracts found."
+    lines = [
+        "Prior Bunny repair contracts from earlier review rounds. Judge whether the current diff satisfies each invariant before reporting adjacent defects.",
+    ]
+    for index, entry in enumerate(entries, 1):
+        location = f"{entry.get('path') or 'unknown'}:{entry.get('line') or '?'}"
+        lines.extend(
+            [
+                "",
+                f"## Contract {index}: {entry.get('title') or '<untitled>'}",
+                f"- ID: {entry.get('id') or 'unknown'}",
+                f"- Status: {entry.get('status') or 'prior'}",
+                f"- Severity: {entry.get('severity') or 'medium'}",
+                f"- Location: {location}",
+            ]
+        )
+        if entry.get("fix_hint"):
+            lines.append(f"- Suggested repair: {entry['fix_hint']}")
+        contract = entry.get("repair_contract") or {}
+        for key, label in CONTRACT_LABELS:
+            values = compact_state_values(contract.get(key))
+            if values:
+                lines.append(f"- {label}: " + "; ".join(values))
+    return truncate("\n".join(lines).strip(), limit)
 
 
 def is_ci_check(item):
@@ -1291,7 +1386,15 @@ def ci_status_to_pre_merge_checks(ci_status):
     ]
 
 
-def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_status, head_sha):
+def render_walkthrough(
+    review_obj,
+    findings,
+    nitpicks,
+    invalid_findings,
+    ci_status,
+    head_sha,
+    prior_contracts=None,
+):
     summary = review_obj.get("change_summary") or []
     questions = review_obj.get("open_questions") or []
     checked = review_obj.get("what_i_checked") or []
@@ -1306,9 +1409,16 @@ def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_stat
         if head_sha and not has_incomplete_review_check(pre_merge)
         else "<!-- bunny-review:last-reviewed-sha=unrecorded -->"
     )
+    contract_state_marker = encode_contract_state(
+        merge_contract_state(findings, prior_contracts or [])
+    )
     body = [
         BUNNY_MARKER,
         state_marker,
+    ]
+    if contract_state_marker:
+        body.append(contract_state_marker)
+    body.extend([
         "## 🐰 Bunny Review",
         "",
         render_merge_signal(review_obj, findings, nitpicks, pre_merge, head_sha),
@@ -1316,8 +1426,8 @@ def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_stat
         render_review_metadata(review_obj, head_sha),
         "",
         "### 🧭 Specimen Summary",
-    ]
-    body.extend([f"- {line}" for line in summary[:3]] or ["- No specimen summary produced."])
+    ])
+    body.extend([f"- {line}" for line in summary[:2]] or ["- No specimen summary produced."])
     body.extend(["", "### 🔎 Isolated Defects"])
     if findings:
         body.extend(
@@ -1361,11 +1471,6 @@ def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_stat
             )
     else:
         body.append("- None recorded.")
-    agent_prompt = render_agent_prompt_details(
-        findings, "🤖 Repair prompt for isolated Bunny findings"
-    )
-    if agent_prompt:
-        body.extend(["", agent_prompt])
     if pre_merge:
         body.extend(
             [
@@ -1375,7 +1480,7 @@ def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_stat
                 "| :---: | --- | --- | --- |",
             ]
         )
-        for item in pre_merge[:8]:
+        for item in pre_merge[:5]:
             name = item.get("name", "check")
             status = item.get("status", "unknown")
             detail = item.get("detail", "")
@@ -1387,10 +1492,11 @@ def render_walkthrough(review_obj, findings, nitpicks, invalid_findings, ci_stat
                 f"{md_cell(name)} | "
                 f"{md_cell(detail)} |"
             )
-    body.extend(["", "### ❓ Open Questions"])
-    body.extend([f"- {line}" for line in questions[:2]] or ["- None recorded."])
+    if questions:
+        body.extend(["", "### ❓ Open Questions"])
+        body.extend([f"- {line}" for line in questions[:2]])
     body.extend(["", "### 🧪 Observations"])
-    body.extend([f"- {line}" for line in checked[:6]] or ["- Review packet and diff context inspected."])
+    body.extend([f"- {line}" for line in checked[:3]] or ["- Review packet and diff context inspected."])
     if invalid_findings:
         body.extend(
             [
@@ -1446,9 +1552,12 @@ def merge_review_objects(reviews):
 def prior_review_contracts_context(pr_num, limit=12_000):
     if not pr_num:
         return "No prior Bunny review context available."
+    state_entries = prior_review_contract_state(pr_num)
+    if state_entries:
+        return format_contract_entries_for_prompt(state_entries, limit)
     comment = latest_walkthrough_comment(pr_num)
     if not comment:
-        return "No prior Bunny walkthrough comment found."
+        return "No prior Bunny walkthrough comment or inline contract comments found."
     body = comment.get("body", "")
     if not body:
         return "Prior Bunny walkthrough comment was empty."
@@ -1555,6 +1664,130 @@ def latest_walkthrough_comment(pr_num):
     if not walkthroughs:
         return None
     return walkthroughs[-1]
+
+
+def pull_inline_comments(pr_num):
+    gh = run_gh(
+        [
+            "api",
+            f"repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{pr_num}/comments?per_page=100",
+            "--paginate",
+        ],
+        check=True,
+    )
+    return load_json_list(gh.stdout)
+
+
+def extract_repair_contract_from_markdown(body):
+    contract = {}
+    in_contract = False
+    current_key = None
+    for raw_line in (body or "").splitlines():
+        line = raw_line.strip()
+        if "<summary>Repair contract</summary>" in line:
+            in_contract = True
+            continue
+        if in_contract and line == "</details>":
+            break
+        if not in_contract or not line:
+            continue
+        label_match = re.match(r"- \*\*(.+?):\*\*\s*(.*)$", line)
+        if label_match:
+            key = CONTRACT_LABEL_TO_KEY.get(label_match.group(1).strip().lower())
+            if not key:
+                current_key = None
+                continue
+            current_key = key
+            value = label_match.group(2).strip()
+            contract[key] = [value] if value else []
+            continue
+        if current_key and line.startswith("- "):
+            contract.setdefault(current_key, []).append(line[2:].strip())
+    return compact_contract_for_state(contract)
+
+
+def inline_comment_contract_entry(comment):
+    body = comment.get("body", "")
+    contract = extract_repair_contract_from_markdown(body)
+    if not contract:
+        return None
+    marker = inline_comment_marker(comment) or ""
+    title = ""
+    severity = "medium"
+    for line in body.splitlines():
+        match = re.match(r"### .*?\b(BLOCKING|HIGH|MEDIUM|LOW):\s*(.+)$", line.strip())
+        if match:
+            severity = match.group(1).lower()
+            title = match.group(2).strip()
+            break
+    path = str(comment.get("path") or "").strip()
+    line_number = comment.get("line") if isinstance(comment.get("line"), int) else None
+    location_match = re.search(r"\*\*Location:\*\* `(.+):(\d+)`", body)
+    if location_match:
+        path = location_match.group(1).strip()
+        line_number = int(location_match.group(2))
+    fix_hint = ""
+    fix_match = re.search(r"\*\*Suggested fix:\*\*\s*(.+)", body)
+    if fix_match:
+        fix_hint = fix_match.group(1).strip()
+    return {
+        "id": marker,
+        "status": "prior",
+        "severity": severity,
+        "path": path,
+        "line": line_number,
+        "title": title,
+        "fix_hint": fix_hint,
+        "repair_contract": contract,
+    }
+
+
+def prior_inline_contract_state(pr_num):
+    if not pr_num:
+        return []
+    try:
+        comments = pull_inline_comments(pr_num)
+    except Exception:
+        return []
+    entries = []
+    seen = set()
+    for comment in sorted(
+        comments,
+        key=lambda item: (
+            item.get("updated_at") or "",
+            item.get("created_at") or "",
+            item.get("id") or 0,
+        ),
+        reverse=True,
+    ):
+        if "bunny-review:finding=" not in comment.get("body", ""):
+            continue
+        entry = inline_comment_contract_entry(comment)
+        if not entry:
+            continue
+        key = entry.get("id") or (
+            entry.get("path"),
+            entry.get("line"),
+            entry.get("title"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(entry)
+        if len(entries) >= MAX_CONTRACT_STATE_ENTRIES:
+            break
+    return normalize_contract_state_entries(entries)
+
+
+def prior_review_contract_state(pr_num):
+    if not pr_num:
+        return []
+    comment = latest_walkthrough_comment(pr_num)
+    if comment:
+        entries = decode_contract_state_from_body(comment.get("body", ""))
+        if entries:
+            return entries
+    return prior_inline_contract_state(pr_num)
 
 
 def is_completed_review_body(body):
@@ -1678,7 +1911,12 @@ def produce_review(args):
         base_url=os.environ.get("LLM_BASE_URL"),
     )
     skill = bunny_prompt_path().read_text("utf-8")
-    prior_contract_context = prior_review_contracts_context(pr_num)
+    prior_contract_state = prior_review_contract_state(pr_num)
+    prior_contract_context = (
+        format_contract_entries_for_prompt(prior_contract_state)
+        if prior_contract_state
+        else prior_review_contracts_context(pr_num)
+    )
 
     def triage_for_packet(review_packet, focus_note):
         triage = (
@@ -1770,6 +2008,7 @@ def produce_review(args):
     review_obj.setdefault("review_base", base)
     review_obj.setdefault("base_ref", base_ref)
     review_obj.setdefault("mode", effective_mode)
+    review_obj.setdefault("_prior_bunny_contract_state", prior_contract_state)
     pathlib.Path("review.json").write_text(
         json.dumps(review_obj, indent=2, sort_keys=True) + "\n", "utf-8"
     )
@@ -1781,6 +2020,19 @@ def read_ci_status():
     if path.exists():
         return path.read_text("utf-8")
     return ""
+
+
+def findings_for_inline_comments(findings):
+    mode = os.environ.get("BUNNY_INLINE_FINDINGS", "urgent").strip().lower()
+    if mode in {"none", "off", "false", "0"}:
+        return []
+    if mode in {"all", "true", "1"}:
+        return findings
+    return [
+        finding
+        for finding in findings
+        if severity_meta(finding.severity)["rank"] <= severity_meta("high")["rank"]
+    ]
 
 
 def render_review(args):
@@ -1798,8 +2050,17 @@ def render_review(args):
     findings, nitpicks, invalid = validate_review_items(review_obj, base)
     ci_status = read_ci_status()
     head_sha = review_obj.get("head_sha") or os.environ.get("BUNNY_HEAD_SHA", "")
-    walkthrough = render_walkthrough(review_obj, findings, nitpicks, invalid, ci_status, head_sha)
+    walkthrough = render_walkthrough(
+        review_obj,
+        findings,
+        nitpicks,
+        invalid,
+        ci_status,
+        head_sha,
+        prior_contracts=review_obj.get("_prior_bunny_contract_state") or [],
+    )
     pathlib.Path("review.md").write_text(walkthrough, "utf-8")
+    inline_findings = findings_for_inline_comments(findings)
     inline = [
         {
             "path": f.path,
@@ -1807,7 +2068,7 @@ def render_review(args):
             "side": "RIGHT",
             "body": render_finding_body(f),
         }
-        for f in [*findings, *nitpicks]
+        for f in inline_findings
     ]
     pathlib.Path("inline-comments.json").write_text(
         json.dumps(inline, indent=2, sort_keys=True) + "\n", "utf-8"
@@ -1905,16 +2166,8 @@ def load_json_list(stdout):
 
 
 def existing_inline_finding_markers(pr_num):
-    gh = run_gh(
-        [
-            "api",
-            f"repos/{os.environ['GITHUB_REPOSITORY']}/pulls/{pr_num}/comments?per_page=100",
-            "--paginate",
-        ],
-        check=True,
-    )
     markers = set()
-    for comment in load_json_list(gh.stdout):
+    for comment in pull_inline_comments(pr_num):
         markers.update(FINDING_MARKER_RE.findall(comment.get("body", "")))
     return markers
 
