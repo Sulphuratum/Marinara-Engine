@@ -2562,7 +2562,15 @@ function historyMessageContent(message: JsonRecord, includePastReasoning: boolea
 
 function historyMessages(storedMessages: JsonRecord[], limit: number, includePastReasoning = false): ChatMLMessage[] {
   if (limit <= 0) return [];
-  return storedMessages
+  let conversationStartIndex = 0;
+  for (let index = storedMessages.length - 1; index >= 0; index -= 1) {
+    if (boolish(parseRecord(storedMessages[index]!.extra).isConversationStart, false)) {
+      conversationStartIndex = index;
+      break;
+    }
+  }
+  const scopedMessages = conversationStartIndex > 0 ? storedMessages.slice(conversationStartIndex) : storedMessages;
+  return scopedMessages
     .filter((message) => !hiddenFromAi(message))
     .slice(-limit)
     .map((message) => ({
