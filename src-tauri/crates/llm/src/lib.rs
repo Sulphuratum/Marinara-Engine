@@ -51,6 +51,50 @@ enum SseBlockStatus {
     Complete,
 }
 
+#[derive(Default)]
+struct Utf8StreamDecoder {
+    pending: Vec<u8>,
+}
+
+impl Utf8StreamDecoder {
+    fn push_chunk(&mut self, chunk: &[u8], output: &mut String) {
+        let mut bytes = Vec::with_capacity(self.pending.len() + chunk.len());
+        bytes.append(&mut self.pending);
+        bytes.extend_from_slice(chunk);
+        let mut offset = 0;
+        while offset < bytes.len() {
+            match std::str::from_utf8(&bytes[offset..]) {
+                Ok(valid) => {
+                    output.push_str(valid);
+                    return;
+                }
+                Err(error) => {
+                    let valid_end = offset + error.valid_up_to();
+                    if valid_end > offset {
+                        let valid = std::str::from_utf8(&bytes[offset..valid_end])
+                            .expect("valid UTF-8 prefix reported by decoder");
+                        output.push_str(valid);
+                    }
+                    if let Some(error_len) = error.error_len() {
+                        output.push('\u{FFFD}');
+                        offset = valid_end + error_len;
+                    } else {
+                        self.pending.extend_from_slice(&bytes[valid_end..]);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self, output: &mut String) {
+        if !self.pending.is_empty() {
+            output.push_str(&String::from_utf8_lossy(&self.pending));
+            self.pending.clear();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LlmMessage {
     pub role: String,
@@ -1989,13 +2033,14 @@ async fn stream_cohere(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut tool_calls = OpenAiToolCallAccumulator::default();
     let mut completed = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             AppError::new("llm_stream_error", provider_transport_error_message(error))
         })?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk, &mut buffer);
         while let Some(block) = take_sse_block(&mut buffer) {
             if process_cohere_sse_block(&block, emit, &mut tool_calls)? == SseBlockStatus::Complete
             {
@@ -2006,6 +2051,9 @@ async fn stream_cohere(
         if completed {
             break;
         }
+    }
+    if !completed {
+        decoder.finish(&mut buffer);
     }
     if !completed && !buffer.trim().is_empty() {
         process_cohere_sse_block(&buffer, emit, &mut tool_calls)?;
@@ -2113,13 +2161,14 @@ async fn stream_openai_compatible(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut tool_calls = OpenAiToolCallAccumulator::default();
     let mut completed = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             AppError::new("llm_stream_error", provider_transport_error_message(error))
         })?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk, &mut buffer);
         while let Some(block) = take_sse_block(&mut buffer) {
             if process_openai_sse_block(&block, emit, &mut tool_calls)? == SseBlockStatus::Complete
             {
@@ -2130,6 +2179,9 @@ async fn stream_openai_compatible(
         if completed {
             break;
         }
+    }
+    if !completed {
+        decoder.finish(&mut buffer);
     }
     if !completed && !buffer.trim().is_empty() {
         process_openai_sse_block(&buffer, emit, &mut tool_calls)?;
@@ -2542,13 +2594,14 @@ async fn stream_openai_responses(
     }
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut tool_calls = ResponsesToolCallAccumulator::default();
     let mut completed = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             AppError::new("llm_stream_error", provider_transport_error_message(error))
         })?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk, &mut buffer);
         while let Some(block) = take_sse_block(&mut buffer) {
             if process_openai_responses_sse_block(&block, emit, &mut tool_calls)?
                 == SseBlockStatus::Complete
@@ -2560,6 +2613,9 @@ async fn stream_openai_responses(
         if completed {
             break;
         }
+    }
+    if !completed {
+        decoder.finish(&mut buffer);
     }
     if !completed && !buffer.trim().is_empty() {
         process_openai_responses_sse_block(&buffer, emit, &mut tool_calls)?;
@@ -4278,12 +4334,13 @@ async fn stream_anthropic(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut completed = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             AppError::new("llm_stream_error", provider_transport_error_message(error))
         })?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk, &mut buffer);
         while let Some(block) = take_sse_block(&mut buffer) {
             if process_anthropic_sse_block(&block, emit)? == SseBlockStatus::Complete {
                 completed = true;
@@ -4293,6 +4350,9 @@ async fn stream_anthropic(
         if completed {
             break;
         }
+    }
+    if !completed {
+        decoder.finish(&mut buffer);
     }
     if !completed && !buffer.trim().is_empty() {
         process_anthropic_sse_block(&buffer, emit)?;
@@ -4991,12 +5051,13 @@ async fn stream_google(
 
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
+    let mut decoder = Utf8StreamDecoder::default();
     let mut completed = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| {
             AppError::new("llm_stream_error", provider_transport_error_message(error))
         })?;
-        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        decoder.push_chunk(&chunk, &mut buffer);
         while let Some(block) = take_sse_block(&mut buffer) {
             if process_google_sse_block(&block, emit)? == SseBlockStatus::Complete {
                 completed = true;
@@ -5006,6 +5067,9 @@ async fn stream_google(
         if completed {
             break;
         }
+    }
+    if !completed {
+        decoder.finish(&mut buffer);
     }
     if !completed
         && !buffer.trim().is_empty()

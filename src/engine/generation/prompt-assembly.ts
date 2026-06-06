@@ -3633,7 +3633,7 @@ export async function assembleGenerationPrompt(
       : [...processedLore.depthEntries, ...characterDepthEntries],
     chatHistoryDepthInjectionBounds(messages),
   );
-  const regexScripts = await storage.list<JsonRecord>("regex-scripts");
+  const regexScripts = (await storage.list<JsonRecord>("regex-scripts")).sort(bySortOrder);
   applyRegexScriptsToPromptMessages(messages, regexScripts, {
     resolveMacros: (value) => resolvePromptMacros(value, macros, deferCharacterMacros),
   });

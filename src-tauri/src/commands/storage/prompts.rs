@@ -1,6 +1,6 @@
 use super::shared::*;
 use super::*;
-use marinara_security::is_allowed_outbound_url;
+use marinara_security::is_allowed_provider_url;
 use std::collections::{HashMap, HashSet};
 
 const LEGACY_LOCAL_SIDECAR_CONNECTION_ID: &str = "__local_sidecar__";
@@ -856,7 +856,7 @@ fn embedding_base_url(connection: &Value, fallback: &str) -> String {
 }
 
 fn ensure_embedding_url_allowed(url: &str) -> AppResult<()> {
-    if is_allowed_outbound_url(url, true) {
+    if is_allowed_provider_url(url, false) {
         Ok(())
     } else {
         Err(AppError::invalid_input(format!(

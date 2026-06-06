@@ -1,6 +1,7 @@
 use super::{
     avatars, characters, chats, connection_secrets, contracts, game_state_snapshots, integrations,
-    lorebook_images, media_uploads, message_swipes, personas, prompts, shared, sprites,
+    lorebook_images, managed_thumbnails, media_uploads, message_swipes, personas, prompts, shared,
+    sprites,
 };
 use crate::builtins::is_protected_record;
 use crate::state::AppState;
@@ -714,6 +715,7 @@ pub(crate) fn storage_create_inner(
         }
     };
     if entity == "connections" {
+        clear_other_default_connections(state, &created)?;
         clear_other_default_agent_connections(state, &created)?;
         let mut masked = created;
         connection_secrets::mask_connection_for_read(&mut masked);
@@ -775,6 +777,7 @@ pub(crate) fn storage_update_inner(
         state.storage.patch(&entity, &id, normalized_patch)?
     };
     if entity == "connections" {
+        clear_other_default_connections(state, &updated)?;
         clear_other_default_agent_connections(state, &updated)?;
     }
     Ok(updated)
@@ -1351,6 +1354,44 @@ fn connection_default_for_agents_enabled(connection: &Value) -> bool {
         .get("defaultForAgents")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn connection_is_default(connection: &Value) -> bool {
+    value_truthy(connection.get("isDefault")) || value_truthy(connection.get("default"))
+}
+
+fn clear_other_default_connections(
+    state: &AppState,
+    selected_connection: &Value,
+) -> Result<(), AppError> {
+    if !connection_is_default(selected_connection) {
+        return Ok(());
+    }
+    let Some(selected_id) = selected_connection
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    for connection in state.storage.list("connections")? {
+        let Some(id) = connection
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| *id != selected_id)
+        else {
+            continue;
+        };
+        if !connection_is_default(&connection) {
+            continue;
+        }
+        state.storage.patch(
+            "connections",
+            id,
+            json!({ "isDefault": false, "default": false }),
+        )?;
+    }
+    Ok(())
 }
 
 fn clear_other_default_agent_connections(
@@ -2364,6 +2405,13 @@ fn remove_owned_media(state: &AppState, entity: &str, record: &Value) {
 }
 
 fn remove_gallery_file(state: &AppState, record: &Value) {
+    if let Some(filename) = record.get("filename").and_then(Value::as_str) {
+        managed_thumbnails::remove_managed_thumbnail_files(
+            state,
+            managed_thumbnails::ManagedThumbnailKind::Gallery,
+            filename,
+        );
+    }
     media_uploads::remove_managed_record_file(state, "gallery", record, "filePath", "filename");
 }
 
