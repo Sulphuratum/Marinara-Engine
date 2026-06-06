@@ -632,26 +632,97 @@ impl FileStorage {
     where
         F: FnOnce(&mut [AtomicCollectionRows]) -> AppResult<Option<T>>,
     {
+        self.append_many_and_update_collections_uncached_with_append_check(
+            appends,
+            update_collections,
+            |_| Ok(true),
+            update,
+        )
+    }
+
+    pub fn append_many_and_update_collections_uncached_with_append_check<F, C, T>(
+        &self,
+        appends: Vec<(&str, Vec<Value>)>,
+        update_collections: Vec<&str>,
+        validate_append_collections: C,
+        update: F,
+    ) -> AppResult<Option<T>>
+    where
+        F: FnOnce(&mut [AtomicCollectionRows]) -> AppResult<Option<T>>,
+        C: FnOnce(&mut [AtomicCollectionRows]) -> AppResult<bool>,
+    {
         self.ensure_writes_available()?;
         let appends = appends
             .into_iter()
             .filter(|(_, rows)| !rows.is_empty())
             .collect::<Vec<_>>();
+        let update_collections = update_collections
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let _atomic_update = self.begin_atomic_update()?;
+        let (mut loaded, original_stamps) = {
+            let _guard = self
+                .lock
+                .write()
+                .map_err(|_| AppError::new("lock_error", "Storage lock poisoned"))?;
+            if self.any_collection_dirty_cached(
+                update_collections
+                    .iter()
+                    .map(String::as_str)
+                    .chain(appends.iter().map(|(collection, _)| *collection)),
+            )? {
+                return Ok(None);
+            }
+
+            let mut loaded = Vec::with_capacity(update_collections.len());
+            let mut original_stamps = Vec::with_capacity(update_collections.len());
+            let mut seen_update_paths = HashSet::new();
+            for collection in &update_collections {
+                let path = self.collection_path(collection)?;
+                if !seen_update_paths.insert(path.clone()) {
+                    return Err(AppError::invalid_input(format!(
+                        "Duplicate collection update: {collection}"
+                    )));
+                }
+                loaded.push(AtomicCollectionRows {
+                    collection: collection.to_string(),
+                    rows: self.read_collection_no_recovery(collection)?,
+                });
+                original_stamps.push((collection.to_string(), collection_file_stamp(&path)?));
+            }
+            (loaded, original_stamps)
+        };
+
+        let Some(output) = update(&mut loaded)? else {
+            return Ok(None);
+        };
+
         let _guard = self
             .lock
             .write()
             .map_err(|_| AppError::new("lock_error", "Storage lock poisoned"))?;
-        self.ensure_writes_available()?;
         if self.any_collection_dirty_cached(
             update_collections
                 .iter()
-                .copied()
+                .map(String::as_str)
                 .chain(appends.iter().map(|(collection, _)| *collection)),
         )? {
             return Ok(None);
         }
+        for (collection, original_stamp) in &original_stamps {
+            let path = self.collection_path(collection)?;
+            if collection_file_stamp(&path)? != *original_stamp {
+                return Ok(None);
+            }
+        }
 
-        self.append_many_and_update_collections_uncached_locked(appends, update_collections, update)
+        self.append_many_and_update_collections_uncached_locked(
+            appends,
+            loaded,
+            validate_append_collections,
+            output,
+        )
     }
 
     pub fn update_collections_atomically<F, T>(
@@ -1975,33 +2046,22 @@ impl FileStorage {
         Ok(true)
     }
 
-    fn append_many_and_update_collections_uncached_locked<F, T>(
+    fn append_many_and_update_collections_uncached_locked<C, T>(
         &self,
         appends: Vec<(&str, Vec<Value>)>,
-        update_collections: Vec<&str>,
-        update: F,
+        loaded: Vec<AtomicCollectionRows>,
+        validate_append_collections: C,
+        output: T,
     ) -> AppResult<Option<T>>
     where
-        F: FnOnce(&mut [AtomicCollectionRows]) -> AppResult<Option<T>>,
+        C: FnOnce(&mut [AtomicCollectionRows]) -> AppResult<bool>,
     {
-        let mut loaded = Vec::with_capacity(update_collections.len());
-        let mut seen_update_paths = HashSet::new();
-        for collection in update_collections {
-            let path = self.collection_path(collection)?;
-            if !seen_update_paths.insert(path) {
-                return Err(AppError::invalid_input(format!(
-                    "Duplicate collection update: {collection}"
-                )));
-            }
-            loaded.push(AtomicCollectionRows {
-                collection: collection.to_string(),
-                rows: self.read_collection_no_recovery(collection)?,
-            });
-        }
-
-        let Some(output) = update(&mut loaded)? else {
+        let Some(mut append_collections) = self.load_unique_append_collections(&appends)? else {
             return Ok(None);
         };
+        if !validate_append_collections(&mut append_collections)? {
+            return Ok(None);
+        }
 
         let transaction_id = storage_transaction_id();
         let mut pending = Vec::with_capacity(loaded.len() + appends.len());
@@ -2084,8 +2144,37 @@ impl FileStorage {
             self.invalidate_projected_cache_for_collection(entry.collection())?;
             self.cache_collection(entry.collection(), entry.rows(), false)?;
         }
+        for (collection, _) in &appends {
+            self.invalidate_projected_cache_for_collection(collection)?;
+        }
         self.append_cached_collection_rows(&appends)?;
         Ok(Some(output))
+    }
+
+    fn load_unique_append_collections(
+        &self,
+        appends: &[(&str, Vec<Value>)],
+    ) -> AppResult<Option<Vec<AtomicCollectionRows>>> {
+        let mut loaded = Vec::new();
+        let mut seen_paths = HashSet::new();
+        for (collection, _) in appends {
+            let path = self.collection_path(collection)?;
+            if !seen_paths.insert(path) {
+                continue;
+            }
+            let rows = match self.read_collection_no_recovery(collection) {
+                Ok(rows) => rows,
+                Err(error) if matches!(error.code.as_str(), "invalid_input" | "json_error") => {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
+            loaded.push(AtomicCollectionRows {
+                collection: (*collection).to_string(),
+                rows,
+            });
+        }
+        Ok(Some(loaded))
     }
 
     fn stage_replaced_collection(
@@ -2430,6 +2519,9 @@ fn stage_append_to_collection_file(path: &Path, tmp: &Path, rows: &[Value]) -> A
     if looks_nul_filled(path) {
         return Ok(false);
     }
+    if !collection_file_is_json_array(path)? {
+        return Ok(false);
+    }
 
     let mut file = fs::File::open(path)?;
     let mut cursor = file.metadata()?.len();
@@ -2485,6 +2577,17 @@ fn stage_append_to_collection_file(path: &Path, tmp: &Path, rows: &[Value]) -> A
     output.write_all(b"\n]\n")?;
     output.sync_all()?;
     Ok(true)
+}
+
+fn collection_file_is_json_array(path: &Path) -> AppResult<bool> {
+    let raw = fs::read_to_string(path)?;
+    if raw.trim().is_empty() {
+        return Ok(false);
+    }
+    match serde_json::from_str::<Vec<Value>>(&raw) {
+        Ok(_) => Ok(true),
+        Err(_) => Ok(false),
+    }
 }
 
 fn sync_file(path: &Path) -> AppResult<()> {
@@ -4691,6 +4794,177 @@ mod tests {
     }
 
     #[test]
+    fn append_many_and_update_collections_uncached_callback_reads_and_rejects_reentrant_writes() {
+        let root = temp_storage_root("append-update-callback-reentrant");
+        let storage = FileStorage::new(&root).unwrap();
+        storage
+            .replace_all(
+                "messages",
+                vec![json!({ "id": "message-1", "content": "first" })],
+            )
+            .unwrap();
+        storage.replace_all("message-swipes", Vec::new()).unwrap();
+
+        let error = storage
+            .append_many_and_update_collections_uncached(
+                vec![(
+                    "message-swipes",
+                    vec![json!({ "id": "message-1::swipe::0", "messageId": "message-1" })],
+                )],
+                vec!["messages"],
+                |collections| {
+                    assert_eq!(storage.list("messages")?.len(), 1);
+                    storage.create(
+                        "personas",
+                        json!({ "id": "persona-1", "name": "reentrant" }),
+                    )?;
+                    collections[0].rows_mut()[0]["content"] = json!("second");
+                    Ok(Some(()))
+                },
+            )
+            .expect_err("reentrant writes should fail instead of deadlocking");
+
+        assert_eq!(error.code, "storage_transaction_active");
+        assert_eq!(
+            storage.get("messages", "message-1").unwrap().unwrap()["content"],
+            json!("first")
+        );
+        assert!(storage.list("message-swipes").unwrap().is_empty());
+        assert!(storage.list("personas").unwrap().is_empty());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_many_and_update_collections_uncached_checks_append_rows_before_staging() {
+        let root = temp_storage_root("append-update-checked-appends");
+        let storage = FileStorage::new(&root).unwrap();
+        storage
+            .replace_all(
+                "messages",
+                vec![json!({ "id": "message-1", "content": "first" })],
+            )
+            .unwrap();
+        storage
+            .replace_all(
+                "message-swipes",
+                vec![json!({
+                    "id": "message-1::swipe::0",
+                    "messageId": " message-1 ",
+                    "index": 0
+                })],
+            )
+            .unwrap();
+
+        let output = storage
+            .append_many_and_update_collections_uncached_with_append_check(
+                vec![(
+                    "message-swipes",
+                    vec![json!({
+                        "id": "message-1::swipe::1",
+                        "messageId": "message-1",
+                        "index": 1
+                    })],
+                )],
+                vec!["messages"],
+                |append_collections| {
+                    let sidecars = append_collections
+                        .iter()
+                        .find(|collection| collection.collection() == "message-swipes")
+                        .expect("append collection should be loaded");
+                    Ok(sidecars.rows().iter().all(|row| {
+                        row.get("messageId").and_then(Value::as_str) == Some("message-1")
+                    }))
+                },
+                |collections| {
+                    collections[0].rows_mut()[0]["content"] = json!("second");
+                    Ok(Some(json!({ "updated": true })))
+                },
+            )
+            .unwrap();
+
+        assert!(output.is_none());
+        assert_eq!(
+            storage.get("messages", "message-1").unwrap().unwrap()["content"],
+            json!("first")
+        );
+        let sidecars = storage.list("message-swipes").unwrap();
+        assert_eq!(sidecars.len(), 1);
+        assert_eq!(sidecars[0]["messageId"], json!(" message-1 "));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_many_and_update_collections_uncached_invalidates_append_projected_cache() {
+        let root = temp_storage_root("append-update-projected-cache");
+        let storage = FileStorage::new(&root).unwrap();
+        storage
+            .replace_all(
+                "messages",
+                vec![json!({ "id": "message-1", "content": "first" })],
+            )
+            .unwrap();
+        storage
+            .replace_all(
+                "message-swipes",
+                vec![json!({
+                    "id": "message-1::swipe::0",
+                    "messageId": "message-1",
+                    "index": 0,
+                    "content": "first"
+                })],
+            )
+            .unwrap();
+        let fields = ["messageId", "index", "content"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let values = HashSet::from(["message-1".to_string()]);
+        assert_eq!(
+            storage
+                .list_projected_where_in(
+                    "message-swipes",
+                    "messageId",
+                    &values,
+                    &fields,
+                    &Map::new()
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+
+        storage
+            .append_many_and_update_collections_uncached(
+                vec![(
+                    "message-swipes",
+                    vec![json!({
+                        "id": "message-1::swipe::1",
+                        "messageId": "message-1",
+                        "index": 1,
+                        "content": "second"
+                    })],
+                )],
+                vec!["messages"],
+                |collections| {
+                    collections[0].rows_mut()[0]["content"] = json!("second");
+                    Ok(Some(()))
+                },
+            )
+            .unwrap()
+            .expect("clean hybrid append should commit");
+
+        let projected = storage
+            .list_projected_where_in("message-swipes", "messageId", &values, &fields, &Map::new())
+            .unwrap();
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[1]["content"], json!("second"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn append_many_and_update_collections_uncached_refuses_dirty_cached_collections() {
         let root = temp_storage_root("append-update-dirty-cache");
         let storage = FileStorage::new(&root).unwrap();
@@ -4747,6 +5021,51 @@ mod tests {
         assert!(
             leftover_transaction_files.is_empty(),
             "stage error should remove pending transaction files"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn append_many_and_update_collections_uncached_falls_back_on_malformed_append_file() {
+        let root = temp_storage_root("append-update-malformed-append-file");
+        let storage = FileStorage::new(&root).unwrap();
+        storage
+            .replace_all(
+                "messages",
+                vec![json!({ "id": "message-1", "content": "first" })],
+            )
+            .unwrap();
+        let collections = root.join("collections");
+        let sidecar_path = collections.join("message-swipes.json");
+        fs::write(
+            &sidecar_path,
+            b"[{\"id\":\"message-1::swipe::0\",\"messageId\":\"message-1\"} trailing]",
+        )
+        .unwrap();
+
+        let output = storage
+            .append_many_and_update_collections_uncached(
+                vec![(
+                    "message-swipes",
+                    vec![json!({ "id": "message-1::swipe::1", "messageId": "message-1" })],
+                )],
+                vec!["messages"],
+                |collections| {
+                    collections[0].rows_mut()[0]["content"] = json!("second");
+                    Ok(Some(()))
+                },
+            )
+            .unwrap();
+
+        assert!(output.is_none());
+        assert_eq!(
+            storage.get("messages", "message-1").unwrap().unwrap()["content"],
+            json!("first")
+        );
+        assert_eq!(
+            fs::read_to_string(&sidecar_path).unwrap(),
+            "[{\"id\":\"message-1::swipe::0\",\"messageId\":\"message-1\"} trailing]"
         );
 
         fs::remove_dir_all(root).unwrap();

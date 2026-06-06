@@ -233,22 +233,6 @@ fn sidecars_are_canonical_for_append(
     })
 }
 
-fn stored_sidecars_are_canonical_for_append(
-    state: &AppState,
-    message_id: &str,
-    expected_count: usize,
-) -> AppResult<bool> {
-    let filter_values = HashSet::from([message_id.to_string()]);
-    let mut rows = state
-        .storage
-        .list_where_in(COLLECTION, "messageId", &filter_values)?;
-    Ok(sidecars_are_canonical_for_append(
-        &mut rows,
-        message_id,
-        expected_count,
-    ))
-}
-
 pub(crate) fn normalize_message_rows_and_sidecars(
     messages: Vec<Value>,
     sidecars: Vec<Value>,
@@ -507,9 +491,6 @@ where
     if append_start_index > replacement.len() {
         return Ok(None);
     }
-    if !stored_sidecars_are_canonical_for_append(state, &message_id, append_start_index)? {
-        return Ok(None);
-    }
     let appended = replacement[append_start_index..].to_vec();
     if appended.is_empty() {
         return Ok(None);
@@ -517,22 +498,44 @@ where
 
     let mut collections = vec!["messages"];
     collections.extend(extra_collections);
-    let stored_message = state.storage.append_many_and_update_collections_uncached(
-        vec![(COLLECTION, appended)],
-        collections,
-        move |collections| {
-            let messages = collections[0].rows_mut();
-            let Some(row) = messages
-                .iter_mut()
-                .find(|row| row.get("id").and_then(Value::as_str) == Some(message_id.as_str()))
-            else {
-                return Ok(None);
-            };
-            *row = stored_message.clone();
-            update_collections(collections, &stored_message)?;
-            Ok(Some(stored_message))
-        },
-    )?;
+    let append_check_message_id = message_id.clone();
+    let update_message_id = message_id.clone();
+    let stored_message = state
+        .storage
+        .append_many_and_update_collections_uncached_with_append_check(
+            vec![(COLLECTION, appended)],
+            collections,
+            move |append_collections| {
+                let Some(sidecars) = append_collections
+                    .iter_mut()
+                    .find(|collection| collection.collection() == COLLECTION)
+                else {
+                    return Ok(false);
+                };
+                let mut matching_sidecars = sidecars
+                    .rows()
+                    .iter()
+                    .filter(|row| sidecar_matches_message_id(row, &append_check_message_id))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                Ok(sidecars_are_canonical_for_append(
+                    &mut matching_sidecars,
+                    &append_check_message_id,
+                    append_start_index,
+                ))
+            },
+            move |collections| {
+                let messages = collections[0].rows_mut();
+                let Some(row) = messages.iter_mut().find(|row| {
+                    row.get("id").and_then(Value::as_str) == Some(update_message_id.as_str())
+                }) else {
+                    return Ok(None);
+                };
+                *row = stored_message.clone();
+                update_collections(collections, &stored_message)?;
+                Ok(Some(stored_message))
+            },
+        )?;
 
     let Some(mut materialized) = stored_message else {
         return Ok(None);
