@@ -1112,6 +1112,8 @@ function GeneralSettings() {
   const setIntuitiveSwipeRerollLatest = useUIStore((s) => s.setIntuitiveSwipeRerollLatest);
   const editLastMessageOnArrowUp = useUIStore((s) => s.editLastMessageOnArrowUp);
   const setEditLastMessageOnArrowUp = useUIStore((s) => s.setEditLastMessageOnArrowUp);
+  const editMessageOnDoubleClick = useUIStore((s) => s.editMessageOnDoubleClick);
+  const setEditMessageOnDoubleClick = useUIStore((s) => s.setEditMessageOnDoubleClick);
   const rescanGameAssets = useGameAssetStore((s) => s.rescanAssets);
   const assetFileRef = useRef<HTMLInputElement>(null);
   const [assetCategory, setAssetCategory] = useState<GameAssetCategoryId>("backgrounds");
@@ -1452,6 +1454,13 @@ function GeneralSettings() {
         checked={editLastMessageOnArrowUp}
         onChange={setEditLastMessageOnArrowUp}
         help="In Conversation and Roleplay modes, press Up Arrow while the chat input is empty to open the most recent message in the chat for editing — whether it's yours or the AI's."
+      />
+
+      <ToggleSetting
+        label="Double-click edits messages"
+        checked={editMessageOnDoubleClick}
+        onChange={setEditMessageOnDoubleClick}
+        help="When on, double-click or double-tap a Roleplay message to open it for editing. Turn it off to avoid accidental edits; edit buttons and keyboard shortcuts still work."
       />
 
       <div className="rounded-xl bg-[var(--secondary)]/50 p-4 ring-1 ring-[var(--border)]">
