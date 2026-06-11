@@ -205,22 +205,45 @@ export async function executeAgent(
 
     if (!responseText && result.content) responseText = result.content;
     responseText = responseText.trim();
-    const durationMs = Date.now() - startTime;
-
-    logger.info(`[agent] ${config.type} done (${responseText.length} chars, ${durationMs}ms)`);
+    logger.info(`[agent] ${config.type} done (${responseText.length} chars, ${Date.now() - startTime}ms)`);
     logger.debug(`[agent] ${config.type} raw response: ${responseText.slice(0, 500)}`);
 
     // Parse the result based on agent type
-    const parsed = parseAgentResponse(config, responseText);
-    const invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
+    let parsed = parseAgentResponse(config, responseText);
+    let invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
+    let totalTokens = result.usage?.totalTokens ?? 0;
+
+    if (invalidJson && shouldRetryInvalidJsonAgent(config) && !context.signal?.aborted) {
+      logger.warn("[agent] %s returned invalid JSON; retrying once with strict JSON reminder", config.type);
+      let retryResponseText = "";
+      const retryResult = await provider.chatComplete(buildInvalidJsonRetryMessages(messages, parsed.type, responseText), {
+        model,
+        temperature,
+        maxTokens,
+        stream: streamResponses,
+        onToken: streamResponses
+          ? (chunk) => {
+              retryResponseText += chunk;
+            }
+          : undefined,
+        signal: context.signal,
+      });
+      totalTokens += retryResult.usage?.totalTokens ?? 0;
+      if (!retryResponseText && retryResult.content) retryResponseText = retryResult.content;
+      responseText = retryResponseText.trim();
+      logger.info("[agent] %s JSON retry done (%d chars, %dms)", config.type, responseText.length, Date.now() - startTime);
+      logger.debug("[agent] %s JSON retry raw response: %s", config.type, responseText.slice(0, 500));
+      parsed = parseAgentResponse(config, responseText);
+      invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
+    }
 
     return {
       agentId: config.id,
       agentType: config.type,
       type: parsed.type,
       data: parsed.data,
-      tokensUsed: result.usage?.totalTokens ?? 0,
-      durationMs,
+      tokensUsed: totalTokens,
+      durationMs: Date.now() - startTime,
       success: !invalidJson,
       error: invalidJson ? invalidJsonAgentError(parsed.type) : null,
     };
@@ -618,6 +641,14 @@ function parseBatchResponse(
     if (matchedOutput !== null) {
       const parsedResult = parseAgentResponse(config, matchedOutput);
       const invalidJson = shouldFailInvalidJsonResult(config, parsedResult.data);
+      if (invalidJson && shouldRetryInvalidJsonAgent(config)) {
+        logger.warn(
+          "[agent-batch] %s returned invalid JSON inside batch; retrying individually with strict JSON reminder",
+          config.type,
+        );
+        failed.push(config);
+        continue;
+      }
       parsed.push({
         agentId: config.id,
         agentType: config.type,
@@ -667,6 +698,30 @@ function shouldFailInvalidJsonResult(config: Pick<AgentExecConfig, "type">, data
 
 function invalidJsonAgentError(resultType: AgentResultType): string {
   return `Agent returned invalid JSON instead of the requested ${resultType} format. Check this agent's model/connection settings and try again.`;
+}
+
+function shouldRetryInvalidJsonAgent(config: Pick<AgentExecConfig, "type" | "settings">): boolean {
+  return config.type !== "spotify" && agentResponseIsJson(config);
+}
+
+function buildInvalidJsonRetryMessages(
+  messages: ChatMessage[],
+  resultType: AgentResultType,
+  rawResponse: string,
+): ChatMessage[] {
+  const rawPreview = rawResponse.trim().slice(0, 4000);
+  return [
+    ...messages,
+    ...(rawPreview ? [{ role: "assistant" as const, content: rawPreview }] : []),
+    {
+      role: "user",
+      content: [
+        `Your previous response was not valid JSON for the requested ${resultType} format.`,
+        "Return ONLY one valid JSON object that matches the required output format.",
+        "Do not include markdown fences, XML tags, commentary, explanations, or any text before or after the JSON.",
+      ].join("\n"),
+    },
+  ];
 }
 
 function shouldRunAgentIndividually(config: Pick<AgentExecConfig, "type">): boolean {
@@ -878,7 +933,7 @@ function buildExpressionAgentMessages(template: string, context: AgentContext): 
   systemParts.push(`<role>`);
   systemParts.push(`You are a specialized expression-selection agent. Keep the request compact and return only JSON.`);
   systemParts.push(
-    `Return exactly one expression for every owner in <available_sprites>. Use <latest_user_message> for the active user persona and <assistant_response> for assistant or character expressions.`,
+    `Return exactly one expression for every owner in <available_sprites>. Use <latest_user_message> for the active user persona, and still include the persona when listed even if <assistant_response> does not describe their face. Use <assistant_response> for assistant or character expressions.`,
   );
   systemParts.push(`</role>`);
   systemParts.push(``);

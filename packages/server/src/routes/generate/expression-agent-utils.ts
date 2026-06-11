@@ -137,6 +137,22 @@ function pickRandomExpression(expressions: string[]): string | null {
   return expressions[Math.floor(Math.random() * expressions.length)] ?? expressions[0] ?? null;
 }
 
+function pickStableExpression(expressions: string[], sourceText: string): string | null {
+  if (expressions.length === 0) return null;
+  let hash = 2166136261;
+  const seed = sourceText.trim() || expressions.join("|");
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return expressions[Math.abs(hash) % expressions.length] ?? expressions[0] ?? null;
+}
+
+function isOverSpecificFallbackExpression(expression: string): boolean {
+  const normalized = normalizeExpressionToken(expression);
+  return /(smirk|sly|teas|mischiev|wink|flirt|seduc)/.test(normalized);
+}
+
 function getExpressionPrefixVariant(expression: string, groupKey: string): boolean {
   const lower = expression.toLowerCase();
   const normalizedGroup = groupKey.trim().toLowerCase();
@@ -250,7 +266,9 @@ function pickFallbackExpression(expressions: string[], sourceText: string): stri
     const resolved = resolveExpression(candidate, expressions);
     if (resolved) return resolved;
   }
-  return expressions[0] ?? null;
+
+  const broadChoices = expressions.filter((expression) => !isOverSpecificFallbackExpression(expression));
+  return pickStableExpression(broadChoices.length > 0 ? broadChoices : expressions, sourceText);
 }
 
 export function completeRequiredSpriteExpressionEntries<T extends SpriteExpressionEntry>(

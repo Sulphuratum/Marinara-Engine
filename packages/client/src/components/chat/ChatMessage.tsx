@@ -739,6 +739,7 @@ export const ChatMessage = memo(function ChatMessage({
     showMessageNumbers,
     guideGenerations,
     boldDialogue,
+    editMessageOnDoubleClick,
     theme,
   } = useUIStore(
     useShallow((s) => ({
@@ -754,6 +755,7 @@ export const ChatMessage = memo(function ChatMessage({
       showMessageNumbers: s.showMessageNumbers,
       guideGenerations: s.guideGenerations,
       boldDialogue: s.boldDialogue ?? true,
+      editMessageOnDoubleClick: s.editMessageOnDoubleClick,
       theme: s.theme,
     })),
   );
@@ -922,14 +924,16 @@ export const ChatMessage = memo(function ChatMessage({
 
   const startQuickEdit = useCallback(
     (target: EventTarget | null) => {
-      if (!isRoleplay || !onEdit || editing || isStreaming || multiSelectMode) return false;
+      if (!editMessageOnDoubleClick || !isRoleplay || !onEdit || editing || isStreaming || multiSelectMode) {
+        return false;
+      }
       if (isMessageQuickEditIgnoredTarget(target)) return false;
       window.getSelection()?.removeAllRanges();
       setShowActions(false);
       startEditing();
       return true;
     },
-    [editing, isRoleplay, isStreaming, multiSelectMode, onEdit, startEditing],
+    [editMessageOnDoubleClick, editing, isRoleplay, isStreaming, multiSelectMode, onEdit, startEditing],
   );
 
   const handleRoleplayDoubleClick = useCallback(

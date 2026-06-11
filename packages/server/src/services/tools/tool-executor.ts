@@ -915,6 +915,15 @@ function spotifyPlaybackMatches(
   return expectedUris.includes(snapshot.trackUri);
 }
 
+function formatSpotifyPlaybackPendingDisplay(
+  uri: string,
+  reason: string | null | undefined,
+  targetDeviceName?: string | null,
+): string {
+  const deviceText = targetDeviceName ? ` on ${targetDeviceName}` : "";
+  return `🎵 Spotify accepted playback${deviceText}; verification pending: ${uri}${reason ? ` - ${reason}` : ""}`;
+}
+
 async function waitForSpotifyPlayback(
   accessToken: string,
   expectedTrackUri?: string,
@@ -1551,18 +1560,17 @@ async function spotifyPlay(
           current?.trackUri ?? "none",
           firstUri,
         );
-        await rememberSpotifyPlayedTracks(context, current?.trackUri ? [current.trackUri] : []);
         return {
           applied: true,
           playbackPending: true,
-          warning: `Spotify accepted the play request, but playback was not verified${targetDeviceName ? ` on ${targetDeviceName}` : ""} yet.`,
+          verification: "pending",
           uris,
           reason,
           repeat,
           repeatState: current?.repeatState ?? repeat ?? null,
           currentUri: current?.trackUri ?? null,
           device: current?.deviceName ?? targetDeviceName,
-          display: `🎵 Playback requested: ${firstUri}${reason ? ` — ${reason}` : ""}`,
+          display: formatSpotifyPlaybackPendingDisplay(firstUri, reason, current?.deviceName ?? targetDeviceName),
         };
       }
       await rememberSpotifyPlayedTracks(context, current?.trackUri ? [current.trackUri] : []);
@@ -1613,13 +1621,6 @@ async function spotifyPlay(
       });
     }
     if (!spotifyPlaybackMatches(current, playbackUris, singleTrackUri || (allTrackUris && uris.length > 1))) {
-      const queuedAfterStart = await queueSpotifyTracks(
-        creds.accessToken,
-        current?.deviceId ?? playDeviceId,
-        queuedTrackUris,
-      );
-      const totalQueued = playbackUris.length + queuedAfterStart;
-      await rememberSpotifyPlayedTracks(context, uris);
       logger.warn(
         "[spotify] Playback accepted but verification failed device=%s isPlaying=%s currentUri=%s expected=%s",
         current?.deviceName ?? targetDeviceName ?? "unknown",
@@ -1627,10 +1628,17 @@ async function spotifyPlay(
         current?.trackUri ?? "none",
         playbackUris[0] ?? firstUri,
       );
+      const queuedAfterStart = await queueSpotifyTracks(
+        creds.accessToken,
+        current?.deviceId ?? playDeviceId,
+        queuedTrackUris,
+      );
+      const totalQueued = playbackUris.length + queuedAfterStart;
+      await rememberSpotifyPlayedTracks(context, uris);
       return {
         applied: true,
         playbackPending: true,
-        warning: `Spotify accepted the play request, but playback was not verified${targetDeviceName ? ` on ${targetDeviceName}` : ""} yet.`,
+        verification: "pending",
         uris,
         reason,
         repeat,
@@ -1639,10 +1647,7 @@ async function spotifyPlay(
         device: current?.deviceName ?? targetDeviceName,
         queued: totalQueued,
         queueRequested: uris.length,
-        display:
-          totalQueued > 1
-            ? `🎵 Queued ${totalQueued} tracks; playback requested${reason ? ` — ${reason}` : ""}`
-            : `🎵 Playback requested: ${firstUri}${reason ? ` — ${reason}` : ""}`,
+        display: formatSpotifyPlaybackPendingDisplay(firstUri, reason, current?.deviceName ?? targetDeviceName),
       };
     }
     const queuedAfterStart = await queueSpotifyTracks(

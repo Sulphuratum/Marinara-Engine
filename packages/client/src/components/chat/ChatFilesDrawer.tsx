@@ -6,7 +6,7 @@ import { useRef, useState } from "react";
 import { X, Trash2, FileText, MessageSquare, Download, Pencil, Upload } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { showConfirmDialog } from "../../lib/app-dialogs";
+import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { getChatDisplayName } from "../../lib/chat-display";
 import { cn } from "../../lib/utils";
 import {
@@ -83,8 +83,14 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
 
   const handleRename = async (cf: Chat) => {
     const currentName = getChatDisplayName(cf);
-    const nextName = window.prompt("Rename branch:", currentName);
-    if (!nextName) return;
+    const nextName = await showPromptDialog({
+      title: "Rename Branch",
+      message: "Set a display name for this chat branch.",
+      defaultValue: currentName,
+      placeholder: "Branch name",
+      confirmLabel: "Rename",
+    });
+    if (nextName === null) return;
 
     const trimmed = nextName.trim();
     if (!trimmed || trimmed === currentName) return;
@@ -145,7 +151,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
                 disabled={exportChat.isPending}
                 className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98] disabled:opacity-50"
               >
-                <Download size="0.8125rem" />
+                <Upload size="0.8125rem" />
                 JSONL
               </button>
               <button
@@ -168,7 +174,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
               disabled={isImporting}
               className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98] disabled:opacity-50"
             >
-              <Upload size="0.8125rem" />
+              <Download size="0.8125rem" />
               {isImporting ? "Importing…" : "JSONL"}
             </button>
             <p className="mt-2 text-center text-[0.625rem] text-[var(--muted-foreground)]/60">
@@ -219,7 +225,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
               disabled={exportChat.isPending}
               className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98] disabled:opacity-50"
             >
-              <Download size="0.8125rem" />
+              <Upload size="0.8125rem" />
               JSONL
             </button>
             <button
@@ -247,7 +253,7 @@ export function ChatFilesDrawer({ chat, open, onClose }: ChatFilesDrawerProps) {
             disabled={isImporting}
             className="flex w-full items-center justify-center gap-1.5 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-xs font-medium text-[var(--foreground)] ring-1 ring-[var(--border)] transition-all hover:bg-[var(--accent)] active:scale-[0.98] disabled:opacity-50"
           >
-            <Upload size="0.8125rem" />
+            <Download size="0.8125rem" />
             {isImporting ? "Importing…" : "JSONL"}
           </button>
           <p className="mt-2 text-center text-[0.625rem] text-[var(--muted-foreground)]/60">

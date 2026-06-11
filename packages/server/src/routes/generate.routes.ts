@@ -981,6 +981,7 @@ type SpotifyRuntimeAgent = ResolvedAgent & {
   __spotifyPlayApplied?: boolean;
   __spotifyPlayError?: string | null;
   __spotifyToolError?: string | null;
+  __spotifyPlaybackPending?: boolean;
   __spotifyPlayUris?: string[];
   __spotifyCandidateTracks?: SpotifyRuntimeTrack[];
   __spotifyCurrentAfterPlayUri?: string | null;
@@ -1125,11 +1126,7 @@ function normalizeSpotifyAgentResult(result: AgentResult): AgentResult {
 }
 
 function shouldDeferSpotifyAgentEvent(result: AgentResult): boolean {
-  if (result.agentType !== "spotify" || !result.success || !result.data || typeof result.data !== "object") {
-    return false;
-  }
-
-  return (result.data as Record<string, unknown>).parseError === true;
+  return result.agentType === "spotify";
 }
 
 function isBlockingSpotifyToolError(error: string | null | undefined): error is string {
@@ -1342,6 +1339,7 @@ async function applySpotifyAgentPlaybackFallback(
         queued,
         currentUri: agent.__spotifyCurrentAfterPlayUri ?? null,
         device: agent.__spotifyDevice ?? null,
+        playbackPending: agent.__spotifyPlaybackPending === true,
         display:
           agent.__spotifyPlayDisplay ??
           (queued && queued > 1 ? `🎵 Queued ${queued} tracks: ${mood}` : `🎵 Started Spotify playback: ${mood}`),
@@ -5357,6 +5355,20 @@ export async function generateRoutes(app: FastifyInstance) {
           signal: abortController.signal,
         };
 
+        if (personaId) {
+          agentContext.memory._personaId = personaId;
+          agentContext.memory._personaAvatarPath =
+            persona && typeof persona.avatarPath === "string" ? persona.avatarPath : null;
+        }
+        const getLatestUserExpressionSource = () =>
+          (
+            [...agentContext.recentMessages].reverse().find((message) => message.role === "user" && message.content.trim())
+              ?.content ??
+            currentUserInputContent() ??
+            input.userMessage ??
+            ""
+          ).trim();
+
         // ── Interval gating: Narrative Director only intervenes every N assistant messages ──
         const directorAgent = resolvedAgents.find((a) => a.type === "director");
         if (directorAgent) {
@@ -5477,7 +5489,10 @@ export async function generateRoutes(app: FastifyInstance) {
             }
             const includePersonaSprite =
               !!personaId &&
-              (!restrictToSelectedSprites || selectedSpriteIds.has(personaId) || chatMeta.expressionAvatarsEnabled === true);
+              (Boolean(getLatestUserExpressionSource()) ||
+                !restrictToSelectedSprites ||
+                selectedSpriteIds.has(personaId) ||
+                chatMeta.expressionAvatarsEnabled === true);
             if (personaId && includePersonaSprite) {
               const sprites = listCharacterSprites(personaId);
               if (sprites) {
@@ -5968,8 +5983,10 @@ export async function generateRoutes(app: FastifyInstance) {
             },
           });
         };
-        const sendAgentEvent = (result: AgentResult) => {
-          if (shouldDeferSpotifyAgentEvent(result) || shouldDeferExpressionAgentEvent(result)) return;
+        const sendAgentEvent = (result: AgentResult, options: { finalized?: boolean } = {}) => {
+          if (!options.finalized && (shouldDeferSpotifyAgentEvent(result) || shouldDeferExpressionAgentEvent(result))) {
+            return;
+          }
           sendAgentResultEvent(result);
         };
 
@@ -6363,6 +6380,7 @@ export async function generateRoutes(app: FastifyInstance) {
             spotifyAgent.__spotifyPlayApplied = false;
             spotifyAgent.__spotifyPlayError = null;
             spotifyAgent.__spotifyToolError = null;
+            spotifyAgent.__spotifyPlaybackPending = false;
             spotifyAgent.__spotifyPlayUris = [];
             spotifyAgent.__spotifyCandidateTracks = [];
             spotifyAgent.__spotifyCurrentAfterPlayUri = null;
@@ -6399,6 +6417,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   if (parsed.applied === true) {
                     spotifyAgent.__spotifyPlayApplied = true;
                     spotifyAgent.__spotifyPlayError = null;
+                    spotifyAgent.__spotifyPlaybackPending = parsed.playbackPending === true;
                     spotifyAgent.__spotifyPlayUris = readSpotifyTrackUris(parsed);
                     spotifyAgent.__spotifyCurrentAfterPlayUri = readSpotifyPlaybackTrackUri(parsed);
                     spotifyAgent.__spotifyPlayDisplay = readSpotifyStringField(parsed, "display") || null;
@@ -8642,7 +8661,7 @@ export async function generateRoutes(app: FastifyInstance) {
         // (pendingIllustration is hoisted above the follow-up loop.)
         const hasPostWork = hasPostProcessingAgents || parallelResults.length > 0;
         if (hasPostWork && combinedResponse && !abortController.signal.aborted) {
-          if (currentTurnUserMessageId && personaId && Array.isArray(agentContext.memory._availableSprites)) {
+          if (personaId && getLatestUserExpressionSource() && Array.isArray(agentContext.memory._availableSprites)) {
             generatedExpressionTargetIds.add(personaId);
           }
           if (generatedExpressionTargetIds.size > 0 && Array.isArray(agentContext.memory._availableSprites)) {
@@ -8701,14 +8720,9 @@ export async function generateRoutes(app: FastifyInstance) {
               agentContext.memory._expressionTargetIds,
             );
             if (requiredExpressionTargetIds.length > 0) {
-              const latestUserExpressionSource =
-                [...agentContext.recentMessages]
-                  .reverse()
-                  .find((message) => message.role === "user" && message.content.trim())?.content ??
-                input.userMessage ??
-                "";
+              const latestUserExpressionSource = getLatestUserExpressionSource();
               const sourceTextByCharacterId = new Map<string, string>();
-              if (personaId && latestUserExpressionSource.trim()) {
+              if (personaId && latestUserExpressionSource) {
                 sourceTextByCharacterId.set(personaId, latestUserExpressionSource);
               }
               const completion = completeRequiredSpriteExpressionEntries(
@@ -8766,8 +8780,10 @@ export async function generateRoutes(app: FastifyInstance) {
           const spotifyFallbackInputResults = postResults;
           postResults = await applySpotifyAgentPlaybackFallbacks(postResults, resolvedAgents, postAgentContext);
           for (let i = 0; i < postResults.length; i++) {
-            if (postResults[i] !== spotifyFallbackInputResults[i]) {
-              sendAgentEvent(postResults[i]!);
+            const result = postResults[i];
+            if (!result) continue;
+            if (result.agentType === "spotify" || result !== spotifyFallbackInputResults[i]) {
+              sendAgentEvent(result, { finalized: result.agentType === "spotify" });
             }
           }
 
@@ -8808,7 +8824,7 @@ export async function generateRoutes(app: FastifyInstance) {
                   retryCtx,
                 );
                 const finalizedRetry = finalizedRetryResults[0] ?? retried;
-                sendAgentEvent(finalizedRetry);
+                sendAgentEvent(finalizedRetry, { finalized: finalizedRetry.agentType === "spotify" });
                 retryResults.push(finalizedRetry);
               } catch {
                 retryResults.push(failed);
@@ -9111,14 +9127,9 @@ export async function generateRoutes(app: FastifyInstance) {
                   agentContext.memory._expressionTargetIds,
                 );
                 if (requiredExpressionTargetIds.length > 0) {
-                  const latestUserExpressionSource =
-                    [...agentContext.recentMessages]
-                      .reverse()
-                      .find((message) => message.role === "user" && message.content.trim())?.content ??
-                    input.userMessage ??
-                    "";
+                  const latestUserExpressionSource = getLatestUserExpressionSource();
                   const sourceTextByCharacterId = new Map<string, string>();
-                  if (personaId && latestUserExpressionSource.trim()) {
+                  if (personaId && latestUserExpressionSource) {
                     sourceTextByCharacterId.set(personaId, latestUserExpressionSource);
                   }
                   const completion = completeRequiredSpriteExpressionEntries(
@@ -11560,7 +11571,13 @@ export async function generateRoutes(app: FastifyInstance) {
         }
       }
 
-      // Wait for illustration to finish before closing the SSE stream
+      // Signal completion before the slow illustration tail. The client keeps
+      // listening until the HTTP stream closes, so late illustration events can
+      // still arrive without holding the chat's generation lock hostage.
+      sendSseEvent(reply, { type: "done", data: "" });
+      releaseActiveGeneration();
+
+      // Wait for illustration to finish before closing the SSE stream.
       if (pendingIllustration) {
         try {
           await pendingIllustration;
@@ -11568,9 +11585,6 @@ export async function generateRoutes(app: FastifyInstance) {
           /* errors already handled inside the promise */
         }
       }
-
-      // Signal completion
-      sendSseEvent(reply, { type: "done", data: "" });
     } catch (err) {
       const message =
         err instanceof Error
@@ -11584,7 +11598,7 @@ export async function generateRoutes(app: FastifyInstance) {
         clearGenerationInProgress(input.chatId, conversationGenerationStartedAt);
       }
       reply.raw.off("close", onClose);
-      if (activeGenerations) activeGenerations.delete(input.chatId);
+      releaseActiveGeneration();
       if (!clientDisconnected && !reply.raw.destroyed) {
         reply.raw.end();
       }
