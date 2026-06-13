@@ -21,7 +21,6 @@ import {
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { formatTextQuotes, type Message, type MessageExtra } from "@marinara-engine/shared";
 import { useUIStore } from "../../stores/ui.store";
-import { useChatStore } from "../../stores/chat.store";
 import { cn, copyToClipboard, getAvatarCropStyle, parseAvatarCropJson } from "../../lib/utils";
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { applyInlineMarkdown, renderMarkdownBlocks } from "../../lib/markdown";
@@ -328,6 +327,7 @@ interface ConversationMessageProps {
   multiSelectMode?: boolean;
   isSelected?: boolean;
   onToggleSelect?: (toggle: MessageSelectionToggle) => void;
+  hasDraftInput?: boolean;
 }
 
 export const ConversationMessage = memo(function ConversationMessage({
@@ -356,6 +356,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   multiSelectMode,
   isSelected,
   onToggleSelect,
+  hasDraftInput = false,
 }: ConversationMessageProps) {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState(message.content);
@@ -368,7 +369,6 @@ export const ConversationMessage = memo(function ConversationMessage({
   const [imageLightbox, setImageLightbox] = useState<{ url: string; prompt?: string | null } | null>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const msgRef = useRef<HTMLDivElement>(null);
-  const hasInput = useChatStore((s) => s.currentInput.trim().length > 0);
   const guideGenerations = useUIStore((s) => s.guideGenerations);
   const chatFontSize = useUIStore((s) => s.chatFontSize);
   const chatFontColor = useUIStore((s) => s.chatFontColor);
@@ -381,7 +381,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     }),
     [chatFontSize, chatFontColor],
   );
-  const isGuided = guideGenerations && hasInput;
+  const isGuided = guideGenerations && hasDraftInput;
   const regenerateButtonTitle = isGuided ? "Regenerate (guided)" : "Regenerate";
   const regenerateGuidedClass = isGuided
     ? "text-[var(--primary)] bg-[var(--primary)]/15 ring-1 ring-[var(--primary)]/30 hover:text-[var(--primary)] hover:bg-[var(--primary)]/20"

@@ -356,6 +356,7 @@ export function ConversationView({
   const streamingCharacterId = useChatStore((s) => s.streamingCharacterId);
   const typingCharacterName = useChatStore((s) => s.typingCharacterName);
   const delayedCharacterInfo = useChatStore((s) => s.delayedCharacterInfo);
+  const hasDraftInput = useChatStore((s) => s.currentInput.trim().length > 0);
   const liveTypingName = useMemo(() => {
     if (typingCharacterName) return typingCharacterName;
     if (streamingCharacterId) return characterMap.get(streamingCharacterId)?.name ?? "Character";
@@ -1038,6 +1039,7 @@ export function ConversationView({
                   onSetActiveSwipe={onSetActiveSwipe}
                   onToggleHiddenFromAI={onToggleHiddenFromAI}
                   onPeekPrompt={onPeekPrompt}
+                  hasDraftInput={hasDraftInput}
                 />,
               );
               i = j;
@@ -1084,6 +1086,7 @@ export function ConversationView({
                 multiSelectMode={multiSelectMode}
                 isSelected={selectedMessageIds?.has(msg.id)}
                 onToggleSelect={onToggleSelectMessage}
+                hasDraftInput={hasDraftInput}
               />,
             );
             i++;
@@ -1216,6 +1219,7 @@ type SplitMessageGroupProps = {
   onSetActiveSwipe: (id: string, index: number) => void;
   onToggleHiddenFromAI: (id: string, current: boolean) => void;
   onPeekPrompt: () => void;
+  hasDraftInput: boolean;
 };
 
 // Custom memo comparison: the parent rebuilds the `items` array (and this
@@ -1241,7 +1245,8 @@ function areSplitGroupPropsEqual(prev: SplitMessageGroupProps, next: SplitMessag
     prev.onEdit !== next.onEdit ||
     prev.onSetActiveSwipe !== next.onSetActiveSwipe ||
     prev.onToggleHiddenFromAI !== next.onToggleHiddenFromAI ||
-    prev.onPeekPrompt !== next.onPeekPrompt
+    prev.onPeekPrompt !== next.onPeekPrompt ||
+    prev.hasDraftInput !== next.hasDraftInput
   ) {
     return false;
   }
@@ -1277,6 +1282,7 @@ const SplitMessageGroup = memo(function SplitMessageGroup({
   onSetActiveSwipe,
   onToggleHiddenFromAI,
   onPeekPrompt,
+  hasDraftInput,
 }: SplitMessageGroupProps) {
   const [showActions, setShowActions] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -1324,6 +1330,7 @@ const SplitMessageGroup = memo(function SplitMessageGroup({
           characterMap={characterMap}
           chatCharacterIds={chatCharacterIds}
           personaInfo={personaInfo as any}
+          hasDraftInput={hasDraftInput}
         />
         <div className="space-y-2 pl-14 pr-4 -mt-1">
           <textarea
@@ -1400,6 +1407,7 @@ const SplitMessageGroup = memo(function SplitMessageGroup({
                 characterMap={characterMap}
                 chatCharacterIds={chatCharacterIds}
                 personaInfo={personaInfo as any}
+                hasDraftInput={hasDraftInput}
               />
             );
           }
@@ -1429,6 +1437,7 @@ const SplitMessageGroup = memo(function SplitMessageGroup({
               chatCharacterIds={chatCharacterIds}
               personaInfo={personaInfo as any}
               messageIndex={firstItem.index + 1}
+              hasDraftInput={hasDraftInput}
             />
           );
         }
@@ -1457,6 +1466,7 @@ const SplitMessageGroup = memo(function SplitMessageGroup({
               chatCharacterIds={chatCharacterIds}
               personaInfo={personaInfo as any}
               messageIndex={gi.index + 1}
+              hasDraftInput={hasDraftInput}
             />
           );
         });

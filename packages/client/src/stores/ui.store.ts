@@ -333,6 +333,8 @@ interface UIState {
   reviewImagePromptsBeforeSend: boolean;
   imageBackgroundWidth: number;
   imageBackgroundHeight: number;
+  imageIllustrationWidth: number;
+  imageIllustrationHeight: number;
   imagePortraitWidth: number;
   imagePortraitHeight: number;
   imageSelfieWidth: number;
@@ -563,6 +565,7 @@ interface UIState {
   setGameAutoPlayDelay: (v: number) => void;
   setReviewImagePromptsBeforeSend: (v: boolean) => void;
   setImageBackgroundDimensions: (width: number, height: number) => void;
+  setImageIllustrationDimensions: (width: number, height: number) => void;
   setImagePortraitDimensions: (width: number, height: number) => void;
   setImageSelfieDimensions: (width: number, height: number) => void;
   setImageStyleProfiles: (settings: ImageStyleProfileSettings) => void;
@@ -702,6 +705,8 @@ export function pickSyncedSettings(state: UIState) {
     reviewImagePromptsBeforeSend: state.reviewImagePromptsBeforeSend,
     imageBackgroundWidth: state.imageBackgroundWidth,
     imageBackgroundHeight: state.imageBackgroundHeight,
+    imageIllustrationWidth: state.imageIllustrationWidth,
+    imageIllustrationHeight: state.imageIllustrationHeight,
     imagePortraitWidth: state.imagePortraitWidth,
     imagePortraitHeight: state.imagePortraitHeight,
     imageSelfieWidth: state.imageSelfieWidth,
@@ -829,6 +834,8 @@ export const useUIStore = create<UIState>()(
       reviewImagePromptsBeforeSend: false,
       imageBackgroundWidth: 1280,
       imageBackgroundHeight: 720,
+      imageIllustrationWidth: 896,
+      imageIllustrationHeight: 1280,
       imagePortraitWidth: 1024,
       imagePortraitHeight: 1024,
       imageSelfieWidth: 896,
@@ -1274,6 +1281,11 @@ export const useUIStore = create<UIState>()(
           imageBackgroundWidth: clampImageDimension(width),
           imageBackgroundHeight: clampImageDimension(height),
         }),
+      setImageIllustrationDimensions: (width, height) =>
+        set({
+          imageIllustrationWidth: clampImageDimension(width),
+          imageIllustrationHeight: clampImageDimension(height),
+        }),
       setImagePortraitDimensions: (width, height) =>
         set({
           imagePortraitWidth: clampImageDimension(width),
@@ -1424,7 +1436,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 40,
+      version: 41,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -1559,6 +1571,8 @@ export const useUIStore = create<UIState>()(
           }
           if (persisted.imageBackgroundWidth === undefined) persisted.imageBackgroundWidth = 1280;
           if (persisted.imageBackgroundHeight === undefined) persisted.imageBackgroundHeight = 720;
+          if (persisted.imageIllustrationWidth === undefined) persisted.imageIllustrationWidth = 896;
+          if (persisted.imageIllustrationHeight === undefined) persisted.imageIllustrationHeight = 1280;
           if (persisted.imagePortraitWidth === undefined) persisted.imagePortraitWidth = 1024;
           if (persisted.imagePortraitHeight === undefined) persisted.imagePortraitHeight = 1024;
           if (persisted.imageSelfieWidth === undefined) persisted.imageSelfieWidth = 896;
@@ -1758,6 +1772,11 @@ export const useUIStore = create<UIState>()(
         if (version <= 39 && persisted.editMessageOnDoubleClick === undefined) {
           persisted.editMessageOnDoubleClick = true;
         }
+        // v40 -> v41: separate Illustrator/scene illustration canvas from backgrounds.
+        if (version <= 40) {
+          if (persisted.imageIllustrationWidth === undefined) persisted.imageIllustrationWidth = 896;
+          if (persisted.imageIllustrationHeight === undefined) persisted.imageIllustrationHeight = 1280;
+        }
         delete persisted.trackerPanelWidth;
         return persisted;
       },
@@ -1794,6 +1813,8 @@ export const useUIStore = create<UIState>()(
         reviewImagePromptsBeforeSend: state.reviewImagePromptsBeforeSend,
         imageBackgroundWidth: state.imageBackgroundWidth,
         imageBackgroundHeight: state.imageBackgroundHeight,
+        imageIllustrationWidth: state.imageIllustrationWidth,
+        imageIllustrationHeight: state.imageIllustrationHeight,
         imagePortraitWidth: state.imagePortraitWidth,
         imagePortraitHeight: state.imagePortraitHeight,
         imageSelfieWidth: state.imageSelfieWidth,
