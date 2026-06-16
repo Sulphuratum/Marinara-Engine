@@ -320,9 +320,12 @@ export function LorebookEntryRow({
     [lorebookId, entry.id, deleteEntry],
   );
 
+  const duplicateDisabled = duplicateEntry.isPending || updateEntry.isPending;
+
   const handleDuplicate = useCallback(
     (e: ReactMouseEvent) => {
       e.stopPropagation();
+      if (duplicateDisabled) return;
       // Clone from the row's current inline state (not the prop snapshot) so an edit made
       // just before duplicating isn't dropped while its update/refetch is still in flight.
       const { constant, selective } = statusToFlags(localStatus);
@@ -330,7 +333,7 @@ export function LorebookEntryRow({
         lorebookId,
         entry: {
           ...entry,
-          name: localName,
+          name: localName.trim() || entry.name,
           enabled: localEnabled,
           constant,
           selective,
@@ -354,6 +357,7 @@ export function LorebookEntryRow({
       localProbability,
       localUseRegex,
       duplicateEntry,
+      duplicateDisabled,
     ],
   );
 
@@ -744,7 +748,7 @@ export function LorebookEntryRow({
           type="button"
           aria-label="Duplicate entry"
           title="Duplicate entry"
-          disabled={duplicateEntry.isPending}
+          disabled={duplicateDisabled}
           onClick={handleDuplicate}
           className="shrink-0 rounded p-1 text-[var(--muted-foreground)] opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100 disabled:cursor-not-allowed max-md:opacity-100"
         >
