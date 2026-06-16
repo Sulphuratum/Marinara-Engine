@@ -14,6 +14,7 @@ import {
 import type { ExportEnvelope } from "@marinara-engine/shared";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
+import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { generateImage } from "../services/image/image-generation.js";
 import { resolveConnectionImageDefaults } from "../services/image/image-generation-defaults.js";
@@ -25,6 +26,7 @@ import { DATA_DIR } from "../utils/data-dir.js";
 import { createWriteStream, existsSync, rmSync, unlinkSync } from "fs";
 import { normalizeTimestampOverrides } from "../services/import/import-timestamps.js";
 import { assertInsideDir, extensionFromImageMime, isAllowedImageBuffer } from "../utils/security.js";
+import { logger } from "../lib/logger.js";
 import { importSTLorebook } from "../services/import/st-lorebook.importer.js";
 import AdmZip from "adm-zip";
 import { extname } from "path";
@@ -32,6 +34,7 @@ import { pipeline } from "stream/promises";
 import { newId } from "../utils/id-generator.js";
 
 const CHARACTER_GALLERY_ROOT = join(DATA_DIR, "gallery", "characters");
+const PERSONA_GALLERY_ROOT = join(DATA_DIR, "gallery", "personas");
 const ALLOWED_GALLERY_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
 const CHARACTER_CARD_PNG_KEYWORDS = new Set(["chara", "ccv3"]);
 
@@ -39,6 +42,19 @@ async function ensureCharacterGalleryDir(characterId: string) {
   const dir = join(CHARACTER_GALLERY_ROOT, characterId);
   await mkdir(dir, { recursive: true });
   return dir;
+}
+
+async function ensurePersonaGalleryDir(personaId: string) {
+  if (isUnsafePathSegment(personaId)) {
+    throw new Error("Invalid persona id");
+  }
+  const dir = assertInsideDir(PERSONA_GALLERY_ROOT, join(PERSONA_GALLERY_ROOT, personaId));
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+function isUnsafePathSegment(value: string) {
+  return value === "." || value === ".." || value.includes("..") || value.includes("/") || value.includes("\\");
 }
 
 function toSafeExportName(name: string, fallback: string) {
@@ -272,6 +288,7 @@ function buildCompatiblePersonaExport(persona: Record<string, unknown>) {
 export async function charactersRoutes(app: FastifyInstance) {
   const storage = createCharactersStorage(app.db);
   const characterGallery = createCharacterGalleryStorage(app.db);
+  const personaGallery = createPersonaGalleryStorage(app.db);
 
   // ── Characters ──
 
@@ -854,8 +871,123 @@ export async function charactersRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { id: string } }>("/personas/:id", async (req, reply) => {
-    await storage.removePersona(req.params.id);
+    const { id } = req.params;
+    if (isUnsafePathSegment(id)) {
+      return reply.status(400).send({ error: "Invalid persona id" });
+    }
+    const persona = await storage.getPersona(id);
+    if (!persona) return reply.status(404).send({ error: "Persona not found" });
+
+    const galleryDir = assertInsideDir(PERSONA_GALLERY_ROOT, join(PERSONA_GALLERY_ROOT, id));
+    if (existsSync(galleryDir)) {
+      rmSync(galleryDir, { recursive: true, force: true });
+    }
+    await storage.removePersona(id);
     return reply.status(204).send();
+  });
+
+  // ── Persona Gallery ──
+
+  app.get<{ Params: { id: string } }>("/personas/:id/gallery", async (req, reply) => {
+    const persona = await storage.getPersona(req.params.id);
+    if (!persona) return reply.status(404).send({ error: "Persona not found" });
+
+    const images = await personaGallery.listByPersonaId(req.params.id);
+    return images.map((img) => ({
+      ...img,
+      url: `/api/characters/personas/${req.params.id}/gallery/file/${encodeURIComponent(img.filePath.split("/").pop()!)}`,
+    }));
+  });
+
+  app.post<{ Params: { id: string } }>("/personas/:id/gallery/upload", async (req, reply) => {
+    const { id } = req.params;
+    const persona = await storage.getPersona(id);
+    if (!persona) return reply.status(404).send({ error: "Persona not found" });
+
+    const data = await req.file();
+    if (!data) {
+      return reply.status(400).send({ error: "No file uploaded" });
+    }
+
+    const ext = extname(data.filename).toLowerCase();
+    if (!ALLOWED_GALLERY_EXTS.has(ext)) {
+      return reply.status(400).send({ error: `Unsupported file type: ${ext}` });
+    }
+
+    const dir = await ensurePersonaGalleryDir(id);
+    const filename = `${newId()}${ext}`;
+    const filePath = join(dir, filename);
+
+    await pipeline(data.file, createWriteStream(filePath));
+
+    const fields = data.fields as Record<string, { value?: string } | undefined>;
+    const prompt = fields?.prompt?.value ?? "";
+    const provider = fields?.provider?.value ?? "";
+    const model = fields?.model?.value ?? "";
+    const width = fields?.width?.value ? parseInt(fields.width.value, 10) : undefined;
+    const height = fields?.height?.value ? parseInt(fields.height.value, 10) : undefined;
+
+    try {
+      const image = await personaGallery.create({
+        personaId: id,
+        filePath: `personas/${id}/${filename}`,
+        prompt,
+        provider,
+        model,
+        width: Number.isFinite(width) ? width : undefined,
+        height: Number.isFinite(height) ? height : undefined,
+      });
+
+      return {
+        ...image,
+        url: `/api/characters/personas/${id}/gallery/file/${encodeURIComponent(filename)}`,
+      };
+    } catch (err) {
+      // Roll back the just-written file so a metadata failure can't strand an orphan on disk.
+      if (existsSync(filePath)) unlinkSync(filePath);
+      logger.error(err, "Failed to persist persona gallery image for %s", id);
+      return reply.status(500).send({ error: "Failed to save image metadata" });
+    }
+  });
+
+  app.get<{ Params: { id: string; filename: string } }>(
+    "/personas/:id/gallery/file/:filename",
+    async (req, reply) => {
+      const { id, filename } = req.params;
+      if (isUnsafePathSegment(id) || isUnsafePathSegment(filename)) {
+        return reply.status(400).send({ error: "Invalid path" });
+      }
+
+      const galleryDir = assertInsideDir(PERSONA_GALLERY_ROOT, join(PERSONA_GALLERY_ROOT, id));
+      const filePath = assertInsideDir(galleryDir, join(galleryDir, filename));
+      if (!existsSync(filePath)) {
+        return reply.status(404).send({ error: "Not found" });
+      }
+
+      return reply.sendFile(filename, galleryDir);
+    },
+  );
+
+  app.delete<{ Params: { id: string; imageId: string } }>("/personas/:id/gallery/:imageId", async (req, reply) => {
+    const { id, imageId } = req.params;
+    const image = await personaGallery.getById(imageId);
+    if (!image || image.personaId !== id) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+
+    // assertInsideDir guards against a poisoned stored filePath escaping the gallery dir.
+    try {
+      const galleryRoot = join(DATA_DIR, "gallery");
+      const filePath = assertInsideDir(galleryRoot, join(galleryRoot, image.filePath));
+      if (existsSync(filePath)) {
+        unlinkSync(filePath);
+      }
+    } catch (err) {
+      logger.warn(err, "Skipped persona gallery file unlink for %s: path escapes gallery dir", imageId);
+    }
+
+    await personaGallery.remove(imageId);
+    return { success: true };
   });
 
   // ── Persona Duplicate ──
