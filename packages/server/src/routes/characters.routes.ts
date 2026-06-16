@@ -553,6 +553,31 @@ export async function charactersRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
+  app.patch<{
+    Params: { id: string; imageId: string };
+    Body: { customKind?: string | null; customName?: string | null; width?: number; height?: number };
+  }>("/:id/gallery/:imageId/tag", async (req, reply) => {
+    const { id, imageId } = req.params;
+    const image = await characterGallery.getById(imageId);
+    if (!image || image.characterId !== id) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+    const kind = req.body?.customKind ?? null;
+    if (kind !== null && kind !== "emoji" && kind !== "sticker") {
+      return reply.status(400).send({ error: "Invalid customKind" });
+    }
+    const name = typeof req.body?.customName === "string" ? req.body.customName.trim() : "";
+    if (kind !== null && !name) {
+      return reply.status(400).send({ error: "customName is required when tagging" });
+    }
+    return characterGallery.setTag(imageId, {
+      customKind: kind,
+      customName: kind === null ? null : name,
+      width: typeof req.body?.width === "number" ? req.body.width : undefined,
+      height: typeof req.body?.height === "number" ? req.body.height : undefined,
+    });
+  });
+
   // ── Duplicate ──
   app.post<{ Params: { id: string } }>("/:id/duplicate", async (req, reply) => {
     const result = await storage.duplicateCharacter(req.params.id);
@@ -958,6 +983,31 @@ export async function charactersRoutes(app: FastifyInstance) {
 
     await personaGallery.remove(imageId);
     return { success: true };
+  });
+
+  app.patch<{
+    Params: { id: string; imageId: string };
+    Body: { customKind?: string | null; customName?: string | null; width?: number; height?: number };
+  }>("/personas/:id/gallery/:imageId/tag", async (req, reply) => {
+    const { id, imageId } = req.params;
+    const image = await personaGallery.getById(imageId);
+    if (!image || image.personaId !== id) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+    const kind = req.body?.customKind ?? null;
+    if (kind !== null && kind !== "emoji" && kind !== "sticker") {
+      return reply.status(400).send({ error: "Invalid customKind" });
+    }
+    const name = typeof req.body?.customName === "string" ? req.body.customName.trim() : "";
+    if (kind !== null && !name) {
+      return reply.status(400).send({ error: "customName is required when tagging" });
+    }
+    return personaGallery.setTag(imageId, {
+      customKind: kind,
+      customName: kind === null ? null : name,
+      width: typeof req.body?.width === "number" ? req.body.width : undefined,
+      height: typeof req.body?.height === "number" ? req.body.height : undefined,
+    });
   });
 
   // ── Persona Duplicate ──

@@ -160,6 +160,29 @@ export async function globalGalleryRoutes(app: FastifyInstance) {
     return storage.moveImage(req.params.id, folderId);
   });
 
+  // Tag (or untag) an image as a custom emoji/sticker.
+  app.patch<{
+    Params: { id: string };
+    Body: { customKind?: string | null; customName?: string | null; width?: number; height?: number };
+  }>("/:id/tag", async (req, reply) => {
+    const image = await storage.getImageById(req.params.id);
+    if (!image) return reply.status(404).send({ error: "Not found" });
+    const kind = req.body?.customKind ?? null;
+    if (kind !== null && kind !== "emoji" && kind !== "sticker") {
+      return reply.status(400).send({ error: "Invalid customKind" });
+    }
+    const name = typeof req.body?.customName === "string" ? req.body.customName.trim() : "";
+    if (kind !== null && !name) {
+      return reply.status(400).send({ error: "customName is required when tagging" });
+    }
+    return storage.setTag(req.params.id, {
+      customKind: kind,
+      customName: kind === null ? null : name,
+      width: typeof req.body?.width === "number" ? req.body.width : undefined,
+      height: typeof req.body?.height === "number" ? req.body.height : undefined,
+    });
+  });
+
   app.delete<{ Params: { id: string } }>("/:id", async (req, reply) => {
     const image = await storage.getImageById(req.params.id);
     if (!image) {

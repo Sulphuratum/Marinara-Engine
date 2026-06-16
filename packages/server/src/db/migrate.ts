@@ -392,6 +392,8 @@ const CREATE_TABLES: string[] = [
     model TEXT NOT NULL DEFAULT '',
     width INTEGER,
     height INTEGER,
+    custom_kind TEXT,
+    custom_name TEXT,
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS persona_images (
@@ -403,6 +405,8 @@ const CREATE_TABLES: string[] = [
     model TEXT NOT NULL DEFAULT '',
     width INTEGER,
     height INTEGER,
+    custom_kind TEXT,
+    custom_name TEXT,
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS gallery_folders (
@@ -419,6 +423,8 @@ const CREATE_TABLES: string[] = [
     model TEXT NOT NULL DEFAULT '',
     width INTEGER,
     height INTEGER,
+    custom_kind TEXT,
+    custom_name TEXT,
     created_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS ooc_influences (
@@ -802,6 +808,36 @@ const COLUMN_MIGRATIONS: ColumnMigration[] = [
   {
     table: "memory_chunks",
     column: "source_chat_id",
+    definition: "TEXT",
+  },
+  {
+    table: "character_images",
+    column: "custom_kind",
+    definition: "TEXT",
+  },
+  {
+    table: "character_images",
+    column: "custom_name",
+    definition: "TEXT",
+  },
+  {
+    table: "persona_images",
+    column: "custom_kind",
+    definition: "TEXT",
+  },
+  {
+    table: "persona_images",
+    column: "custom_name",
+    definition: "TEXT",
+  },
+  {
+    table: "global_images",
+    column: "custom_kind",
+    definition: "TEXT",
+  },
+  {
+    table: "global_images",
+    column: "custom_name",
     definition: "TEXT",
   },
 ];
