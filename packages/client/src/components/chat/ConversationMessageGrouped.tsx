@@ -71,6 +71,7 @@ export function ConversationMessageGrouped({
     onDelete,
     onShowGenerationReplay,
     onShowThinking,
+    onPickReaction,
     onToggleSelect,
   } = ctx;
 
@@ -260,6 +261,7 @@ export function ConversationMessageGrouped({
           onDelete={onDelete ? () => onDelete(message.id) : undefined}
           onShowGenerationReplay={onShowGenerationReplay}
           onShowThinking={onShowThinking}
+          onPickReaction={onPickReaction}
         />
       )}
     </div>

@@ -14,9 +14,11 @@ interface ReactionAddButtonProps {
   /** Called with the chosen emoji token (unicode or `:name:`) + its image url (custom only). */
   onPick: (emoji: string, imageUrl: string | null) => void;
   className?: string;
+  /** Matches the action bar's tab discipline (-1 while the bar is hidden). */
+  tabIndex?: number;
 }
 
-export function ReactionAddButton({ onPick, className }: ReactionAddButtonProps) {
+export function ReactionAddButton({ onPick, className, tabIndex }: ReactionAddButtonProps) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const { data: customEmojis } = useCustomEmojis();
@@ -32,6 +34,7 @@ export function ReactionAddButton({ onPick, className }: ReactionAddButtonProps)
         }}
         title="Add reaction"
         aria-label="Add reaction"
+        tabIndex={tabIndex}
         className={cn(
           "flex items-center justify-center rounded p-1 text-foreground/70 transition-colors hover:bg-foreground/20 hover:text-foreground",
           className,
