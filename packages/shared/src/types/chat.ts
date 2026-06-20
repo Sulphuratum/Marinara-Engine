@@ -351,6 +351,8 @@ export interface ChatMetadata {
   characterSchedules?: Record<string, unknown>;
   /** Chat-scoped manual status overrides for conversation characters. */
   conversationStatusOverrides?: Record<string, ConversationStatusOverride>;
+  /** Chat-scoped derived presence status per character, updated each generation. Replaces extensions.conversationStatus to avoid cross-chat bleed. */
+  conversationCharacterStatuses?: Record<string, { status: ConversationPresenceStatus; activity: string }>;
   /** Week start timestamp for the current generated conversation schedules. */
   scheduleWeekStart?: string;
   /** Chat-scoped selfie prompt-builder template. Empty/null uses the global/default prompt. */

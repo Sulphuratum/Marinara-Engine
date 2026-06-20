@@ -830,9 +830,17 @@ export function ChatSidebar() {
         <div className="relative flex-shrink-0">
           {(() => {
             const charIds = normalizeChatCharacterIds((chat as { characterIds?: unknown }).characterIds);
+            const chatCharStatuses = chat.mode === "conversation"
+              ? (parseChatMetadata(chat.metadata).conversationCharacterStatuses as Record<string, { status?: string }> | undefined)
+              : undefined;
             const avatars = charIds
               .slice(0, 3)
-              .map((id) => charLookup.get(id))
+              .map((id) => {
+                const base = charLookup.get(id);
+                if (!base) return null;
+                const chatStatus = chatCharStatuses?.[id]?.status;
+                return chatStatus ? { ...base, conversationStatus: chatStatus } : base;
+              })
               .filter(Boolean) as {
               name: string;
               avatarUrl: string | null;

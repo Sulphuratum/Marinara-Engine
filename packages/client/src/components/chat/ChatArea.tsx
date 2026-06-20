@@ -520,8 +520,20 @@ export function ChatArea() {
       const char = query.data;
       if (char?.id) map.set(char.id, toCharacterMapValue(char));
     }
+    // Overlay per-chat presence status so status dots reflect this chat, not the last chat to generate.
+    const chatStatuses = parseChatMetadata(chat?.metadata).conversationCharacterStatuses as
+      | Record<string, { status?: string; activity?: string }>
+      | undefined;
+    if (chatStatuses) {
+      for (const [id, info] of Object.entries(chatStatuses)) {
+        const existing = map.get(id);
+        if (existing && info.status) {
+          map.set(id, { ...existing, conversationStatus: info.status as any, conversationActivity: info.activity ?? existing.conversationActivity });
+        }
+      }
+    }
     return map;
-  }, [baseCharacterMap, missingCharacterQueries]);
+  }, [baseCharacterMap, missingCharacterQueries, chat?.metadata]);
 
   const characterNames = useMemo(
     () => chatCharIds.map((id) => characterMap.get(id)?.name).filter((n): n is string => !!n),

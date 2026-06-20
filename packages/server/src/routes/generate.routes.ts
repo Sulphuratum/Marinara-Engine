@@ -2077,15 +2077,21 @@ export async function generateRoutes(app: FastifyInstance) {
                 activity = derived.activity;
                 todaySchedule = schedSvc.getTodaySchedule(schedule, promptNow);
               }
-              // Sync status to character DB so sidebar/header dots stay in sync
-              const prevStatus = d.extensions?.conversationStatus;
-              const prevActivity = d.extensions?.conversationActivity;
-              if (prevStatus !== status || prevActivity !== activity) {
-                const extensions = { ...(d.extensions ?? {}), conversationStatus: status, conversationActivity: activity };
-                await chars.update(cid, { extensions } as any).catch(() => {});
-              }
               convoCharInfo.push({ charId: cid, name: d.name ?? "Unknown", status, activity, todaySchedule });
             }
+          }
+          // Persist per-chat presence state so sidebar dots stay scoped to this chat.
+          if (convoCharInfo.length > 0) {
+            void chats.patchMetadata(
+              input.chatId,
+              (current) => ({
+                conversationCharacterStatuses: {
+                  ...(current.conversationCharacterStatuses ?? {}),
+                  ...Object.fromEntries(convoCharInfo.map((c) => [c.charId, { status: c.status, activity: c.activity }])),
+                },
+              }),
+              { touchUpdatedAt: false },
+            ).catch(() => {});
           }
           const convoCharNames = convoCharInfo.map((c) => c.name);
           const charNameList = convoCharNames.length ? convoCharNames.join(", ") : "the character";
