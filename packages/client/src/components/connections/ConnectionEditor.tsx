@@ -172,6 +172,7 @@ export function ConnectionEditor() {
   const [localImageEndpointId, setLocalImageEndpointId] = useState("");
   const [localMaxTokensOverride, setLocalMaxTokensOverride] = useState<number | null>(null);
   const [localClaudeFastMode, setLocalClaudeFastMode] = useState(false);
+  const [localTreatAsLocalEndpoint, setLocalTreatAsLocalEndpoint] = useState(false);
   const [localDefaultParametersEnabled, setLocalDefaultParametersEnabled] = useState(false);
   const [localDefaultParameters, setLocalDefaultParameters] =
     useState<EditableGenerationParameters>(ROLEPLAY_PARAMETER_DEFAULTS);
@@ -242,6 +243,7 @@ export function ConnectionEditor() {
     setLocalImageEndpointId((c.imageEndpointId as string) ?? "");
     setLocalMaxTokensOverride(typeof c.maxTokensOverride === "number" ? (c.maxTokensOverride as number) : null);
     setLocalClaudeFastMode(c.claudeFastMode === "true" || c.claudeFastMode === true);
+    setLocalTreatAsLocalEndpoint(c.treatAsLocalEndpoint === "true" || c.treatAsLocalEndpoint === true);
     setLocalDefaultParametersEnabled(!!parseEditableGenerationParameters(c.defaultParameters));
     setLocalDefaultParameters(getEditableGenerationParameters(ROLEPLAY_PARAMETER_DEFAULTS, c.defaultParameters));
     setLocalImageDefaults(
@@ -400,6 +402,7 @@ export function ConnectionEditor() {
           : null,
       maxTokensOverride: localMaxTokensOverride ?? null,
       claudeFastMode: localClaudeFastMode,
+      treatAsLocalEndpoint: localTreatAsLocalEndpoint,
     };
     // Only send API key if user typed a new one
     if (localApiKey.trim()) {
@@ -454,6 +457,7 @@ export function ConnectionEditor() {
     localImageEndpointId,
     localMaxTokensOverride,
     localClaudeFastMode,
+    localTreatAsLocalEndpoint,
     localDefaultParametersEnabled,
     localDefaultParameters,
     selectedImageService,
@@ -512,6 +516,7 @@ export function ConnectionEditor() {
       maxContext: localMaxContext,
       maxTokensOverride: localMaxTokensOverride ?? null,
       maxParallelJobs: localMaxParallelJobs,
+      treatAsLocalEndpoint: localTreatAsLocalEndpoint,
       promptPresetId: localProvider !== "image_generation" ? localPromptPresetId || null : null,
       defaultParameters,
       enableCaching: localEnableCaching,
@@ -545,6 +550,7 @@ export function ConnectionEditor() {
     localMaxContext,
     localMaxTokensOverride,
     localMaxParallelJobs,
+    localTreatAsLocalEndpoint,
     localPromptPresetId,
     localDefaultParametersEnabled,
     localDefaultParameters,
@@ -744,10 +750,7 @@ export function ConnectionEditor() {
     <div className="mari-editor-shell flex flex-1 flex-col overflow-hidden">
       {/* ── Header ── */}
       <div className="mari-editor-header">
-        <button
-          onClick={handleClose}
-          className="mari-editor-action inline-flex shrink-0"
-        >
+        <button onClick={handleClose} className="mari-editor-action inline-flex shrink-0">
           <ArrowLeft size="1.125rem" />
         </button>
         <div className="mari-editor-icon-tile">
@@ -773,9 +776,7 @@ export function ConnectionEditor() {
               <Check size="0.6875rem" /> <span className="max-md:hidden">Saved</span>
             </span>
           )}
-          {dirty && !saveError && (
-            <span className="mari-editor-status mr-2 text-amber-400 max-md:hidden">Unsaved</span>
-          )}
+          {dirty && !saveError && <span className="mari-editor-status mr-2 text-amber-400 max-md:hidden">Unsaved</span>}
           <button
             onClick={handleSave}
             disabled={updateConnection.isPending || saveConnectionDefaults.isPending}
@@ -881,6 +882,9 @@ export function ConnectionEditor() {
                     // Clear model when switching providers, except xAI where
                     // we can seed the newest supported Grok model.
                     setLocalModel(key === "xai" ? (defaultModel?.id ?? "grok-4.3") : "");
+                    setLocalMaxTokensOverride(null);
+                    setLocalDefaultParametersEnabled(false);
+                    setLocalDefaultParameters(ROLEPLAY_PARAMETER_DEFAULTS);
                     if (key === "xai" && defaultModel?.context) {
                       setLocalMaxContext(defaultModel.context);
                     }
@@ -1257,9 +1261,7 @@ export function ConnectionEditor() {
                       });
                     }}
                   />
-                  <div
-                    className="absolute left-0 right-0 top-full z-50 mt-1 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl"
-                  >
+                  <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-80 overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-2xl">
                     {/* Fetch from API button */}
                     <div className="sticky top-0 z-10 border-b border-[var(--border)] bg-[var(--card)] p-2">
                       <button
@@ -1595,7 +1597,9 @@ export function ConnectionEditor() {
           {localProvider !== "image_generation" && (
             <FieldGroup
               label="Max Parallel Agent Jobs"
-              icon={<SlidersHorizontal size="0.875rem" className="text-[var(--marinara-chat-chrome-button-text-active)]" />}
+              icon={
+                <SlidersHorizontal size="0.875rem" className="text-[var(--marinara-chat-chrome-button-text-active)]" />
+              }
               help="How many agent LLM requests Marinara may run at once for this connection. Higher values can speed up agent-heavy chats on providers that tolerate parallel calls."
             >
               <div className="flex items-center gap-3">
@@ -1617,6 +1621,27 @@ export function ConnectionEditor() {
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 Agent batches for the same connection can be split across this many parallel jobs. Set to 1 for the
                 safest provider behavior.
+              </p>
+            </FieldGroup>
+          )}
+
+          {localProvider !== "image_generation" && !isLocalAuthProvider && (
+            <FieldGroup
+              label="Local / Custom Endpoint"
+              icon={<Server size="0.875rem" className="text-emerald-400" />}
+              help="Use this for self-hosted or proxied OpenAI-compatible endpoints, especially custom domains that point at a LAN model server. Professor Mari will use a JSON tool protocol fallback for workspace tools instead of relying only on native tool calls."
+            >
+              <SettingsSwitch
+                label="Treat as local/custom endpoint"
+                checked={localTreatAsLocalEndpoint}
+                onChange={(checked) => {
+                  setLocalTreatAsLocalEndpoint(checked);
+                  markDirty();
+                }}
+              />
+              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                Enable this if Professor Mari stops after tool use or your endpoint advertises OpenAI compatibility but
+                does not reliably support tool calls.
               </p>
             </FieldGroup>
           )}

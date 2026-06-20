@@ -82,6 +82,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+function formatAnthropicStreamError(error: unknown): string {
+  if (isRecord(error)) {
+    const type = typeof error.type === "string" && error.type.trim() ? error.type.trim() : null;
+    const message = typeof error.message === "string" && error.message.trim() ? error.message.trim() : null;
+    if (type && message) return `${type}: ${message}`;
+    if (message) return message;
+    if (type) return type;
+  }
+  return "Anthropic stream error";
+}
+
 function parseToolArguments(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -225,11 +236,11 @@ export class AnthropicProvider extends BaseLLMProvider {
     if (this.shouldSuppressModelParameters(options) || !options.tools?.length)
       return super.chatComplete(messages, options);
 
-    const configuredMaxTokens = options.maxTokens ?? 4096;
+    const configuredMaxTokens = this.applyMaxTokensCap(options.maxTokens ?? 4096);
     const contextFit = this.fitMessagesToContext(messages, { ...options, maxTokens: configuredMaxTokens });
     messages = contextFit.messages;
     this.logContextTrim(contextFit, options.model);
-    const maxTokens = contextFit.maxTokens ?? configuredMaxTokens;
+    const maxTokens = this.applyMaxTokensCap(contextFit.maxTokens ?? configuredMaxTokens);
 
     const url = `${this.baseUrl}/messages`;
     const systemMessages = messages.filter((m) => m.role === "system" && m.content?.trim());
@@ -321,7 +332,7 @@ export class AnthropicProvider extends BaseLLMProvider {
 
   async *chat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage | void, unknown> {
     const suppressModelParameters = this.shouldSuppressModelParameters(options);
-    const configuredMaxTokens = suppressModelParameters ? undefined : (options.maxTokens ?? 4096);
+    const configuredMaxTokens = suppressModelParameters ? undefined : this.applyMaxTokensCap(options.maxTokens ?? 4096);
     const contextFit = this.fitMessagesToContext(messages, { ...options, maxTokens: configuredMaxTokens });
     messages = contextFit.messages;
     this.logContextTrim(contextFit, options.model);
@@ -331,7 +342,9 @@ export class AnthropicProvider extends BaseLLMProvider {
 
     // Claude requires system prompt separate from messages — filter out empty-content messages
     const systemMessages = messages.filter((m) => m.role === "system" && m.content?.trim());
-    const chatMessages = messages.filter((m) => m.role !== "system" && (m.content?.trim() || m.images?.length || m.files?.length));
+    const chatMessages = messages.filter(
+      (m) => m.role !== "system" && (m.content?.trim() || m.images?.length || m.files?.length),
+    );
 
     // Ensure alternating user/assistant pattern (Claude requirement)
     const mergedMessages = this.mergeConsecutiveMessages(chatMessages);
@@ -501,46 +514,53 @@ export class AnthropicProvider extends BaseLLMProvider {
           if (!trimmed.startsWith("data: ")) continue;
           const data = trimmed.slice(6);
 
+          let event: {
+            type: string;
+            error?: unknown;
+            message?: { usage?: { input_tokens: number; output_tokens: number } };
+            content_block?: { type: string };
+            delta?: { type: string; text?: string; thinking?: string };
+            usage?: { output_tokens: number };
+          };
           try {
-            const event = JSON.parse(data) as {
-              type: string;
-              message?: { usage?: { input_tokens: number; output_tokens: number } };
-              content_block?: { type: string };
-              delta?: { type: string; text?: string; thinking?: string };
-              usage?: { output_tokens: number };
-            };
-            // Capture input token count from message_start
-            if (event.type === "message_start" && event.message?.usage) {
-              inputTokens = event.message.usage.input_tokens;
-              outputTokens = event.message.usage.output_tokens;
-            }
-            // Capture final output token count from message_delta
-            if (event.type === "message_delta" && event.usage) {
-              outputTokens = event.usage.output_tokens;
-            }
-            // Track block type (thinking vs text)
-            if (event.type === "content_block_start" && event.content_block) {
-              currentBlockType = event.content_block.type;
-            }
-            if (event.type === "content_block_delta") {
-              if (currentBlockType === "thinking" && event.delta?.thinking && options.onThinking) {
-                options.onThinking(event.delta.thinking);
-              } else if (event.delta?.text) {
-                yield event.delta.text;
-              }
-            }
-            if (event.type === "message_stop") {
-              if (inputTokens || outputTokens) {
-                return {
-                  promptTokens: inputTokens,
-                  completionTokens: outputTokens,
-                  totalTokens: inputTokens + outputTokens,
-                };
-              }
-              return;
-            }
+            event = JSON.parse(data) as typeof event;
           } catch {
             // Skip malformed lines
+            continue;
+          }
+
+          if (event.type === "error") {
+            throw new Error(`Anthropic stream error: ${formatAnthropicStreamError(event.error)}`);
+          }
+          // Capture input token count from message_start
+          if (event.type === "message_start" && event.message?.usage) {
+            inputTokens = event.message.usage.input_tokens;
+            outputTokens = event.message.usage.output_tokens;
+          }
+          // Capture final output token count from message_delta
+          if (event.type === "message_delta" && event.usage) {
+            outputTokens = event.usage.output_tokens;
+          }
+          // Track block type (thinking vs text)
+          if (event.type === "content_block_start" && event.content_block) {
+            currentBlockType = event.content_block.type;
+          }
+          if (event.type === "content_block_delta") {
+            if (currentBlockType === "thinking" && event.delta?.thinking && options.onThinking) {
+              options.onThinking(event.delta.thinking);
+            } else if (event.delta?.text) {
+              yield event.delta.text;
+            }
+          }
+          if (event.type === "message_stop") {
+            if (inputTokens || outputTokens) {
+              return {
+                promptTokens: inputTokens,
+                completionTokens: outputTokens,
+                totalTokens: inputTokens + outputTokens,
+              };
+            }
+            return;
           }
         }
       }
@@ -550,6 +570,12 @@ export class AnthropicProvider extends BaseLLMProvider {
     if (inputTokens || outputTokens) {
       return { promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens };
     }
+  }
+
+  override async embed(_texts: string[], _model: string): Promise<number[][]> {
+    throw new Error(
+      "Anthropic connections do not support embeddings through Marinara's OpenAI-compatible /embeddings path. Configure a dedicated OpenAI-compatible or local embedding connection.",
+    );
   }
 
   /**
