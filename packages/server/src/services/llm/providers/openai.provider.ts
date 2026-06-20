@@ -436,7 +436,9 @@ export class OpenAIProvider extends BaseLLMProvider {
   private buildHeaders(): Record<string, string> {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${this.apiKey}`,
+      // Only send auth when a key is present: a blank `Bearer ` (e.g. a decrypt
+      // failure or an intentionally keyless local endpoint) is worse than none.
+      ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       ...(this.extraHeaders ?? {}),
     };
     if (!this.isGenericCustomProvider() && this.baseUrl.includes("openrouter.ai")) {

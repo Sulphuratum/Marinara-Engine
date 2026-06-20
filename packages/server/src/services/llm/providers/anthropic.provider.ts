@@ -33,6 +33,16 @@ function stripAnthropicSamplingParameters(body: Record<string, unknown>): void {
   delete body.top_p;
 }
 
+/**
+ * Anthropic's Messages API only accepts `temperature` in [0, 1] and 400s above that.
+ * Many other providers accept up to 2, so a portable preset may legitimately store a
+ * value > 1. Clamp at serialization time only — the user's stored preset is never
+ * mutated, so the same preset still sends its original value to providers that allow it.
+ */
+function clampAnthropicTemperature(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
 function resolveAdaptiveThinkingHeadroom(options: ChatOptions, visibleMaxTokens: number): number {
   const effort = options.reasoningEffort ?? "high";
   const effortHeadroom: Record<string, number> = {
@@ -242,8 +252,9 @@ export class AnthropicProvider extends BaseLLMProvider {
       messages: formatAnthropicPayloadMessages(messages),
       tools: formatAnthropicTools(options.tools),
       stream: false,
-      ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
+      ...(options.temperature !== undefined ? { temperature: clampAnthropicTemperature(options.temperature) } : {}),
       ...(options.topK ? { top_k: options.topK } : {}),
+      ...(options.stop?.length ? { stop_sequences: options.stop } : {}),
     };
 
     const modelLower = options.model.toLowerCase();
@@ -277,7 +288,7 @@ export class AnthropicProvider extends BaseLLMProvider {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
+        ...(this.apiKey ? { "x-api-key": this.apiKey } : {}),
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),
@@ -381,8 +392,9 @@ export class AnthropicProvider extends BaseLLMProvider {
       const outputMaxTokens = maxTokens ?? 4096;
       body.max_tokens = outputMaxTokens;
       body.stream = options.stream ?? true;
-      if (options.temperature !== undefined) body.temperature = options.temperature;
+      if (options.temperature !== undefined) body.temperature = clampAnthropicTemperature(options.temperature);
       if (options.topK) body.top_k = options.topK;
+      if (options.stop?.length) body.stop_sequences = options.stop;
     } else {
       body.max_tokens = maxTokens ?? 4096;
       if (options.stream) body.stream = true;
@@ -434,7 +446,7 @@ export class AnthropicProvider extends BaseLLMProvider {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": this.apiKey,
+        ...(this.apiKey ? { "x-api-key": this.apiKey } : {}),
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify(body),

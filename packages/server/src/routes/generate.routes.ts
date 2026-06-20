@@ -1585,6 +1585,7 @@ export async function generateRoutes(app: FastifyInstance) {
         let assistantPrefill = "";
         let customThinkingTags: ThinkingTagPair[] = [];
         let customParameters: Record<string, unknown> = {};
+        let stopSequences: string[] = [];
         let wrapFormat: "xml" | "markdown" | "none" = "xml";
         const runtimeAgentSectionTypes = new Set<RuntimeAgentSectionType>();
         const runtimeAgentSectionTokens = new Map<RuntimeAgentSectionType, RuntimeAgentSectionTokens>();
@@ -1975,6 +1976,7 @@ export async function generateRoutes(app: FastifyInstance) {
           assistantPrefill = assembled.parameters.assistantPrefill ?? "";
           customThinkingTags = normalizeThinkingTagPairs(assembled.parameters.customThinkingTags);
           customParameters = mergeCustomParameters(customParameters, assembled.parameters.customParameters);
+          stopSequences = assembled.parameters.stopSequences ?? [];
 
           effectiveMaxContext = mergeModelContextLimit(
             modelAccessPolicy,
@@ -3277,6 +3279,7 @@ export async function generateRoutes(app: FastifyInstance) {
             customThinkingTags = normalizeThinkingTagPairs(params.customThinkingTags);
           }
           customParameters = mergeCustomParameters(customParameters, params.customParameters);
+          if (Array.isArray(params.stopSequences)) stopSequences = params.stopSequences;
 
           effectiveMaxContext = mergeModelContextLimit(
             modelAccessPolicy,
@@ -5828,6 +5831,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     topK: providerTopK,
                     frequencyPenalty: frequencyPenalty || undefined,
                     presencePenalty: presencePenalty || undefined,
+                    stop: stopSequences.length ? stopSequences : undefined,
                     tools: toolDefs,
                     enableCaching: conn.enableCaching === "true",
                     cachingAtDepth: conn.cachingAtDepth ?? 5,
@@ -5983,6 +5987,7 @@ export async function generateRoutes(app: FastifyInstance) {
                     topK: providerTopK,
                     frequencyPenalty: frequencyPenalty || undefined,
                     presencePenalty: presencePenalty || undefined,
+                    stop: stopSequences.length ? stopSequences : undefined,
                     enableCaching: conn.enableCaching === "true",
                     cachingAtDepth: conn.cachingAtDepth ?? 5,
                     enableThinking,
@@ -6038,6 +6043,7 @@ export async function generateRoutes(app: FastifyInstance) {
                 topK: providerTopK,
                 frequencyPenalty: frequencyPenalty || undefined,
                 presencePenalty: presencePenalty || undefined,
+                stop: stopSequences.length ? stopSequences : undefined,
                 stream: input.streaming,
                 enableCaching: conn.enableCaching === "true",
                 cachingAtDepth: conn.cachingAtDepth ?? 5,

@@ -391,6 +391,7 @@ export class GoogleProvider extends BaseLLMProvider {
         ...(options.presencePenalty ? { presencePenalty: options.presencePenalty } : {}),
         ...(thinkingConfig ? { thinkingConfig } : {}),
         ...googleResponseFormatConfig(options.responseFormat),
+        ...(options.stop?.length ? { stopSequences: options.stop } : {}),
       },
       tools: formatGoogleTools(options.tools),
       toolConfig: { functionCallingConfig: { mode: "AUTO" } },
@@ -404,7 +405,9 @@ export class GoogleProvider extends BaseLLMProvider {
     const authHeaders =
       this.providerKind === "google_vertex"
         ? await googleAuthHeadersForVertex(this.apiKey)
-        : { "x-goog-api-key": this.apiKey };
+        : this.apiKey
+          ? { "x-goog-api-key": this.apiKey }
+          : {};
 
     const response = await llmFetch(url, {
       method: "POST",
@@ -550,6 +553,7 @@ export class GoogleProvider extends BaseLLMProvider {
         ...(options.presencePenalty ? { presencePenalty: options.presencePenalty } : {}),
         ...(thinkingConfig ? { thinkingConfig } : {}),
         ...googleResponseFormatConfig(options.responseFormat),
+        ...(options.stop?.length ? { stopSequences: options.stop } : {}),
       };
     }
 
@@ -564,7 +568,9 @@ export class GoogleProvider extends BaseLLMProvider {
     const authHeaders =
       this.providerKind === "google_vertex"
         ? await googleAuthHeadersForVertex(this.apiKey)
-        : { "x-goog-api-key": this.apiKey };
+        : this.apiKey
+          ? { "x-goog-api-key": this.apiKey }
+          : {};
 
     const response = await llmFetch(url, {
       method: "POST",
