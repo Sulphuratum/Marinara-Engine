@@ -858,6 +858,14 @@ export function ChatSidebar() {
                 />
               );
             };
+            const multiAvatarStatus = avatars.reduce<string | undefined>((worstStatus, avatar) => {
+              const nextStatus = avatar.conversationStatus ?? "online";
+              const priority = { online: 0, idle: 1, offline: 2, dnd: 3 } as const;
+              if (!worstStatus) return nextStatus;
+              return priority[nextStatus as keyof typeof priority] > priority[worstStatus as keyof typeof priority]
+                ? nextStatus
+                : worstStatus;
+            }, undefined);
 
             if (avatars.length === 0) {
               return (
@@ -929,6 +937,7 @@ export function ChatSidebar() {
                     </div>
                   ),
                 )}
+                {statusDot(multiAvatarStatus)}
               </div>
             );
           })()}

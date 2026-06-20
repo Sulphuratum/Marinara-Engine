@@ -239,6 +239,14 @@ function matchSpriteExpression(expressions: string[], requested: string): string
   );
 }
 
+const CONVERSATION_STATUS_VALUES = ["online", "idle", "dnd", "offline"] as const;
+
+type ConversationStatusValue = (typeof CONVERSATION_STATUS_VALUES)[number];
+
+function isConversationStatusValue(value: string): value is ConversationStatusValue {
+  return CONVERSATION_STATUS_VALUES.includes(value as ConversationStatusValue);
+}
+
 // ── Message index parser (for /hide and /unhide) ────────────────
 
 /**
@@ -521,6 +529,99 @@ const COMMANDS: SlashCommand[] = [
       await ctx.setSpriteExpression(target.id, expression);
       ctx.invalidate();
       return { handled: true, feedback: `Emote updated: ${target.name} -> ${expression}` };
+    },
+  },
+  {
+    name: "status",
+    description: "Set or clear a conversation status override",
+    usage: "/status <status|clear> [character name]",
+    local: true,
+    async execute(args, ctx) {
+      if (ctx.mode !== "conversation") {
+        return { handled: true, feedback: "/status is only available in conversation mode." };
+      }
+
+      const characters = ctx.characters ?? [];
+      if (characters.length === 0) {
+        return { handled: true, feedback: "No characters found in this chat." };
+      }
+
+      const tokens = parseCommandTokens(args);
+      const action = normalizeLookup(tokens[0]?.value ?? "");
+      if (!action) {
+        return { handled: true, feedback: "Usage: /status <status|clear> [character name]" };
+      }
+
+      const requestedName = tokens
+        .slice(1)
+        .map((token) => token.value)
+        .join(" ")
+        .trim();
+
+      const resolveTargetCharacter = () => {
+        if (requestedName) {
+          return findSceneCharacter(characters, requestedName);
+        }
+        if (characters.length === 1) {
+          return characters[0]!;
+        }
+        return null;
+      };
+
+      if (action === "clear") {
+        const target = resolveTargetCharacter();
+        if (!target) {
+          return {
+            handled: true,
+            feedback: requestedName
+              ? `Character "${requestedName}" not found. Available: ${characters.map((character) => character.name).join(", ")}`
+              : `Please provide a character name. Available: ${characters.map((character) => character.name).join(", ")}`,
+          };
+        }
+
+        try {
+          await api.patch(`/chats/${ctx.chatId}/metadata`, {
+            conversationStatusOverrides: { [target.id]: null },
+          });
+          ctx.invalidate();
+          return { handled: true, feedback: `Cleared ${target.name}'s status override.` };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error";
+          return { handled: true, feedback: `Failed to update status: ${message}` };
+        }
+      }
+
+      if (!isConversationStatusValue(action)) {
+        return { handled: true, feedback: "Status must be one of: online, idle, dnd, offline, clear." };
+      }
+
+      const target = resolveTargetCharacter();
+      if (!target) {
+        return {
+          handled: true,
+          feedback: requestedName
+            ? `Character "${requestedName}" not found. Available: ${characters.map((character) => character.name).join(", ")}`
+            : `Please provide a character name. Available: ${characters.map((character) => character.name).join(", ")}`,
+        };
+      }
+
+      try {
+        await api.patch(`/chats/${ctx.chatId}/metadata`, {
+          conversationStatusOverrides: {
+            [target.id]: {
+              status: action,
+              activity: null,
+              createdAt: new Date().toISOString(),
+              expiresAt: null,
+            },
+          },
+        });
+        ctx.invalidate();
+        return { handled: true, feedback: `Set ${target.name} to ${action}.` };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error";
+        return { handled: true, feedback: `Failed to update status: ${message}` };
+      }
     },
   },
   {

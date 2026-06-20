@@ -651,6 +651,7 @@ export function ConversationInput({
         createMessage: (data) => createMessage.mutate(data),
         invalidate: () => qc.invalidateQueries({ queryKey: chatKeys.all }),
         characterNames: activeCharacterNames,
+        characters: activeChatCharacters?.map((character) => ({ id: character.id, name: character.name })),
       };
       const submittedDraft = textareaRef.current?.value ?? "";
       const submittedHeight = textareaRef.current?.style.height ?? "auto";
@@ -763,6 +764,7 @@ export function ConversationInput({
     });
   }, [
     activeChatId,
+    activeChatCharacters,
     attachments,
     canRetry,
     isReadingAttachments,
@@ -808,6 +810,7 @@ export function ConversationInput({
         createMessage: (data) => createMessage.mutate(data),
         invalidate: () => qc.invalidateQueries({ queryKey: chatKeys.all }),
         characterNames: activeCharacterNames,
+        characters: activeChatCharacters?.map((character) => ({ id: character.id, name: character.name })),
       };
 
       const previousDraft = textareaRef.current?.value ?? "";
@@ -861,6 +864,7 @@ export function ConversationInput({
     },
     [
       activeChatId,
+      activeChatCharacters,
       activeCharacterNames,
       clearInputDraft,
       completions,
