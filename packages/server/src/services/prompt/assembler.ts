@@ -5,6 +5,7 @@
 // persona, and per-chat choice selections.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
+import { logger } from "../../lib/logger.js";
 import type {
   ChatMLMessage,
   PromptPreset,
@@ -335,14 +336,20 @@ export async function assemblePrompt(input: AssemblerInput): Promise<AssemblerOu
       }
     }
 
-    const resolved = await resolveSection(section, {
-      macroCtx,
-      markerCtx,
-      macroOptions: deferAllMacroOptions,
-      wrapFormat,
-      runtimeAgentData: input.runtimeAgentData ?? {},
-      runtimeAgentTypesUsed,
-    });
+    let resolved: ResolvedSection | null;
+    try {
+      resolved = await resolveSection(section, {
+        macroCtx,
+        markerCtx,
+        macroOptions: deferAllMacroOptions,
+        wrapFormat,
+        runtimeAgentData: input.runtimeAgentData ?? {},
+        runtimeAgentTypesUsed,
+      });
+    } catch (err) {
+      logger.warn(err, "[prompt] Skipping section %s after marker expansion failed", section.id);
+      continue;
+    }
 
     if (!resolved) continue;
 

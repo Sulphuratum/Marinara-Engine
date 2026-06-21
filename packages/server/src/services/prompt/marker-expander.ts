@@ -3,6 +3,7 @@
 // sections into actual content at assembly time.
 // ──────────────────────────────────────────────
 import type { DB } from "../../db/connection.js";
+import { logger } from "../../lib/logger.js";
 import {
   formatCustomTrackerFieldForPrompt,
   resolveCharacterScopedMacros,
@@ -486,7 +487,19 @@ async function expandAgentData(config: MarkerConfig, ctx: MarkerContext): Promis
   const run = latestRuns[0];
   if (!run) return { content: "" };
 
-  const resultData = JSON.parse(run.resultData);
+  let resultData: unknown;
+  try {
+    resultData = JSON.parse(run.resultData);
+  } catch (err) {
+    logger.warn(
+      err,
+      "[prompt] Skipping malformed agent result data for %s in chat %s",
+      agentType,
+      ctx.chatId,
+    );
+    return { content: "" };
+  }
+
   // Format result data as readable text
   return { content: formatAgentResult(resultData) };
 }
