@@ -88,6 +88,7 @@ class SidecarProcessService {
   private stopRequested = false;
   private stopRequestId = 0;
   private unexpectedCrashCount = 0;
+  private unexpectedCrashWindowStartedAt = 0;
   private lastReadyAt = 0;
   private starting = false;
   private syncLock: Promise<void> = Promise.resolve();
@@ -140,6 +141,8 @@ class SidecarProcessService {
     return this.withLock(async () => {
       this.clearStopRequest(stopRequestId);
       this.clearStartupFailure();
+      this.unexpectedCrashCount = 0;
+      this.unexpectedCrashWindowStartedAt = 0;
       this.currentSignature = null;
       await this.stopUnlocked();
       await this.syncUnlocked({ forceStart: true, allowRuntimeInstall: false });
@@ -205,6 +208,8 @@ class SidecarProcessService {
       try {
         await this.stopUnlocked();
         this.clearStartupFailure();
+        this.unexpectedCrashCount = 0;
+        this.unexpectedCrashWindowStartedAt = 0;
         if (sidecarModelService.getConfiguredModelRef()) {
           sidecarModelService.setStatus("downloaded");
         } else {
@@ -514,6 +519,7 @@ class SidecarProcessService {
           backend,
           pythonPath: this.getMlxPythonPath(runtime),
           modelRef,
+          contextSize: config.contextSize,
         })
       : JSON.stringify({
           backend,
@@ -744,7 +750,6 @@ class SidecarProcessService {
 
   private markReady(): void {
     this.ready = true;
-    this.unexpectedCrashCount = 0;
     this.lastReadyAt = Date.now();
     this.clearStartupFailure();
     sidecarModelService.setStatus("ready");
@@ -881,8 +886,15 @@ class SidecarProcessService {
       return;
     }
 
-    const crashedSoonAfterReady = this.lastReadyAt > 0 && Date.now() - this.lastReadyAt < 30_000;
-    this.unexpectedCrashCount = crashedSoonAfterReady ? this.unexpectedCrashCount + 1 : 1;
+    const now = Date.now();
+    const withinRepeatedCrashWindow =
+      this.unexpectedCrashWindowStartedAt > 0 && now - this.unexpectedCrashWindowStartedAt < 5 * 60_000;
+    if (!withinRepeatedCrashWindow) {
+      this.unexpectedCrashWindowStartedAt = now;
+      this.unexpectedCrashCount = 1;
+    } else {
+      this.unexpectedCrashCount += 1;
+    }
 
     if (this.unexpectedCrashCount > 1) {
       this.startupError = "The local sidecar server crashed repeatedly after startup";

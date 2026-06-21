@@ -31,6 +31,11 @@ export class LocalSidecarProvider extends BaseLLMProvider {
   private assertToolCallsAvailable(options: ChatOptions): void {
     if (!options.tools?.length) return;
     const config = sidecarModelService.getConfig();
+    if (sidecarModelService.getResolvedBackend() === "mlx") {
+      throw new Error(
+        "Local sidecar tool calls are not supported on the MLX backend. Use llama.cpp with Native Tool Calls enabled or choose a remote tool-capable connection.",
+      );
+    }
     if (sidecarModelService.getResolvedBackend() === "llama_cpp" && !config.enableNativeToolCalls) {
       throw new Error(
         "Local sidecar native tool calls are disabled. Open Local AI Model > Runtime Settings and enable Native Tool Calls before using tools with the local sidecar.",
@@ -52,14 +57,27 @@ export class LocalSidecarProvider extends BaseLLMProvider {
       temperature: structuredOutput ? 0 : config.temperature,
       topP: structuredOutput ? 1 : config.topP,
       topK: structuredOutput ? 0 : config.topK,
+      minP: structuredOutput ? 0 : options.minP,
+    };
+  }
+
+  private applyBackendRequestConstraints(options: ChatOptions): ChatOptions {
+    if (sidecarModelService.getResolvedBackend() !== "mlx") {
+      return options;
+    }
+
+    return {
+      ...options,
+      responseFormat: undefined,
     };
   }
 
   async *chat(messages: ChatMessage[], options: ChatOptions): AsyncGenerator<string, LLMUsage | void, unknown> {
     this.assertToolCallsAvailable(options);
     const delegate = await this.createDelegate();
+    const runtimeOptions = this.applyBackendRequestConstraints(this.applyRuntimeSettings(options));
     return yield* delegate.chat(messages, {
-      ...this.applyRuntimeSettings(options),
+      ...runtimeOptions,
       model: this.getRequestModel(),
     });
   }
@@ -67,8 +85,9 @@ export class LocalSidecarProvider extends BaseLLMProvider {
   async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
     this.assertToolCallsAvailable(options);
     const delegate = await this.createDelegate();
+    const runtimeOptions = this.applyBackendRequestConstraints(this.applyRuntimeSettings(options));
     return delegate.chatComplete(messages, {
-      ...this.applyRuntimeSettings(options),
+      ...runtimeOptions,
       model: this.getRequestModel(),
     });
   }

@@ -201,6 +201,7 @@ async function streamChatCompletion(options: {
   signal?: AbortSignal;
 }): Promise<string> {
   const baseUrl = await sidecarProcessService.ensureReady();
+  const backend = sidecarModelService.getResolvedBackend();
   const generation = getRuntimeGenerationSettings();
   const config = sidecarModelService.getConfig();
   const requestedMaxTokens = Math.min(Math.max(1, Math.floor(options.maxTokens)), MAX_OUTPUT_TOKENS);
@@ -217,21 +218,25 @@ async function streamChatCompletion(options: {
   const structuredOutput = !!responseFormat;
 
   const send = async (sendMaxTokens: number): Promise<string> => {
+    const requestBody: Record<string, unknown> = {
+      model: getRequestModel(),
+      stream: true,
+      messages: fittedMessages,
+      max_tokens: sendMaxTokens,
+      temperature: structuredOutput ? 0 : generation.temperature,
+      top_p: structuredOutput ? 1 : generation.topP,
+      ...(!structuredOutput && generation.topK > 0 ? { top_k: generation.topK } : {}),
+    };
+    if (responseFormat && backend !== "mlx") {
+      requestBody.response_format = responseFormat;
+    }
+
     const response = await llmFetch(`${baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        model: getRequestModel(),
-        stream: true,
-        messages: fittedMessages,
-        max_tokens: sendMaxTokens,
-        temperature: structuredOutput ? 0 : generation.temperature,
-        top_p: structuredOutput ? 1 : generation.topP,
-        ...(!structuredOutput && generation.topK > 0 ? { top_k: generation.topK } : {}),
-        ...(responseFormat ? { response_format: responseFormat } : {}),
-      }),
+      body: JSON.stringify(requestBody),
       signal: options.signal,
     });
 
@@ -353,36 +358,41 @@ export async function runTestMessage(): Promise<SidecarTestMessageOutput> {
     const config = sidecarModelService.getConfig();
     const shouldKeepRunning = config.useForTrackers || config.useForGameScene;
     const baseUrl = await sidecarProcessService.ensureReady({ forceStart: true });
+    const backend = sidecarModelService.getResolvedBackend();
     const nonce = `marinara-${randomUUID().slice(0, 8)}`;
 
     try {
+      const body: Record<string, unknown> = {
+        model: getRequestModel(),
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a local runtime smoke test. Follow the user's format exactly and do not omit the verification token.",
+          },
+          {
+            role: "user",
+            content: `Reply in exactly two lines.
+Line 1: TOKEN ${nonce}
+Line 2: one short sentence confirming that the local sidecar test succeeded.`,
+          },
+        ] satisfies SidecarMessage[],
+        max_tokens: 48,
+        temperature: 0.2,
+        top_p: 0.9,
+      };
+      if (backend !== "mlx") {
+        body.reasoning_format = "none";
+        body.chat_template_kwargs = { enable_thinking: false };
+      }
+
       const response = await fetch(`${baseUrl}/v1/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: getRequestModel(),
-          stream: false,
-          messages: [
-            {
-              role: "system",
-              content:
-                "You are a local runtime smoke test. Follow the user's format exactly and do not omit the verification token.",
-            },
-            {
-              role: "user",
-              content: `Reply in exactly two lines.
-Line 1: TOKEN ${nonce}
-Line 2: one short sentence confirming that the local sidecar test succeeded.`,
-            },
-          ] satisfies SidecarMessage[],
-          max_tokens: 48,
-          temperature: 0.2,
-          top_p: 0.9,
-          reasoning_format: "none",
-          chat_template_kwargs: { enable_thinking: false },
-        }),
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(45_000),
       });
 
