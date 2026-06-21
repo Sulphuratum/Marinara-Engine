@@ -400,6 +400,43 @@ export function AgentEditor() {
   const createAgent = useCreateAgent();
   const qc = useQueryClient();
   const deleteAgent = useDeleteAgent();
+  const connectionIndexRef = useRef<{
+    loaded: boolean;
+    llmIds: Set<string>;
+    imageIds: Set<string>;
+  }>({ loaded: false, llmIds: new Set(), imageIds: new Set() });
+
+  useEffect(() => {
+    const rows =
+      (connections as
+        | Array<{
+            id: string;
+            provider: string;
+          }>
+        | undefined) ?? [];
+    connectionIndexRef.current = {
+      loaded: Array.isArray(connections),
+      llmIds: new Set(rows.filter((connection) => connection.provider !== "image_generation").map((connection) => connection.id)),
+      imageIds: new Set(rows.filter((connection) => connection.provider === "image_generation").map((connection) => connection.id)),
+    };
+  }, [connections]);
+
+  const normalizeTextConnectionOverride = useCallback((connectionId: unknown): string => {
+    if (typeof connectionId !== "string" || !connectionId.trim()) return "";
+    if (connectionId === LOCAL_SIDECAR_CONNECTION_ID) {
+      return import.meta.env.VITE_MARINARA_LITE === "true" ? "" : connectionId;
+    }
+    const index = connectionIndexRef.current;
+    if (!index.loaded) return connectionId;
+    return index.llmIds.has(connectionId) ? connectionId : "";
+  }, []);
+
+  const normalizeImageConnectionOverride = useCallback((connectionId: unknown): string => {
+    if (typeof connectionId !== "string" || !connectionId.trim()) return "";
+    const index = connectionIndexRef.current;
+    if (!index.loaded) return connectionId;
+    return index.imageIds.has(connectionId) ? connectionId : "";
+  }, []);
 
   // Find built-in meta (null for custom agents)
   const builtIn = useMemo(() => BUILT_IN_AGENTS.find((a) => a.id === agentDetailId) ?? null, [agentDetailId]);
@@ -504,7 +541,7 @@ export function AgentEditor() {
       setLocalDescription(dbConfig.description);
       setLocalPhase(normalizeAgentPhaseForType(agentType, dbConfig.phase));
       setLocalAgentEnabled(dbConfig.enabled !== "false");
-      setLocalConnectionId(dbConfig.connectionId ?? "");
+      setLocalConnectionId(normalizeTextConnectionOverride(dbConfig.connectionId));
       const settings = mergeBuiltInAgentSettings(agentType, dbConfig.settings);
       const promptTemplateSource = settings.promptTemplates ?? defaultSettings.promptTemplates;
       setLocalAuthor(
@@ -513,7 +550,7 @@ export function AgentEditor() {
       setLocalPromptTemplates(normalizeAgentPromptTemplateOptions(promptTemplateSource));
       setLocalContextSize(normalizeOptionalNumber(settings.contextSize));
       setLocalMaxTokens(normalizeOptionalNumber(settings.maxTokens) || (defaultSettings.maxTokens as number) || "");
-      setLocalImageConnectionId((settings.imageConnectionId as string) ?? "");
+      setLocalImageConnectionId(normalizeImageConnectionOverride(settings.imageConnectionId));
       setLocalRunInterval(
         (settings.runInterval as number | undefined) ?? (defaultSettings.runInterval as number) ?? "",
       );
@@ -690,7 +727,15 @@ export function AgentEditor() {
     }
     setDirty(false);
     setSaveError(null);
-  }, [agentDetailId, dbConfig, builtIn, connections, customRunIntervalMeta?.defaultValue, isCustomAgent]);
+  }, [
+    agentDetailId,
+    dbConfig,
+    builtIn,
+    customRunIntervalMeta?.defaultValue,
+    isCustomAgent,
+    normalizeTextConnectionOverride,
+    normalizeImageConnectionOverride,
+  ]);
 
   // Fetch music connection status when viewing Music DJ.
   const isSpotifyAgent = agentDetailId === "spotify" || dbConfig?.type === "spotify";
@@ -893,13 +938,15 @@ export function AgentEditor() {
     ]) {
       if (currentSettings[key] !== undefined) preservedSpotifyFields[key] = currentSettings[key];
     }
+    const savedConnectionId = normalizeTextConnectionOverride(localConnectionId);
+    const savedImageConnectionId = normalizeImageConnectionOverride(localImageConnectionId);
 
     const payload = {
       name: localName,
       description: localDescription,
       phase: savedPhase,
       enabled: localAgentEnabled,
-      connectionId: localConnectionId || null,
+      connectionId: savedConnectionId || null,
       promptTemplate: localPrompt,
       settings: {
         ...preservedSpotifyFields,
@@ -934,7 +981,7 @@ export function AgentEditor() {
         // Retrieval to Router would leave behind stale file IDs the user can no
         // longer see or remove via the UI.
         ...(isKnowledgeRetrievalAgent && localSourceFileIds.length > 0 ? { sourceFileIds: localSourceFileIds } : {}),
-        ...(localImageConnectionId ? { imageConnectionId: localImageConnectionId } : {}),
+        ...(savedImageConnectionId ? { imageConnectionId: savedImageConnectionId } : {}),
         ...(localAutoGenerateAvatars ? { autoGenerateAvatars: true } : {}),
         ...(localAutoGenerateBackgrounds ? { autoGenerateBackgrounds: true } : {}),
         ...(isIllustratorAgent
@@ -1042,6 +1089,8 @@ export function AgentEditor() {
     updateAgent,
     createAgent,
     openAgentDetail,
+    normalizeTextConnectionOverride,
+    normalizeImageConnectionOverride,
   ]);
 
   const handleExportAgent = () => {

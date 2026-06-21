@@ -440,26 +440,6 @@ export async function chatsRoutes(app: FastifyInstance) {
     );
     if (!chat) return chat;
 
-    // Pre-populate chat parameters from connection defaults if available
-    if (input.connectionId && input.connectionId !== "random") {
-      const connStorage = createConnectionsStorage(app.db);
-      const conn = await connStorage.getById(input.connectionId);
-      if (conn?.defaultParameters) {
-        let connDefaults: unknown = null;
-        try {
-          connDefaults =
-            typeof conn.defaultParameters === "string" ? JSON.parse(conn.defaultParameters) : conn.defaultParameters;
-        } catch {
-          /* malformed JSON — skip defaults */
-        }
-        if (connDefaults && typeof connDefaults === "object") {
-          const existingMeta = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
-          await storage.updateMetadata(chat.id, { ...existingMeta, chatParameters: connDefaults });
-          return storage.getById(chat.id);
-        }
-      }
-    }
-
     return chat;
   });
 

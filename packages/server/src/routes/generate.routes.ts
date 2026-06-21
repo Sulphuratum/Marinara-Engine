@@ -246,7 +246,7 @@ import {
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
 import { registerRetryAgentsRoute } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
-import { sendSseEvent, startSseReply, trySendSseEvent } from "./generate/sse.js";
+import { sendSseEvent, startSseKeepalive, startSseReply, trySendSseEvent } from "./generate/sse.js";
 import { runTurnGameBotTurns } from "../services/turn-games/turn-game-bot-runner.service.js";
 import {
   getActiveTurnGame,
@@ -398,6 +398,10 @@ import {
 
 function findResultAgent(result: AgentResult, agents: ResolvedAgent[]): ResolvedAgent | null {
   return agents.find((agent) => agent.id === result.agentId || agent.type === result.agentType) ?? null;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function customAgentCanApplyResult(
@@ -1335,6 +1339,7 @@ export async function generateRoutes(app: FastifyInstance) {
         return false;
       }
     }) as typeof reply.raw.write;
+    const stopSseKeepalive = startSseKeepalive(reply);
 
     const onClose = () => {
       if (generationComplete) return;
@@ -1345,7 +1350,6 @@ export async function generateRoutes(app: FastifyInstance) {
       }
       logger.info("[abort] Client disconnected — aborting generation");
       abortController.abort();
-      if (activeGenerations) activeGenerations.delete(input.chatId);
       if (baseUrl) {
         const backendRoot = baseUrl.replace(/\/v1\/?$/, "");
         fetch(backendRoot + "/api/extra/abort", {
@@ -1949,6 +1953,7 @@ export async function generateRoutes(app: FastifyInstance) {
             if (recentMsgs.trim()) {
               const embeddings = await embedMemoryRecallTexts([recentMsgs], {
                 embeddingSource: memoryRecallEmbeddingSource,
+                signal: abortController.signal,
               });
               chatContextEmbedding = embeddings[0] ?? null;
             }
@@ -3492,7 +3497,7 @@ export async function generateRoutes(app: FastifyInstance) {
         }
 
         const isLocalGemma = (conn.model ?? "").toLowerCase().includes("gemma");
-        applyParameterOverrides(connectionParams);
+        if (!presetId) applyParameterOverrides(connectionParams);
         applyParameterOverrides(chatParams);
 
         // Game mode: force optimal generation defaults after Advanced Parameters
@@ -4100,6 +4105,7 @@ export async function generateRoutes(app: FastifyInstance) {
             embeddingSource: memoryRecallEmbeddingSource,
             contextLimit: suppressModelParameters ? undefined : (effectiveMaxContext ?? connectionMaxContext),
             sendProgress,
+            signal: abortController.signal,
           });
         }
 
@@ -5955,21 +5961,6 @@ export async function generateRoutes(app: FastifyInstance) {
           let usage: LLMUsage | undefined;
           let finishReason: string | undefined;
 
-          // ── SSE keepalive: send periodic comments to prevent proxy timeouts ──
-          // Reasoning models (e.g. GPT-5.4 with xhigh effort) may spend a long time
-          // thinking before the first token arrives. Cloudflare and other reverse
-          // proxies often kill idle connections after ~100s. Sending SSE comments
-          // (`: keepalive`) keeps the connection alive without affecting the client.
-          const keepaliveTimer = setInterval(() => {
-            try {
-              if (!reply.raw.destroyed) {
-                reply.raw.write(": keepalive\n\n");
-              }
-            } catch {
-              // Connection already closed — ignore
-            }
-          }, 15_000);
-
           const logPromptSentToModel = (messages: ChatMessage[], label = "Prompt sent to model") => {
             if (isDebug || requestDebug) {
               const effModel = conn.model.toLowerCase();
@@ -6010,7 +6001,6 @@ export async function generateRoutes(app: FastifyInstance) {
             }
           };
 
-          try {
             if (enableChatTools && provider.chatComplete) {
               const maxToolRounds = getMaxToolRounds();
               let loopMessages: ChatMessage[] = initialProviderMessages;
@@ -6316,21 +6306,34 @@ export async function generateRoutes(app: FastifyInstance) {
                   : (items) => encryptedReasoningCache.set(input.chatId, items),
                 onChatCompletionsReasoning: rememberChatCompletionsReasoning,
               });
-              let result = await gen.next();
-              while (!result.done) {
-                fullResponse += result.value;
-                // Break large chunks (e.g. Gemini non-streaming) into small pieces
-                // so the client sees progressive streaming.
-                const val = result.value;
-                if (holdForProseGuardianRewrite) {
+              try {
+                let result = await gen.next();
+                while (!result.done) {
+                  if (abortController.signal.aborted) {
+                    return null;
+                  }
+                  fullResponse += result.value;
+                  // Break large chunks (e.g. Gemini non-streaming) into small pieces
+                  // so the client sees progressive streaming.
+                  const val = result.value;
+                  if (holdForProseGuardianRewrite) {
+                    result = await gen.next();
+                    continue;
+                  }
+                  await sendTokenTextChunked(val);
                   result = await gen.next();
-                  continue;
                 }
-                await sendTokenTextChunked(val);
-                result = await gen.next();
+                // Generator return value contains usage
+                if (result.value) usage = result.value;
+              } catch (err) {
+                if (abortController.signal.aborted || isAbortLikeError(err)) {
+                  return null;
+                }
+                throw err;
               }
-              // Generator return value contains usage
-              if (result.value) usage = result.value;
+              if (abortController.signal.aborted) {
+                return null;
+              }
             }
 
             const durationMs = Date.now() - genStartTime;
@@ -6846,9 +6849,6 @@ export async function generateRoutes(app: FastifyInstance) {
               oocMessages,
               characterId: targetCharId,
             };
-          } finally {
-            clearInterval(keepaliveTimer);
-          }
         };
 
         // ────────────────────────────────────────
@@ -10671,6 +10671,9 @@ export async function generateRoutes(app: FastifyInstance) {
         }
       }
     } catch (err) {
+      if (abortController.signal.aborted || isAbortLikeError(err)) {
+        return;
+      }
       if (!abortController.signal.aborted) {
         abortController.abort();
       }
@@ -10685,6 +10688,7 @@ export async function generateRoutes(app: FastifyInstance) {
       if (conversationGenerationStartedAt != null && !conversationAssistantSaved) {
         clearGenerationInProgress(input.chatId, conversationGenerationStartedAt);
       }
+      stopSseKeepalive();
       reply.raw.off("close", onClose);
       releaseActiveGeneration();
       if (!clientDisconnected && !reply.raw.destroyed) {
@@ -10727,7 +10731,9 @@ export async function generateRoutes(app: FastifyInstance) {
       }
     }
 
-    activeGenerations.delete(chatId);
+    // Keep the entry registered until the generation route reaches its
+    // identity-checked finally block. Deleting here opens a same-chat race where
+    // a replacement request can register before the aborted request has unwound.
     return reply.send({ aborted: true });
   });
 

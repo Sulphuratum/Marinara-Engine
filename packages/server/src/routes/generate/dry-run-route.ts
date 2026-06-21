@@ -1234,7 +1234,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       );
     }
 
-    applyParameterOverrides(connectionParams);
+    if (!effectivePresetId) applyParameterOverrides(connectionParams);
     applyParameterOverrides(chatParams);
 
     if (!finalMessages.length) {

@@ -84,7 +84,7 @@ import {
   isAgentWriteApprovalEnvelope,
 } from "./agent-write-approval.js";
 import { filterGameInternalAgentIds } from "../../services/lorebook/game-lorebook-scope.js";
-import { sendSseEvent, startSseReply } from "./sse.js";
+import { sendSseEvent, startSseKeepalive, startSseReply } from "./sse.js";
 import { buildGenerationPromptPresetCandidates } from "./prompt-preset-selection.js";
 import {
   buildAgentConnectionUnavailableWarning,
@@ -120,6 +120,26 @@ type PersonaContext = {
   personaStats: any;
   rpgStats: any;
 };
+
+function resolveIllustratorImageSize(
+  size: { width: number; height: number },
+  aspectRatio: unknown,
+): { width: number; height: number } {
+  const width = Math.max(1, Math.round(size.width));
+  const height = Math.max(1, Math.round(size.height));
+  const aspect = typeof aspectRatio === "string" ? aspectRatio.trim().toLowerCase() : "";
+  if (aspect === "portrait") {
+    return width <= height ? { width, height } : { width: height, height: width };
+  }
+  if (aspect === "landscape") {
+    return width >= height ? { width, height } : { width: height, height: width };
+  }
+  if (aspect === "square") {
+    const side = Math.min(width, height);
+    return { width: side, height: side };
+  }
+  return { width, height };
+}
 
 function cardPromptText(value: unknown): string {
   return typeof value === "string" ? stripMacroComments(value).trim() : "";
@@ -2623,8 +2643,9 @@ async function applyRetryResultEffects(args: {
               (typeof setupConfig.imageStyleProfileId === "string" ? setupConfig.imageStyleProfileId : "") ||
               (typeof chatMeta.imageStyleProfileId === "string" ? chatMeta.imageStyleProfileId : "") ||
               null;
-            const imgWidth = imageSettings.illustration.width;
-            const imgHeight = imageSettings.illustration.height;
+            const illustrationSize = resolveIllustratorImageSize(imageSettings.illustration, illData.aspectRatio);
+            const imgWidth = illustrationSize.width;
+            const imgHeight = illustrationSize.height;
 
             const gameArtStylePrompt =
               typeof agentContext.memory._gameImageStylePrompt === "string"
@@ -2892,7 +2913,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
       return reply.status(400).send({ error: "chatId and agentTypes are required" });
     }
 
-    startSseReply(reply);
+    startSseReply(reply, { "X-Accel-Buffering": "no" });
 
     // Abort in-flight agent LLM calls when the client disconnects, and stop
     // writing to a closed socket. Mirrors the main /generate handler so a dropped
@@ -2908,6 +2929,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
         return false;
       }
     }) as typeof reply.raw.write;
+    const stopSseKeepalive = startSseKeepalive(reply);
     const onClientClose = () => {
       clientDisconnected = true;
       abortController.abort();
@@ -3269,6 +3291,7 @@ export async function registerRetryAgentsRoute(app: FastifyInstance) {
           : "Agent retry failed";
       sendSseEvent(reply, { type: "error", data: message });
     } finally {
+      stopSseKeepalive();
       reply.raw.off("close", onClientClose);
       reply.raw.end();
     }

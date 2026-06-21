@@ -209,22 +209,33 @@ export function PresetEditor() {
   const [localWrapFormat, setLocalWrapFormat] = useState<WrapFormat>("xml");
   const [localAuthor, setLocalAuthor] = useState("");
   const [localParams, setLocalParams] = useState<Record<string, unknown>>({});
+  const [localParamsParseFailed, setLocalParamsParseFailed] = useState(false);
+  const hydratedPresetIdRef = useRef<string | null>(null);
+  const dirtyRef = useRef(false);
   const formatQuotes = useQuoteFormatter();
+
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
 
   // Populate local state when data loads
   useEffect(() => {
-    if (!data) return;
+    if (!data || !presetDetailId) return;
+    if (dirtyRef.current && hydratedPresetIdRef.current === presetDetailId) return;
     const p = data.preset as any;
+    hydratedPresetIdRef.current = presetDetailId;
     setLocalName(p.name ?? "");
     setLocalDescription(p.description ?? "");
     setLocalWrapFormat((p.wrapFormat ?? "xml") as WrapFormat);
     setLocalAuthor(p.author ?? "");
     try {
       setLocalParams(typeof p.parameters === "string" ? JSON.parse(p.parameters) : (p.parameters ?? {}));
+      setLocalParamsParseFailed(false);
     } catch {
       setLocalParams({});
+      setLocalParamsParseFailed(true);
     }
-  }, [data]);
+  }, [data, presetDetailId]);
 
   const handleClose = useCallback(() => {
     if (dirty) {
@@ -234,26 +245,60 @@ export function PresetEditor() {
     closePresetDetail();
   }, [dirty, closePresetDetail]);
 
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback(async () => {
     if (!presetDetailId) return;
-    updatePreset.mutate(
-      {
-        id: presetDetailId,
-        name: localName,
-        description: localDescription,
-        wrapFormat: localWrapFormat,
-        author: localAuthor,
-        parameters: localParams,
-      },
-      {
-        onSuccess: () => {
-          setDirty(false);
-          setShowSaved(true);
-          setTimeout(() => setShowSaved(false), 1500);
-        },
-      },
-    );
-  }, [presetDetailId, localName, localDescription, localWrapFormat, localAuthor, localParams, updatePreset]);
+    if (!localName.trim()) {
+      const error = new Error("Preset name is required.");
+      toast.error(error.message);
+      throw error;
+    }
+    const payload: {
+      id: string;
+      name: string;
+      description: string;
+      wrapFormat: WrapFormat;
+      author: string;
+      parameters?: Record<string, unknown>;
+    } = {
+      id: presetDetailId,
+      name: localName,
+      description: localDescription,
+      wrapFormat: localWrapFormat,
+      author: localAuthor,
+    };
+    if (!localParamsParseFailed) payload.parameters = localParams;
+    await updatePreset.mutateAsync(payload);
+    setDirty(false);
+    setShowSaved(true);
+    setTimeout(() => setShowSaved(false), 1500);
+  }, [
+    presetDetailId,
+    localName,
+    localDescription,
+    localWrapFormat,
+    localAuthor,
+    localParamsParseFailed,
+    localParams,
+    updatePreset,
+  ]);
+
+  const handleExportPreset = useCallback(async () => {
+    if (!presetDetailId) return;
+    if (dirty) {
+      const shouldSave = await showConfirmDialog({
+        title: "Save Before Export",
+        message: "Exports use the saved preset. Save your current edits before exporting?",
+        confirmLabel: "Save & export",
+      });
+      if (!shouldSave) return;
+      try {
+        await handleSave();
+      } catch {
+        return;
+      }
+    }
+    api.download(`/prompts/${presetDetailId}/export`);
+  }, [dirty, handleSave, presetDetailId]);
 
   const handleDelete = useCallback(async () => {
     if (!presetDetailId) return;
@@ -379,9 +424,9 @@ export function PresetEditor() {
             <Save size="0.8125rem" /> Save
           </button>
           <button
-            onClick={() => api.download(`/prompts/${presetDetailId}/export`)}
+            onClick={handleExportPreset}
             className="mari-editor-action inline-flex"
-            title="Export preset"
+            title={dirty ? "Save current edits before exporting" : "Export preset"}
           >
             <svg
               width="0.9375rem"
@@ -434,9 +479,13 @@ export function PresetEditor() {
               Discard
             </button>
             <button
-              onClick={() => {
-                handleSave();
-                closePresetDetail();
+              onClick={async () => {
+                try {
+                  await handleSave();
+                  closePresetDetail();
+                } catch {
+                  // Keep the editor open so the user can fix the failed save.
+                }
               }}
               className="rounded-lg bg-amber-500/20 px-3 py-1 hover:bg-amber-500/30"
             >
@@ -1569,12 +1618,13 @@ function VariableCard({
   isReordering: boolean;
 }) {
   // Parse options
-  let opts: VariableOptionDraft[] = [];
-  try {
-    opts = typeof variable.options === "string" ? JSON.parse(variable.options) : (variable.options ?? []);
-  } catch {
-    /* empty */
-  }
+  const opts = useMemo<VariableOptionDraft[]>(() => {
+    try {
+      return typeof variable.options === "string" ? JSON.parse(variable.options) : (variable.options ?? []);
+    } catch {
+      return [];
+    }
+  }, [variable.options]);
 
   const varName = variable.variableName ?? variable.variable_name ?? "";
   const question = variable.question ?? "";
@@ -1585,18 +1635,31 @@ function VariableCard({
   const optionSort = readChoiceOptionSort(variable.optionSort ?? variable.option_sort);
   const optionOrderIsAlphabetical = optionSort === "alphabetical";
 
-  // Track which option is expanded in the big editor (index or null)
-  const [expandedOptIdx, setExpandedOptIdx] = useState<number | null>(null);
+  // Track which option is expanded in the big editor.
+  const [expandedOptId, setExpandedOptId] = useState<string | null>(null);
   const [draggingOptIdx, setDraggingOptIdx] = useState<number | null>(null);
   const [dropOptIdx, setDropOptIdx] = useState<number | null>(null);
   const [dragReadyOptIdx, setDragReadyOptIdx] = useState<number | null>(null);
+  const optsRef = useRef<VariableOptionDraft[]>(opts);
+  const expandedOpt = expandedOptId ? (opts.find((opt) => opt.id === expandedOptId) ?? null) : null;
+
+  useEffect(() => {
+    if (!onUpdateVariable.isPending) optsRef.current = opts;
+  }, [onUpdateVariable.isPending, opts]);
 
   const update = (data: Record<string, unknown>) => {
     onUpdateVariable.mutate({ presetId, variableId: variable.id, ...data });
   };
 
   const updateOpts = (newOpts: VariableOptionDraft[]) => {
+    optsRef.current = newOpts;
     update({ options: newOpts });
+  };
+
+  const currentOpts = () => (optsRef.current.length > 0 ? optsRef.current : opts);
+
+  const updateOptionField = (optionId: string, field: "label" | "value", value: string) => {
+    updateOpts(currentOpts().map((opt) => (opt.id === optionId ? { ...opt, [field]: value } : opt)));
   };
 
   const calcOptionDropIdx = (optionIdx: number, e: React.DragEvent) => {
@@ -1812,10 +1875,9 @@ function VariableCard({
                       <label className="shrink-0 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
                         Separator
                       </label>
-                      <input
+                      <OptionFieldInput
                         value={separatorValue}
-                        onFocus={(e) => e.target.select()}
-                        onChange={(e) => update({ separator: e.target.value })}
+                        onCommit={(value) => update({ separator: value })}
                         className="w-20 rounded bg-[var(--background)] px-1.5 py-0.5 text-center font-mono text-xs ring-1 ring-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--marinara-chat-chrome-input-border-focus)]"
                         placeholder=", "
                       />
@@ -1966,21 +2028,13 @@ function VariableCard({
                     <span className="shrink-0 text-[0.625rem] font-medium text-amber-400">{oi + 1}.</span>
                     <OptionFieldInput
                       value={opt.label}
-                      onCommit={(v) => {
-                        const next = [...opts];
-                        next[oi] = { ...next[oi], label: v };
-                        updateOpts(next);
-                      }}
+                      onCommit={(v) => updateOptionField(opt.id, "label", v)}
                       className="flex-1 rounded bg-[var(--background)] px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-amber-400/50"
                       placeholder="Label…"
                     />
                     <OptionFieldInput
                       value={opt.value}
-                      onCommit={(v) => {
-                        const next = [...opts];
-                        next[oi] = { ...next[oi], value: v };
-                        updateOpts(next);
-                      }}
+                      onCommit={(v) => updateOptionField(opt.id, "value", v)}
                       className={cn(
                         "flex-1 rounded px-1.5 py-0.5 font-mono text-xs focus:outline-none focus:ring-1",
                         valueBlank
@@ -1990,7 +2044,7 @@ function VariableCard({
                       placeholder="Value…"
                     />
                     <button
-                      onClick={() => setExpandedOptIdx(oi)}
+                      onClick={() => setExpandedOptId(opt.id)}
                       className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
                       title="Expand value editor"
                     >
@@ -1998,8 +2052,8 @@ function VariableCard({
                     </button>
                     <button
                       onClick={() => {
-                        if (opts.length <= 1) return toast.error("A variable needs at least 1 option.");
-                        updateOpts(opts.filter((_, i) => i !== oi));
+                        if (currentOpts().length <= 1) return toast.error("A variable needs at least 1 option.");
+                        updateOpts(currentOpts().filter((option) => option.id !== opt.id));
                       }}
                       className="shrink-0 rounded p-0.5 hover:bg-[var(--destructive)]/15"
                       title="Remove option"
@@ -2018,10 +2072,10 @@ function VariableCard({
               onClick={() => {
                 const newOpt = {
                   id: `opt_${Date.now()}`,
-                  label: `Option ${String.fromCharCode(65 + opts.length)}`,
+                  label: `Option ${String.fromCharCode(65 + currentOpts().length)}`,
                   value: "",
                 };
-                updateOpts([...opts, newOpt]);
+                updateOpts([...currentOpts(), newOpt]);
               }}
               className="flex items-center gap-1 rounded-lg px-2 py-1 text-[0.625rem] font-medium text-amber-400 hover:bg-amber-400/10 active:scale-[0.98]"
             >
@@ -2030,16 +2084,12 @@ function VariableCard({
           </div>
 
           {/* Expanded value editor for a single option */}
-          {expandedOptIdx !== null && opts[expandedOptIdx] && (
+          {expandedOpt && (
             <ExpandedEditorModal
-              title={`Edit Value: ${opts[expandedOptIdx].label || `Option ${expandedOptIdx + 1}`}`}
-              value={opts[expandedOptIdx].value}
-              onChange={(v) => {
-                const next = [...opts];
-                next[expandedOptIdx] = { ...next[expandedOptIdx], value: v };
-                updateOpts(next);
-              }}
-              onClose={() => setExpandedOptIdx(null)}
+              title={`Edit Value: ${expandedOpt.label || "Option"}`}
+              value={expandedOpt.value}
+              onChange={(v) => updateOptionField(expandedOpt.id, "value", v)}
+              onClose={() => setExpandedOptId(null)}
             />
           )}
         </div>
