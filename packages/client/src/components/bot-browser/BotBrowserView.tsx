@@ -185,12 +185,14 @@ function attachEmbeddedLorebookToCharacterJson(raw: Record<string, unknown>, emb
 }
 
 function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value : undefined;
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const values = value.map(String).filter((item) => item.trim().length > 0);
+  const values = value.map((item) => String(item).trim()).filter((item) => item.length > 0);
   return values.length > 0 ? values : undefined;
 }
 

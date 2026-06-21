@@ -39,6 +39,14 @@ function extractObjectCandidate(raw: string): string {
   return end > start ? raw.slice(start, end + 1).trim() : raw.slice(start).trim();
 }
 
+function extractJsonishCandidate(raw: string): string {
+  const objectStart = raw.indexOf("{");
+  const arrayStart = raw.indexOf("[");
+  const starts = [objectStart, arrayStart].filter((index) => index >= 0);
+  if (starts.length === 0) return raw.trim();
+  return raw.slice(Math.min(...starts)).trim();
+}
+
 function scanJsonishStructure(raw: string): {
   started: boolean;
   mismatched: boolean;
@@ -237,7 +245,7 @@ export function parseGameJsonish(raw: string): unknown {
 }
 
 export function jsonishLooksTruncated(raw: string): boolean {
-  const candidate = extractObjectCandidate(stripFences(raw.trim()));
+  const candidate = extractJsonishCandidate(stripFences(raw.trim()));
   const scan = scanJsonishStructure(candidate);
   return scan.started && !scan.mismatched && (scan.inString || scan.escaped || scan.closers.length > 0);
 }

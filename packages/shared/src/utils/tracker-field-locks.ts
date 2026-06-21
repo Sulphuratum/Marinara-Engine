@@ -760,9 +760,8 @@ function mergeCharacterCustomFieldsWithLocks(
 ): Record<string, string> | undefined {
   let next = nextFields ? { ...nextFields } : null;
   const current = currentFields ?? {};
-  const nextEntries = Object.entries(next ?? {});
   let hasLockedField = false;
-  for (const [index, [name, value]] of Object.entries(current).entries()) {
+  for (const [name, value] of Object.entries(current)) {
     const nameLocked = isTrackerFieldLocked(
       locks,
       characterCustomFieldTrackerLockKey(character, characterIndex, name, "name"),
@@ -773,15 +772,7 @@ function mergeCharacterCustomFieldsWithLocks(
     );
     if (nameLocked || valueLocked) {
       hasLockedField = true;
-      const renamedCandidate = nameLocked ? nextEntries[index]?.[0] : undefined;
-      const renamedValue =
-        renamedCandidate && renamedCandidate !== name && !Object.prototype.hasOwnProperty.call(current, renamedCandidate)
-          ? (next ?? {})[renamedCandidate]
-          : undefined;
-      if (renamedCandidate && renamedCandidate !== name && renamedValue !== undefined) {
-        delete (next ??= {})[renamedCandidate];
-      }
-      const nextValue = (next ?? {})[name] ?? renamedValue;
+      const nextValue = (next ?? {})[name];
       (next ??= {})[name] = valueLocked ? value : typeof nextValue === "string" ? nextValue : value;
     }
   }

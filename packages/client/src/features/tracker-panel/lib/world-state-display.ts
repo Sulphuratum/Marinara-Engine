@@ -229,10 +229,11 @@ export function getWeatherEmoji(weather: string | null | undefined) {
 }
 
 export function parseTemperatureValue(temperature: string | null | undefined) {
-  const match = (temperature ?? "").match(/-?\d+(\.\d+)?/);
+  const match = (temperature ?? "").match(/(-?\d+(?:\.\d+)?)(?:\s*°?\s*(f(?:ahrenheit)?|c(?:elsius)?)\b)?/i);
   if (!match) return null;
-  const numeric = parseFloat(match[0]!);
-  if (/-?\d+(?:\.\d+)?\s*°?\s*f(?:ahrenheit)?\b/i.test(temperature ?? "")) return (numeric - 32) * (5 / 9);
+  const numeric = parseFloat(match[1]!);
+  const unit = match[2]?.toLowerCase();
+  if (unit?.startsWith("f")) return (numeric - 32) * (5 / 9);
   return numeric;
 }
 

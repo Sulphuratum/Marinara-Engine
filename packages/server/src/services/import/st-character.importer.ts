@@ -753,6 +753,7 @@ function normalizeCharacterBook(raw: unknown): CharacterData["character_book"] {
     const passthrough = pickDefinedFields(e, CHARACTER_BOOK_ENTRY_PASSTHROUGH_FIELDS);
 
     return {
+      ...passthrough,
       keys: normalizeStringArray(e.key ?? e.keys),
       secondary_keys: normalizeStringArray(e.keysecondary ?? e.secondary_keys),
       content: String(e.content ?? ""),
@@ -767,7 +768,6 @@ function normalizeCharacterBook(raw: unknown): CharacterData["character_book"] {
       selective: Boolean(e.selective ?? false),
       constant: Boolean(e.constant ?? false),
       position,
-      ...passthrough,
       ...(depth !== null ? { depth } : {}),
       ...(role !== undefined ? { role } : {}),
     };

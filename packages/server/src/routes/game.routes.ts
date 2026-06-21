@@ -1734,7 +1734,7 @@ async function runGameChatComplete(
   timeoutMs = GAME_GENERATION_TIMEOUT_MS,
 ): Promise<ChatCompletionResult> {
   const controller = new AbortController();
-  let timedOut = false;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   const parentSignal = options.signal;
   const abortFromParent = () => controller.abort(parentSignal?.reason);
   if (parentSignal?.aborted) {
@@ -1743,18 +1743,58 @@ async function runGameChatComplete(
     parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   }
 
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort(new GameGenerationTimeoutError(label, timeoutMs));
-  }, timeoutMs);
+  const timeoutError = new GameGenerationTimeoutError(label, timeoutMs);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
 
   try {
-    return await provider.chatComplete(messages, { ...options, signal: controller.signal });
-  } catch (err) {
-    if (timedOut) throw new GameGenerationTimeoutError(label, timeoutMs);
-    throw err;
+    return await Promise.race([provider.chatComplete(messages, { ...options, signal: controller.signal }), timeoutPromise]);
   } finally {
-    clearTimeout(timeout);
+    if (timeout) clearTimeout(timeout);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+  }
+}
+
+async function runGameChatStream(
+  provider: { chat(messages: ChatMessage[], options: ChatOptions): AsyncIterable<string> },
+  messages: ChatMessage[],
+  options: ChatOptions,
+  label: string,
+  timeoutMs = GAME_GENERATION_TIMEOUT_MS,
+): Promise<string> {
+  const controller = new AbortController();
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const parentSignal = options.signal;
+  const abortFromParent = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  }
+
+  const timeoutError = new GameGenerationTimeoutError(label, timeoutMs);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(() => {
+      controller.abort(timeoutError);
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+  const streamPromise = (async () => {
+    let streamed = "";
+    for await (const chunk of provider.chat(messages, { ...options, signal: controller.signal, stream: true })) {
+      streamed += chunk;
+    }
+    return streamed;
+  })();
+
+  try {
+    return await Promise.race([streamPromise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
     parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
@@ -2093,6 +2133,12 @@ export function normalizeGameLorebookKeeperEntries(raw: unknown): GameLorebookKe
       ];
     })
     .slice(0, GAME_LOREBOOK_KEEPER_MAX_ENTRIES);
+}
+
+function hasGameLorebookKeeperEntryEnvelope(raw: unknown): raw is { entries?: unknown[]; updates?: unknown[] } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const container = raw as { entries?: unknown; updates?: unknown };
+  return Array.isArray(container.entries) || Array.isArray(container.updates);
 }
 
 function uniqueKeeperEntryName(name: string, usedNames: Set<string>): string {
@@ -2493,6 +2539,9 @@ async function runGameLorebookKeeperAfterConclusion(args: {
       });
       logger.warn(err, "[game/lorebook-keeper] Generated lorebook JSON failed to parse for chat %s", args.chatId);
       return { status: "failed", lorebookId: lorebook.id, error, rawJson: extraction.content };
+    }
+    if (!hasGameLorebookKeeperEntryEnvelope(parsed)) {
+      throw new Error("Lorebook Keeper JSON must include an entries or updates array.");
     }
     const entries = normalizeGameLorebookKeeperEntries(parsed);
     const createdCount = await createGameLorebookKeeperEntries({
@@ -4836,6 +4885,9 @@ export async function gameRoutes(app: FastifyInstance) {
       return;
     }
 
+    if (!hasGameLorebookKeeperEntryEnvelope(parsed)) {
+      throw new Error("Lorebook Keeper JSON must include an entries or updates array.");
+    }
     const entries = normalizeGameLorebookKeeperEntries(parsed);
     const lorebooksStore = createLorebooksStorage(app.db);
     const lorebook = await resolveGameLorebookKeeperBook({ lorebooksStore, chat, meta });
@@ -7010,10 +7062,7 @@ export async function gameRoutes(app: FastifyInstance) {
     // path. Retry once via streamed collection using the same JSON mode.
     if (!raw.trim()) {
       logger.warn("[game/scene-wrap] Empty buffered response, retrying with streamed JSON collection");
-      let streamed = "";
-      for await (const chunk of provider.chat(messages, { ...sceneWrapOptions, stream: true })) {
-        streamed += chunk;
-      }
+      const streamed = await runGameChatStream(provider, messages, sceneWrapOptions, "Game scene wrap streamed retry");
       sceneWrapExtraction = extractLeadingThinkingBlocks(streamed, gameGenerationParameters?.customThinkingTags);
       raw = sceneWrapExtraction.content;
     }

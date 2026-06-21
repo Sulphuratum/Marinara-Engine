@@ -847,8 +847,11 @@ class SidecarProcessService {
       return;
     }
 
-    this.child?.removeAllListeners("error");
-    this.child?.removeAllListeners("exit");
+    const currentChild = this.child;
+    currentChild?.stdout?.removeAllListeners("data");
+    currentChild?.stderr?.removeAllListeners("data");
+    currentChild?.removeAllListeners("error");
+    currentChild?.removeAllListeners("exit");
     this.child = null;
     this.ready = false;
     this.baseUrl = null;

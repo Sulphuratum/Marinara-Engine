@@ -70,6 +70,7 @@ function normalizePositiveInteger(value: unknown, fallback: number): number {
 
 function getExistingEmbeddingDimension(entries: LorebookEntry[]): number | null {
   for (const entry of entries) {
+    if (entry.excludeFromVectorization) continue;
     if (entry.embedding && entry.embedding.length > 0) {
       return entry.embedding.length;
     }
@@ -91,7 +92,7 @@ export async function warmLorebookEntryEmbeddings(
 ): Promise<LorebookEmbeddingWarmupResult> {
   const batchSize = normalizePositiveInteger(options.batchSize, DEFAULT_WARMUP_BATCH_SIZE);
   const candidates = entries
-    .filter((entry) => entry.enabled && (!entry.embedding || entry.embedding.length === 0))
+    .filter((entry) => entry.enabled && !entry.excludeFromVectorization && (!entry.embedding || entry.embedding.length === 0))
     .slice(0, batchSize);
   if (candidates.length === 0) return { attempted: 0, embedded: 0 };
 

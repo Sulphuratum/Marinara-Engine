@@ -132,8 +132,8 @@ interface PanelLockButtonProps {
 export function PanelLockButton({ locked, onToggle, onReset, size = 10, className }: PanelLockButtonProps) {
   const title = onReset
     ? locked
-      ? "Unlock to move. Double-click to reset position"
-      : "Lock in place. Double-click to reset position"
+      ? "Unlock to move. Double-click or press R to reset position"
+      : "Lock in place. Double-click or press R to reset position"
     : locked
       ? "Unlock to move"
       : "Lock in place";
@@ -147,6 +147,12 @@ export function PanelLockButton({ locked, onToggle, onReset, size = 10, classNam
       }}
       onDoubleClick={(event) => {
         if (!onReset) return;
+        event.stopPropagation();
+        onReset();
+      }}
+      onKeyDown={(event) => {
+        if (!onReset || event.key.toLowerCase() !== "r") return;
+        event.preventDefault();
         event.stopPropagation();
         onReset();
       }}

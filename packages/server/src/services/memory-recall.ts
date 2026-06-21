@@ -41,7 +41,9 @@ function parseStoredEmbedding(value: string | null): number[] | null {
   if (!value) return null;
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as number[]) : null;
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "number" && Number.isFinite(item))
+      ? parsed
+      : null;
   } catch {
     return null;
   }
@@ -276,15 +278,16 @@ export async function recallMemories(
 
   // Score each chunk by cosine similarity
   const scored = chunks
-    .map((chunk) => {
-      const embedding: number[] = JSON.parse(chunk.embedding!);
-      if (!dimensionMismatchLogged && embedding.length !== queryEmbedding.length) {
-        dimensionMismatchLogged = true;
-        logger.warn(
-          "[memory-recall] Skipping one or more memory chunks with embedding dimensions that do not match the query vector (%d vs %d). Refresh memories after changing embedding models.",
-          embedding.length,
-          queryEmbedding.length,
-        );
+    .map((chunk): RecalledMemory | null => {
+      const embedding = parseStoredEmbedding(chunk.embedding);
+      if (!embedding || embedding.length !== queryEmbedding.length) {
+        if (!dimensionMismatchLogged) {
+          dimensionMismatchLogged = true;
+          logger.warn(
+            "[memory-recall] Skipping one or more memory chunks with embedding dimensions that do not match the query vector. Refresh memories after changing embedding models.",
+          );
+        }
+        return null;
       }
       return {
         chatId: chunk.chatId,
@@ -294,7 +297,7 @@ export async function recallMemories(
         lastMessageAt: chunk.lastMessageAt,
       };
     })
-    .filter((s) => s.similarity >= SIMILARITY_THRESHOLD)
+    .filter((s): s is RecalledMemory => s !== null && s.similarity >= SIMILARITY_THRESHOLD)
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, options.topK ?? DEFAULT_TOP_K);
 

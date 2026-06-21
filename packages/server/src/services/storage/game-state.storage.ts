@@ -440,7 +440,7 @@ export function createGameStateStorage(db: DB) {
       manual?: boolean,
     ) {
       const updates: Record<string, unknown> = {};
-      const lockMigrationState = buildLockMigrationState(row);
+      const existingLockMigrationState = buildLockMigrationState(row);
       if (fields.date !== undefined) updates.date = coerceGameStateTextValue(fields.date);
       if (fields.time !== undefined) updates.time = coerceGameStateTextValue(fields.time);
       if (fields.location !== undefined) updates.location = coerceGameStateTextValue(fields.location);
@@ -471,10 +471,18 @@ export function createGameStateStorage(db: DB) {
       }
 
       if (fields.fieldLocks !== undefined) {
-        updates.fieldLocks = serializeFieldLocks(normalizeTrackerFieldLocksForState(fields.fieldLocks, lockMigrationState));
+        const incomingLockMigrationState = buildLockMigrationState({
+          ...row,
+          ...(fields.presentCharacters !== undefined ? { presentCharacters: fields.presentCharacters } : {}),
+          ...(fields.playerStats !== undefined ? { playerStats: fields.playerStats } : {}),
+          ...(fields.personaStats !== undefined ? { personaStats: fields.personaStats } : {}),
+        });
+        updates.fieldLocks = serializeFieldLocks(
+          normalizeTrackerFieldLocksForState(fields.fieldLocks, incomingLockMigrationState),
+        );
       } else if (row.fieldLocks) {
         updates.fieldLocks = serializeFieldLocks(
-          normalizeTrackerFieldLocksForState(parseTrackerFieldLocks(row.fieldLocks), lockMigrationState),
+          normalizeTrackerFieldLocksForState(parseTrackerFieldLocks(row.fieldLocks), existingLockMigrationState),
         );
       }
 

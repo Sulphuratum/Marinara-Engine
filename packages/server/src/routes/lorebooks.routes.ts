@@ -147,6 +147,7 @@ function buildCompatibleLorebookExport(lb: Record<string, unknown>, entries: Arr
       key: asStringArray(entry.keys),
       keysecondary: asStringArray(entry.secondaryKeys),
       comment: String(entry.name ?? `Entry ${index + 1}`),
+      description: String(entry.description ?? ""),
       content: String(entry.content ?? ""),
       disable: entry.enabled === false,
       constant: entry.constant === true,
@@ -165,6 +166,8 @@ function buildCompatibleLorebookExport(lb: Record<string, unknown>, entries: Arr
       sticky: entry.sticky ?? null,
       cooldown: entry.cooldown ?? null,
       delay: entry.delay ?? null,
+      ephemeral: entry.ephemeral ?? null,
+      locked: entry.locked === true,
       useRegex: entry.useRegex === true,
       regex: entry.useRegex === true,
       preventRecursion: entry.preventRecursion === true,
@@ -226,6 +229,8 @@ function buildTransferredEntryInput(
     groupWeight: entry.groupWeight,
     folderId: null,
     preventRecursion: entry.preventRecursion,
+    excludeRecursion: entry.excludeRecursion,
+    delayUntilRecursion: entry.delayUntilRecursion,
     excludeFromVectorization: entry.excludeFromVectorization,
     locked: entry.locked,
     tag: entry.tag,
@@ -889,9 +894,12 @@ export async function lorebooksRoutes(app: FastifyInstance) {
           error: error instanceof Error ? error.message : "Lorebook embedding request failed",
         });
       }
-      if (embeddings.length !== batchTexts.length) {
+      const usableEmbeddingCount = embeddings.filter(
+        (embedding) => Array.isArray(embedding) && embedding.length > 0,
+      ).length;
+      if (embeddings.length !== batchTexts.length || usableEmbeddingCount !== batchTexts.length) {
         return reply.status(502).send({
-          error: `Lorebook embedding request returned ${embeddings.length} vectors for ${batchTexts.length} entries.`,
+          error: `Lorebook embedding request returned ${usableEmbeddingCount}/${batchTexts.length} usable vectors.`,
         });
       }
       const batchEmbeddingDimension = embeddings.find((embedding) => embedding.length > 0)?.length ?? null;

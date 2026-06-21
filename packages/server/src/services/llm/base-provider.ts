@@ -668,9 +668,17 @@ export function parseEmbeddingResponse(json: unknown): number[][] {
     if (!isPlainRecord(item) || !Array.isArray(item.embedding)) {
       throw new Error("Embedding response contained an invalid embedding item.");
     }
+    const rawIndex = item.index;
+    let index: number | null = null;
+    if (rawIndex !== undefined) {
+      if (!(typeof rawIndex === "number" && Number.isInteger(rawIndex) && rawIndex >= 0)) {
+        throw new Error("Embedding response contained an invalid embedding index.");
+      }
+      index = rawIndex;
+    }
     return {
       embedding: item.embedding as number[],
-      index: typeof item.index === "number" && Number.isInteger(item.index) && item.index >= 0 ? item.index : null,
+      index,
     };
   });
 

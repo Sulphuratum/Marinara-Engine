@@ -605,7 +605,11 @@ export function recursiveScan(
     // Scan remaining entries against the content of activated entries
     const remaining = entries.filter((e) => !activatedIds.has(e.id) && !e.excludeRecursion);
     const newMessages: ScanMessage[] = [{ role: "system", content: newContent }];
-    const newActivated = scanForActivatedEntries(newMessages, remaining, { ...scanOptions, recursionPass: true });
+    const newActivated = scanForActivatedEntries(newMessages, remaining, {
+      ...scanOptions,
+      chatEmbedding: null,
+      recursionPass: true,
+    });
 
     if (newActivated.length === 0) break;
 

@@ -2439,7 +2439,7 @@ async function applyRetryResultEffects(args: {
           });
         }
       } catch (err) {
-        logger.error(err, "[retry-agents] Failed to apply custom tracker update");
+        logger.error(err, "[retry-agents] Failed to apply lorebook update");
       }
     }
 

@@ -1269,6 +1269,16 @@ export function CustomTrackerPanel({
   };
 
   const updateField = (idx: number, updated: CustomTrackerField) => {
+    const previous = fields[idx];
+    if (previous && previous.name !== updated.name) {
+      onUpdateFieldLocks?.((locks) =>
+        renameTrackerFieldLockPrefix(
+          locks,
+          customTrackerFieldLockPrefix(previous, idx),
+          customTrackerFieldLockPrefix(updated, idx),
+        ),
+      );
+    }
     const next = [...fields];
     next[idx] = updated;
     onUpdate(next);

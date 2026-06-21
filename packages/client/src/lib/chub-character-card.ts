@@ -40,6 +40,11 @@ function hasStringArrayField(target: Record<string, unknown>, field: string) {
   return Array.isArray(value) && value.some((item) => typeof item === "string" && item.trim().length > 0);
 }
 
+function nonEmptyStringArray(value: string[] | undefined) {
+  const filtered = value?.map((item) => item.trim()).filter((item) => item.length > 0) ?? [];
+  return filtered.length > 0 ? filtered : null;
+}
+
 function getCharacterDataTarget(raw: Record<string, unknown>) {
   const cloned: Record<string, unknown> = { ...raw };
   const target =
@@ -74,9 +79,11 @@ export function mergeChubDetailIntoCharacterJson(
 
   if (!hasStringField(target, "name") && summary.name?.trim()) target.name = summary.name;
   if (!hasStringField(target, "creator") && summary.creator?.trim()) target.creator = summary.creator;
-  if (!hasStringArrayField(target, "tags") && summary.tags && summary.tags.length > 0) target.tags = summary.tags;
-  if (detail.alternateGreetings && detail.alternateGreetings.length > 0) {
-    target.alternate_greetings = detail.alternateGreetings;
+  const summaryTags = nonEmptyStringArray(summary.tags);
+  if (!hasStringArrayField(target, "tags") && summaryTags) target.tags = summaryTags;
+  const alternateGreetings = nonEmptyStringArray(detail.alternateGreetings);
+  if (alternateGreetings) {
+    target.alternate_greetings = alternateGreetings;
   }
 
   if (detail.extensions) {

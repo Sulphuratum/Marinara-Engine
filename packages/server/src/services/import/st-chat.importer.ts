@@ -344,11 +344,15 @@ export async function importSTChat(jsonlContent: string, db: DB, opts?: ImportST
   // Preserve an imported branch/file label separately from the main thread/chat name.
   if (Object.keys(marinaraMetadata).length > 0 || importedBranchName) {
     const existingMetadata = typeof chat.metadata === "string" ? JSON.parse(chat.metadata) : (chat.metadata ?? {});
-    await storage.updateMetadata(chat.id, {
-      ...existingMetadata,
-      ...marinaraMetadata,
-      ...(importedBranchName ? { branchName: importedBranchName } : {}),
-    });
+    await storage.patchMetadata(
+      chat.id,
+      {
+        ...existingMetadata,
+        ...marinaraMetadata,
+        ...(importedBranchName ? { branchName: importedBranchName } : {}),
+      },
+      { touchUpdatedAt: false },
+    );
   }
 
   await storage.createMessagesBatch(chat.id, msgInputs, chatTimestamps);
