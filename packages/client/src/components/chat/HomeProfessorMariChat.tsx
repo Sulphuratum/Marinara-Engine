@@ -1658,25 +1658,20 @@ export function HomeProfessorMariChat({
   }, [invalidateWorkspaceData, workspaceStatus?.history]);
 
   useEffect(() => {
-    if (connectionOptions.length === 0) {
-      setSelectedConnectionId(null);
-      return;
-    }
-
-    setSelectedConnectionId((current) => {
-      if (current && connectionOptions.some((connection) => connection.id === current)) return current;
-      const next = connectionOptions.find((connection) => connection.isDefault)?.id ?? connectionOptions[0]?.id ?? null;
-      if (next) rememberConnectionId(next);
-      return next;
-    });
-  }, [connectionOptions]);
-
-  useEffect(() => {
     if (hasLoadedRef.current || connectionsLoading) return;
     hasLoadedRef.current = true;
     setLoadingHistory(true);
-    ensureProfessorMariChat(effectiveConnectionId)
-      .then((chat) => loadMessages(chat.id))
+    const storedConnectionExists =
+      !!selectedConnectionId && connectionOptions.some((connection) => connection.id === selectedConnectionId);
+    ensureProfessorMariChat(storedConnectionExists ? selectedConnectionId : null)
+      .then((chat) => {
+        const restoredConnectionId = typeof chat.connectionId === "string" && chat.connectionId ? chat.connectionId : null;
+        if (restoredConnectionId) {
+          setSelectedConnectionId(restoredConnectionId);
+          rememberConnectionId(restoredConnectionId);
+        }
+        return loadMessages(chat.id);
+      })
       .catch((error) => {
         console.error("[Professor Mari] Failed to load home assistant", error);
         toast.error("Professor Mari could not load.", {
@@ -1685,7 +1680,7 @@ export function HomeProfessorMariChat({
         });
       })
       .finally(() => setLoadingHistory(false));
-  }, [connectionsLoading, effectiveConnectionId, ensureProfessorMariChat, loadMessages]);
+  }, [connectionOptions, connectionsLoading, ensureProfessorMariChat, loadMessages, selectedConnectionId]);
 
   useEffect(() => {
     void refreshWorkspaceStatus().catch(() => {
@@ -1778,6 +1773,13 @@ export function HomeProfessorMariChat({
     setSelectedConnectionId(id);
     rememberConnectionId(id);
     setConnectionMenuOpen(false);
+    void ensureProfessorMariChat(id).catch((error) => {
+      console.error("[Professor Mari] Failed to save selected connection", error);
+      toast.error("Professor Mari could not remember that connection.", {
+        description: describeProfessorMariError(error),
+        duration: 12_000,
+      });
+    });
   };
 
   const closeMobileFocusMode = useCallback(() => {
