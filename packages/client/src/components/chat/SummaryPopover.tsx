@@ -303,10 +303,7 @@ export function SummaryPopover({
   const entryTextareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  // "Hide summarised messages" is now a per-chat metadata setting so the server
-  // auto-summary can honor it. Fall back to the legacy browser-local pref when a
-  // chat has no persisted value yet (back-compat); nothing is written to
-  // metadata until the user toggles, so existing chats stay opt-out server-side.
+  // Per-chat metadata when set; otherwise fall back to the legacy browser-local pref.
   const hideSummarisedResolved =
     typeof hideSummarisedMessages === "boolean"
       ? hideSummarisedMessages
@@ -677,17 +674,25 @@ export function SummaryPopover({
       const toUnhide = covered.filter((id) => !stillCovered.has(id));
       try {
         await deleteSummaryEntry.mutateAsync({ chatId, entryId: entry.id });
-        if (toUnhide.length > 0) {
-          bulkSetMessagesHiddenFromAI.mutate({ chatId, messageIds: toUnhide, hidden: false });
-        }
-        if (editingEntryId === entry.id) handleCancelEditEntry();
-        setExpandedEntryIds((current) => {
-          const next = new Set(current);
-          next.delete(entry.id);
-          return next;
-        });
       } catch {
         toast.error("Could not delete summary entry.");
+        return;
+      }
+      if (editingEntryId === entry.id) handleCancelEditEntry();
+      setExpandedEntryIds((current) => {
+        const next = new Set(current);
+        next.delete(entry.id);
+        return next;
+      });
+      // The entry is gone; restore its no-longer-covered messages. Awaited separately
+      // so a failure here surfaces a specific warning instead of leaving the messages
+      // silently hidden with nothing summarizing them.
+      if (toUnhide.length > 0) {
+        try {
+          await bulkSetMessagesHiddenFromAI.mutateAsync({ chatId, messageIds: toUnhide, hidden: false });
+        } catch {
+          toast.error("Summary deleted, but some messages stayed hidden — unhide them from the message menu.");
+        }
       }
     },
     [chatId, deleteSummaryEntry, bulkSetMessagesHiddenFromAI, displayEntries, editingEntryId, handleCancelEditEntry],
@@ -890,10 +895,10 @@ export function SummaryPopover({
                 <SummarySettingsToggle
                   label="Hide summarised messages"
                   checked={hideSummarisedResolved}
-                  onChange={(checked) => {
-                    updateMeta.mutate({ id: chatId, hideSummarisedMessages: checked });
-                    setSummaryPopoverSettings({ hideSummarisedMessages: checked });
-                  }}
+                  // Per-chat metadata is the source of truth; do not write the global
+                  // ui.store here, or one chat's choice would leak into the fallback
+                  // other chats use when they have no persisted value of their own.
+                  onChange={(checked) => updateMeta.mutate({ id: chatId, hideSummarisedMessages: checked })}
                 />
                 {hideSummarisedResolved && (
                   <div className="space-y-1 px-1 pb-0.5">

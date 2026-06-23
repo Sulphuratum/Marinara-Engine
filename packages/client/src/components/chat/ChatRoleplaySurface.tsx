@@ -1332,7 +1332,8 @@ export function ChatRoleplaySurface({
     typeof chatMeta.summaryRunInterval === "number" && Number.isFinite(chatMeta.summaryRunInterval)
       ? chatMeta.summaryRunInterval
       : undefined;
-  const hideSummarisedMessages = chatMeta.hideSummarisedMessages === true;
+  const hideSummarisedMessages =
+    typeof chatMeta.hideSummarisedMessages === "boolean" ? chatMeta.hideSummarisedMessages : undefined;
   const summaryTailMessages =
     typeof chatMeta.summaryTailMessages === "number" && Number.isFinite(chatMeta.summaryTailMessages)
       ? chatMeta.summaryTailMessages
