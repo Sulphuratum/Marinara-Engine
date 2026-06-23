@@ -2867,43 +2867,61 @@ export async function chatsRoutes(app: FastifyInstance) {
     if (hideMessageIds.length > 0) {
       await storage.bulkSetHiddenFromAI(req.params.id, hideMessageIds, true);
     }
+    // If the entry that owns hiddenMessageIds is not persisted (chat vanished, or
+    // the write throws), roll the hide back so we never leave messages hidden with
+    // no entry to delete and no recorded subset to restore.
+    const rollbackHide = async () => {
+      if (hideMessageIds.length === 0) return;
+      await storage.bulkSetHiddenFromAI(req.params.id, hideMessageIds, false).catch((err) => {
+        logger.error(err, "[chat-summary] Failed to roll back hide after summary entry was not persisted");
+      });
+    };
 
     // Append as a structured entry and recompile the prompt-facing summary
     // without replacing concurrent metadata changes.
     let combined: string | null = summaryText;
     let createdEntry: ChatSummaryEntry | null = null;
     let summaryEntries: ChatSummaryEntry[] = [];
-    const updatedChat = await storage.patchMetadata(req.params.id, (freshMeta) => {
-      const now = new Date().toISOString();
-      const result = appendChatSummaryEntryToMetadata(
-        freshMeta,
-        {
-          kind: "rolling",
-          origin: "manual",
-          sourceMode: hasRange ? "range" : "last",
-          content: summaryText,
-          enabled: true,
-          messageCount: selectedMessages.length,
-          rangeStartIndex: selectedRangeStartIndex,
-          rangeEndIndex: selectedRangeEndIndex,
-          messageIds,
-          ...(hideMessageIds.length > 0 ? { hiddenMessageIds: hideMessageIds } : {}),
-          promptTemplateId: requestedPromptTemplateId,
-          createdAt: now,
-          updatedAt: now,
-        },
-        { createId: newId, now },
-      );
-      combined = result.summary;
-      createdEntry = result.entry;
-      summaryEntries = result.entries;
-      return {
-        summary: result.summary,
-        summaryEntries: result.entries,
-        ...(!hasRange && typeof body.contextSize !== "undefined" ? { summaryContextSize: contextSize } : {}),
-      };
-    });
-    if (!updatedChat) return reply.status(404).send({ error: "Chat not found" });
+    let updatedChat: Awaited<ReturnType<typeof storage.patchMetadata>>;
+    try {
+      updatedChat = await storage.patchMetadata(req.params.id, (freshMeta) => {
+        const now = new Date().toISOString();
+        const result = appendChatSummaryEntryToMetadata(
+          freshMeta,
+          {
+            kind: "rolling",
+            origin: "manual",
+            sourceMode: hasRange ? "range" : "last",
+            content: summaryText,
+            enabled: true,
+            messageCount: selectedMessages.length,
+            rangeStartIndex: selectedRangeStartIndex,
+            rangeEndIndex: selectedRangeEndIndex,
+            messageIds,
+            ...(hideMessageIds.length > 0 ? { hiddenMessageIds: hideMessageIds } : {}),
+            promptTemplateId: requestedPromptTemplateId,
+            createdAt: now,
+            updatedAt: now,
+          },
+          { createId: newId, now },
+        );
+        combined = result.summary;
+        createdEntry = result.entry;
+        summaryEntries = result.entries;
+        return {
+          summary: result.summary,
+          summaryEntries: result.entries,
+          ...(!hasRange && typeof body.contextSize !== "undefined" ? { summaryContextSize: contextSize } : {}),
+        };
+      });
+    } catch (err) {
+      await rollbackHide();
+      throw err;
+    }
+    if (!updatedChat) {
+      await rollbackHide();
+      return reply.status(404).send({ error: "Chat not found" });
+    }
 
     return {
       summary: combined,
