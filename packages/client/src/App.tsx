@@ -165,11 +165,12 @@ function clearCustomAppAccentVariables(root: HTMLElement) {
   APP_ACCENT_CUSTOM_VARIABLES.forEach((variable) => root.style.removeProperty(variable));
 }
 
-function canRunAccentAnimation(reducedMotionQuery: MediaQueryList) {
+function canRunAccentAnimation(reducedMotionQuery: MediaQueryList, forcePaused = false) {
   return (
     document.visibilityState === "visible" &&
     document.hasFocus() &&
-    !reducedMotionQuery.matches
+    !reducedMotionQuery.matches &&
+    !forcePaused
   );
 }
 
@@ -198,6 +199,10 @@ export function App() {
   const appAccentRgbMode = useUIStore((s) => s.appAccentRgbMode);
   const chatChromeTextColor = useUIStore((s) => s.chatChromeTextColor);
   const hasModalOpen = useUIStore((s) => s.modal !== null);
+  const rightPanelOpen = useUIStore((s) => s.rightPanelOpen);
+  const rightPanel = useUIStore((s) => s.rightPanel);
+  const settingsTab = useUIStore((s) => s.settingsTab);
+  const appearanceSettingsActive = rightPanelOpen && rightPanel === "settings" && settingsTab === "appearance";
   useLegacyThemeMigration();
   useLegacyExtensionMigration();
   useSettingsSync();
@@ -273,7 +278,7 @@ export function App() {
   useEffect(() => {
     const root = document.documentElement;
     const syncEffectsPausedState = () => {
-      if (document.visibilityState === "visible" && document.hasFocus()) {
+      if (document.visibilityState === "visible" && document.hasFocus() && !appearanceSettingsActive) {
         delete root.dataset.marinaraEffectsPaused;
       } else {
         root.dataset.marinaraEffectsPaused = "true";
@@ -295,7 +300,7 @@ export function App() {
       window.removeEventListener("pagehide", syncEffectsPausedState);
       delete root.dataset.marinaraEffectsPaused;
     };
-  }, []);
+  }, [appearanceSettingsActive]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -370,7 +375,7 @@ export function App() {
 
       accentAnimationTimer = window.setTimeout(() => {
         accentAnimationTimer = null;
-        if (!accentAnimationEnabled || !canRunAccentAnimation(reducedMotionQuery)) {
+        if (!accentAnimationEnabled || !canRunAccentAnimation(reducedMotionQuery, appearanceSettingsActive)) {
           stopAccentAnimation();
           return;
         }
@@ -388,7 +393,7 @@ export function App() {
     };
 
     const syncAccentAnimationState = () => {
-      if (accentAnimationEnabled && canRunAccentAnimation(reducedMotionQuery)) {
+      if (accentAnimationEnabled && canRunAccentAnimation(reducedMotionQuery, appearanceSettingsActive)) {
         startAccentAnimation();
       } else {
         stopAccentAnimation();
@@ -422,7 +427,7 @@ export function App() {
       }
       delete root.dataset.marinaraAccentAnimation;
     };
-  }, [appAccentColor, appAccentPulseMode, appAccentRgbMode, theme]);
+  }, [appAccentColor, appAccentPulseMode, appAccentRgbMode, appearanceSettingsActive, theme]);
 
   useEffect(() => {
     const root = document.documentElement;

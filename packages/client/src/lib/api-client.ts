@@ -169,6 +169,29 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   });
 }
 
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+async function readDownloadFilename(res: Response, fallbackFilename: string) {
+  const disposition = res.headers.get("Content-Disposition");
+  if (!disposition) return fallbackFilename;
+
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;\n]+)/i);
+  if (utf8Match?.[1]) return decodeURIComponent(utf8Match[1]);
+
+  const match = disposition.match(/filename="?([^";\n]+)"?/);
+  return match?.[1] ? decodeURIComponent(match[1]) : fallbackFilename;
+}
+
 export const api = {
   raw: (path: string, init?: RequestInit) => apiFetch(path, init),
 
@@ -197,24 +220,15 @@ export const api = {
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 
   /** Download a JSON endpoint as a file (triggers browser save-as). */
-  download: async (path: string, fallbackFilename = "export.json") => {
-    const res = await fetch(`${BASE}${path}`, { headers: getAdminSecretHeader(), cache: "no-store" });
-    if (!res.ok) throw new ApiError(res.status, "Download failed");
-    const disposition = res.headers.get("Content-Disposition");
-    let filename = fallbackFilename;
-    if (disposition) {
-      const match = disposition.match(/filename="?([^";\n]+)"?/);
-      if (match?.[1]) filename = decodeURIComponent(match[1]);
+  download: async (path: string, fallbackFilename = "export.json", init?: RequestInit) => {
+    const res = await apiFetch(path, init);
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, payload.error ?? "Download failed", payload);
     }
+    const filename = await readDownloadFilename(res, fallbackFilename);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    triggerBrowserDownload(blob, filename);
   },
 
   /** Download a POST endpoint as a file (useful for bulk exports). */
@@ -229,21 +243,9 @@ export const api = {
       const payload = await res.json().catch(() => ({ error: res.statusText }));
       throw new ApiError(res.status, payload.error ?? "Download failed", payload);
     }
-    const disposition = res.headers.get("Content-Disposition");
-    let filename = fallbackFilename;
-    if (disposition) {
-      const match = disposition.match(/filename="?([^";\n]+)"?/);
-      if (match?.[1]) filename = decodeURIComponent(match[1]);
-    }
+    const filename = await readDownloadFilename(res, fallbackFilename);
     const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    triggerBrowserDownload(blob, filename);
   },
 
   /**

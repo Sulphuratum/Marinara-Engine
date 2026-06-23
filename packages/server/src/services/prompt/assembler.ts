@@ -580,10 +580,14 @@ async function resolveSection(
   let runtimeAgentText = "";
   let runtimeAgentStartToken: string | undefined;
   let runtimeAgentEndToken: string | undefined;
+  let wrapperName = section.name;
 
   // Handle marker sections
   if (section.isMarker === "true" && section.markerConfig) {
     const markerConfig = JSON.parse(section.markerConfig) as MarkerConfig;
+    if (markerConfig.type === "chat_summary") {
+      wrapperName = "Chat Summary";
+    }
     const runtimeAgentType =
       markerConfig.type === "agent_data" && markerConfig.agentType ? markerConfig.agentType : null;
     const runtimeAgentData = runtimeAgentType !== null ? ctx.runtimeAgentData[runtimeAgentType] : undefined;
@@ -656,7 +660,7 @@ async function resolveSection(
   );
 
   // Auto-wrap in the preset's format
-  const wrapped = wrapContent(content, section.name, ctx.wrapFormat);
+  const wrapped = wrapContent(content, wrapperName, ctx.wrapFormat);
   const messageContent = shouldWrapRuntimeAgentSection
     ? `${runtimeAgentStartToken}${wrapped || content}${runtimeAgentEndToken}`
     : wrapped || content;

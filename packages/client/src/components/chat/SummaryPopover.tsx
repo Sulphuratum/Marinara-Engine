@@ -79,6 +79,7 @@ interface SummaryPopoverAnchor {
   bottom: number;
   left: number;
   width: number;
+  overflowMenu?: boolean;
 }
 
 type SummarySourceMode = "last" | "range";
@@ -99,13 +100,19 @@ const MOBILE_SUMMARY_PADDING = 8;
 
 function getMobileSummaryFrame(anchor: SummaryPopoverAnchor | null | undefined) {
   if (typeof window === "undefined") return null;
-  const width = Math.min(560, window.innerWidth - MOBILE_SUMMARY_PADDING * 2);
-  const fallbackLeft = (window.innerWidth - width) / 2;
+  const rightEdge = anchor?.overflowMenu
+    ? anchor.right
+    : (anchor?.right ?? window.innerWidth - MOBILE_SUMMARY_PADDING);
+  const width = Math.min(
+    560,
+    window.innerWidth - MOBILE_SUMMARY_PADDING * 2,
+    Math.max(160, rightEdge - MOBILE_SUMMARY_PADDING),
+  );
   const left = Math.max(
     MOBILE_SUMMARY_PADDING,
-    Math.min((anchor?.right ?? fallbackLeft + width) - width, window.innerWidth - width - MOBILE_SUMMARY_PADDING),
+    Math.min(rightEdge - width, window.innerWidth - width - MOBILE_SUMMARY_PADDING),
   );
-  const top = Math.max(MOBILE_SUMMARY_PADDING, anchor?.bottom ?? 56);
+  const top = Math.max(MOBILE_SUMMARY_PADDING, anchor?.overflowMenu ? anchor.top : (anchor?.bottom ?? 56));
   const maxHeight = Math.max(240, window.innerHeight - top - MOBILE_SUMMARY_PADDING);
   return { top, left, width, maxHeight };
 }

@@ -1019,19 +1019,14 @@ export function usePeekPrompt() {
 export function useExportChat() {
   return useMutation({
     mutationFn: async ({ chatId, format = "jsonl" }: { chatId: string; format?: "jsonl" | "text" }) => {
-      const res = await fetch(`/api/chats/${chatId}/export?format=${format}`);
-      const blob = await res.blob();
-      const disposition = res.headers.get("Content-Disposition") ?? "";
-      const match = disposition.match(/filename="(.+?)"/);
       const ext = format === "text" ? ".txt" : ".jsonl";
-      const filename = match?.[1] ? decodeURIComponent(match[1]) : `chat-${chatId}${ext}`;
-      // Download via blob
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      a.click();
-      URL.revokeObjectURL(url);
+      await api.download(
+        `/chats/${encodeURIComponent(chatId)}/export?format=${encodeURIComponent(format)}`,
+        `chat-${chatId}${ext}`,
+      );
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? `Export failed: ${error.message}` : "Export failed.");
     },
   });
 }

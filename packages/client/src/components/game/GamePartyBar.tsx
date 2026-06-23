@@ -147,7 +147,7 @@ export function GamePartyBar({
             aria-label={mobileMenuOpen ? "Close party members" : "Open party members"}
             title={memberVisuals.length === 1 ? "Open character sheet" : "Open party members"}
           >
-            <PartyAvatar visual={memberVisuals[previewIndex]} />
+            <PartyAvatar visual={memberVisuals[previewIndex]} className="h-9 w-9" />
             {memberVisuals.length > 1 && (
               <span className="absolute -bottom-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-lg border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-button-bg)] px-1 text-[0.55rem] font-bold leading-none text-[var(--marinara-chat-chrome-button-text-hover)] shadow-md">
                 {memberVisuals.length}
@@ -160,7 +160,7 @@ export function GamePartyBar({
           <div
             className={cn(
               NEUTRAL_SURFACE_VARIABLES,
-              "marinara-chat-popover absolute left-0 top-9 z-50 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-1.5 shadow-2xl backdrop-blur-md",
+              "marinara-chat-popover absolute left-0 top-[calc(100%+0.375rem)] z-50 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-panel-bg)] p-1.5 shadow-2xl backdrop-blur-md",
             )}
           >
             <div className="flex max-h-[min(44svh,18rem)] flex-col items-center gap-1.5 overflow-y-auto overscroll-contain pr-0.5 [-webkit-overflow-scrolling:touch]">
@@ -175,7 +175,7 @@ export function GamePartyBar({
                     className="block rounded-lg focus:outline-none focus:ring-2 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
                     title={`${visual.member.name} - Click to open character sheet`}
                   >
-                    <PartyAvatar visual={visual} />
+                    <PartyAvatar visual={visual} className="h-9 w-9" />
                   </button>
                   {visual.member.canRemove && onRemovePartyMember && (
                     <button

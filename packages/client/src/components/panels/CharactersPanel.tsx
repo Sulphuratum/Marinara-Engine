@@ -1158,29 +1158,25 @@ export function CharactersPanel() {
         </div>
       )}
 
-      <div
-        data-character-folder-root
-        onDragOver={(event) => {
-          if (draggedCharacterId) {
+      {draggedCharacterId && (
+        <div
+          data-character-folder-root
+          onDragOver={(event) => {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
-          }
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
-          handleCharacterDrop(null, parseDroppedCharacterIds(payload));
-        }}
-        className={cn(
-          "stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors",
-          draggedCharacterId && "ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
-        )}
-      >
-        {draggedCharacterId && (
-          <div className="rounded-xl border border-dashed border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-[0.625rem] text-[var(--marinara-chat-chrome-button-text-active)]">
-            Drop here to move out of folder
-          </div>
-        )}
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const payload = event.dataTransfer.getData("application/x-marinara-character-ids");
+            handleCharacterDrop(null, parseDroppedCharacterIds(payload));
+          }}
+          className="rounded-xl border border-dashed border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-[0.625rem] text-[var(--marinara-chat-chrome-button-text-active)]"
+        >
+          Drop here to move out of folder
+        </div>
+      )}
+
+      <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
         {visibleRootCharacters.map((char) => {
           const charName = char.parsed.name ?? "Unnamed";
           const charTitle = getCharacterTitle({ name: charName, comment: char.comment });

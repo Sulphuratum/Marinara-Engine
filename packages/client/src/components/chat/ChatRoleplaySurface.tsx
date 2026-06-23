@@ -35,6 +35,7 @@ import {
   User,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import { getConnectedChatDisplayName } from "../../lib/chat-display";
 import { playNotificationPing } from "../../lib/notification-sound";
 import { getTranscriptRenderWindow, TRANSCRIPT_RENDER_WINDOW_STEP } from "../../lib/transcript-render-window";
@@ -49,6 +50,7 @@ import { CyoaChoices } from "./CyoaChoices";
 import { ChatBranchSelector } from "./ChatBranchSelector";
 import {
   CHAT_TOOLBAR_ICON_GAP_CLASS,
+  CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR,
   ChatToolbarButton,
   ChatToolbarMenu,
   getChatToolbarButtonClass,
@@ -158,12 +160,17 @@ function getMobileFloatingPanelFrame(
 ): MobileFloatingPanelFrame | null {
   if (!button || typeof window === "undefined") return null;
   const rect = button.getBoundingClientRect();
-  const width = Math.min(preferredWidth, window.innerWidth - MOBILE_FLOATING_PANEL_PADDING * 2);
+  if (rect.width <= 0 || rect.height <= 0) return null;
+  const overflowMenu = button.closest<HTMLElement>(CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR);
+  const menuRect = overflowMenu?.getBoundingClientRect();
+  const rightEdge = menuRect ? menuRect.left - MOBILE_FLOATING_PANEL_PADDING : rect.right;
+  const availableWidth = Math.max(160, rightEdge - MOBILE_FLOATING_PANEL_PADDING);
+  const width = Math.min(preferredWidth, window.innerWidth - MOBILE_FLOATING_PANEL_PADDING * 2, availableWidth);
   const left = Math.max(
     MOBILE_FLOATING_PANEL_PADDING,
-    Math.min(rect.right - width, window.innerWidth - width - MOBILE_FLOATING_PANEL_PADDING),
+    Math.min(rightEdge - width, window.innerWidth - width - MOBILE_FLOATING_PANEL_PADDING),
   );
-  const top = Math.max(MOBILE_FLOATING_PANEL_PADDING, rect.bottom);
+  const top = Math.max(MOBILE_FLOATING_PANEL_PADDING, menuRect ? menuRect.top : rect.bottom);
   const maxHeight = Math.max(160, window.innerHeight - top - MOBILE_FLOATING_PANEL_PADDING);
   return { top, left, width, maxHeight };
 }
@@ -457,7 +464,10 @@ function ActiveContextLinksButton({
   }, [open]);
 
   useLayoutEffect(() => {
-    if (!open || !isMobile) return;
+    if (!open || !isMobile) {
+      setMobileFrame(null);
+      return;
+    }
     const update = () => setMobileFrame(getMobileFloatingPanelFrame(buttonRef.current, 288));
     update();
     window.addEventListener("resize", update);
@@ -475,6 +485,13 @@ function ActiveContextLinksButton({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleDismiss = () => setOpen(false);
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
+    return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
   }, [open]);
 
   if (!chat) return null;
@@ -611,7 +628,13 @@ function ActiveContextLinksButton({
     <div className="relative" ref={ref} onClick={(event) => event.stopPropagation()}>
       <button
         ref={buttonRef}
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={() => {
+          setOpen((prev) => {
+            const nextOpen = !prev;
+            setMobileFrame(nextOpen && isMobile ? getMobileFloatingPanelFrame(buttonRef.current, 288) : null);
+            return nextOpen;
+          });
+        }}
         className={getChatToolbarButtonClass({ compact, open })}
         title="Active Context"
         aria-label="Active Context"
@@ -622,21 +645,18 @@ function ActiveContextLinksButton({
       </button>
       {open &&
         (isMobile ? (
+          mobileFrame &&
           createPortal(
             <div
               ref={panelRef}
               role="menu"
               className={cn(ROLEPLAY_POPOVER_SHELL, ROLEPLAY_POPOVER_SCROLL_AREA, "fixed z-[9999] overflow-y-auto p-2")}
-              style={
-                mobileFrame
-                  ? {
-                      top: mobileFrame.top,
-                      left: mobileFrame.left,
-                      width: mobileFrame.width,
-                      maxHeight: mobileFrame.maxHeight,
-                    }
-                  : undefined
-              }
+              style={{
+                top: mobileFrame.top,
+                left: mobileFrame.left,
+                width: mobileFrame.width,
+                maxHeight: mobileFrame.maxHeight,
+              }}
             >
               {activeContextContent}
             </div>,
@@ -694,19 +714,35 @@ function SummaryButton({
   const compact = useUIStore((s) => s.centerCompact);
   const { data: presetFull } = usePresetFull(promptPresetId ?? null);
   const summaryInjectionHint = useMemo(() => resolveChatSummaryInjectionHint(presetFull), [presetFull]);
+  const readSummaryAnchor = useCallback((): ComponentProps<typeof SummaryPopover>["anchor"] => {
+    const button = buttonRef.current;
+    if (!button || typeof window === "undefined") return null;
+    const rect = button.getBoundingClientRect();
+    const overflowMenu = button.closest<HTMLElement>(CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR);
+    if (window.innerWidth < 768 && overflowMenu) {
+      const menuRect = overflowMenu.getBoundingClientRect();
+      return {
+        top: menuRect.top,
+        right: Math.max(MOBILE_FLOATING_PANEL_PADDING, menuRect.left - MOBILE_FLOATING_PANEL_PADDING),
+        bottom: menuRect.top,
+        left: menuRect.left,
+        width: menuRect.width,
+        overflowMenu: true,
+      };
+    }
+    return {
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left,
+      width: rect.width,
+    };
+  }, []);
 
   useLayoutEffect(() => {
     if (!open || !buttonRef.current) return;
     const update = () => {
-      if (!buttonRef.current) return;
-      const rect = buttonRef.current.getBoundingClientRect();
-      setAnchor({
-        top: rect.top,
-        right: rect.right,
-        bottom: rect.bottom,
-        left: rect.left,
-        width: rect.width,
-      });
+      setAnchor(readSummaryAnchor());
     };
     update();
     window.addEventListener("resize", update);
@@ -715,6 +751,13 @@ function SummaryButton({
       window.removeEventListener("resize", update);
       window.removeEventListener("scroll", update, true);
     };
+  }, [open, readSummaryAnchor]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleDismiss = () => setOpen(false);
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
+    return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
   }, [open]);
 
   if (!chatId) return null;
@@ -724,16 +767,7 @@ function SummaryButton({
       <button
         ref={buttonRef}
         onClick={() => {
-          const rect = buttonRef.current?.getBoundingClientRect();
-          if (rect) {
-            setAnchor({
-              top: rect.top,
-              right: rect.right,
-              bottom: rect.bottom,
-              left: rect.left,
-              width: rect.width,
-            });
-          }
+          setAnchor(readSummaryAnchor());
           setOpen(!open);
         }}
         className={getChatToolbarButtonClass({ active: !!summary, compact, open })}
@@ -799,7 +833,10 @@ function AuthorNotesButton({
   }, [onOpenChange, open, renderPanel]);
 
   useLayoutEffect(() => {
-    if (!open || !renderPanel || !mobilePanel) return;
+    if (!open || !renderPanel || !mobilePanel) {
+      setMobileFrame(null);
+      return;
+    }
     const update = () => setMobileFrame(getMobileFloatingPanelFrame(buttonRef.current, 288));
     update();
     window.addEventListener("resize", update);
@@ -819,6 +856,13 @@ function AuthorNotesButton({
     return () => document.removeEventListener("keydown", handler);
   }, [onOpenChange, open, renderPanel]);
 
+  useEffect(() => {
+    if (!open || !renderPanel) return;
+    const handleDismiss = () => onOpenChange(false);
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
+    return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
+  }, [onOpenChange, open, renderPanel]);
+
   if (!chatId) return null;
 
   const hasNotes = !!String(chatMeta.authorNotes ?? "").trim();
@@ -827,7 +871,11 @@ function AuthorNotesButton({
     <div className="relative" ref={ref} onClick={(e) => e.stopPropagation()}>
       <button
         ref={buttonRef}
-        onClick={() => onOpenChange(!open)}
+        onClick={() => {
+          const nextOpen = !open;
+          setMobileFrame(nextOpen && mobilePanel ? getMobileFloatingPanelFrame(buttonRef.current, 288) : null);
+          onOpenChange(nextOpen);
+        }}
         className={getChatToolbarButtonClass({ active: hasNotes, compact, open })}
         title="Author's Notes"
       >
@@ -836,20 +884,17 @@ function AuthorNotesButton({
       {open &&
         renderPanel &&
         (mobilePanel ? (
+          mobileFrame &&
           createPortal(
             <div
               ref={panelRef}
               className={cn(ROLEPLAY_POPOVER_SHELL, ROLEPLAY_POPOVER_SCROLL_AREA, "fixed z-[9999] overflow-y-auto p-3")}
-              style={
-                mobileFrame
-                  ? {
-                      top: mobileFrame.top,
-                      left: mobileFrame.left,
-                      width: mobileFrame.width,
-                      maxHeight: mobileFrame.maxHeight,
-                    }
-                  : undefined
-              }
+              style={{
+                top: mobileFrame.top,
+                left: mobileFrame.left,
+                width: mobileFrame.width,
+                maxHeight: mobileFrame.maxHeight,
+              }}
               onMouseDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
@@ -985,6 +1030,10 @@ type RoleplaySurfaceProps = {
   onResetSpritePlacements: () => void;
   onSpriteSideChange: (side: SpriteSide) => void;
   onToggleSpriteArrange: () => void;
+  spriteVisualSettings?: ComponentProps<typeof ChatCommonOverlays>["sceneSettings"]["spriteVisualSettings"];
+  onSpriteVisualSettingsChange?: ComponentProps<
+    typeof ChatCommonOverlays
+  >["sceneSettings"]["onSpriteVisualSettingsChange"];
   onExpressionChange: (characterId: string, expression: string, options?: { immediate?: boolean }) => void;
   onSpritePlacementChange: (placementKey: string, placement: SpritePlacement) => void;
   onFinishSpritePlacement: () => void;
@@ -1090,6 +1139,8 @@ export function ChatRoleplaySurface({
   onResetSpritePlacements,
   onSpriteSideChange,
   onToggleSpriteArrange,
+  spriteVisualSettings,
+  onSpriteVisualSettingsChange,
   onExpressionChange,
   onSpritePlacementChange,
   onFinishSpritePlacement,
@@ -1122,13 +1173,19 @@ export function ChatRoleplaySurface({
   const [authorNotesOpenOwner, setAuthorNotesOpenOwner] = useState<"expanded" | "compact" | null>(null);
   const isMobileToolbarViewport = useIsMobileToolbarViewport();
   const compactToolbarOwnsAuthorNotes = centerCompact || isMobileToolbarViewport;
-  const authorNotesOwner = compactToolbarOwnsAuthorNotes ? "compact" : "expanded";
-  const authorNotesOpen = authorNotesOpenOwner === authorNotesOwner;
-  const setAuthorNotesOpen = useCallback(
+  const expandedAuthorNotesOpen = authorNotesOpenOwner === "expanded";
+  const compactAuthorNotesOpen = authorNotesOpenOwner === "compact";
+  const setExpandedAuthorNotesOpen = useCallback(
     (open: boolean) => {
-      setAuthorNotesOpenOwner(open ? authorNotesOwner : null);
+      setAuthorNotesOpenOwner(open ? "expanded" : null);
     },
-    [authorNotesOwner],
+    [],
+  );
+  const setCompactAuthorNotesOpen = useCallback(
+    (open: boolean) => {
+      setAuthorNotesOpenOwner(open ? "compact" : null);
+    },
+    [],
   );
   const hideEchoChamberOnMobile =
     sidebarOpen || rightPanelOpen || settingsOpen || filesOpen || galleryOpen || wizardOpen;
@@ -1380,8 +1437,10 @@ export function ChatRoleplaySurface({
                     <AuthorNotesButton
                       chatId={chat?.id ?? null}
                       chatMeta={chatMeta}
-                      open={authorNotesOpen}
-                      onOpenChange={setAuthorNotesOpen}
+                      open={!compactToolbarOwnsAuthorNotes && expandedAuthorNotesOpen}
+                      onOpenChange={
+                        compactToolbarOwnsAuthorNotes ? setCompactAuthorNotesOpen : setExpandedAuthorNotesOpen
+                      }
                       renderPanel={!compactToolbarOwnsAuthorNotes}
                       mobilePanel={false}
                     />
@@ -1481,8 +1540,8 @@ export function ChatRoleplaySurface({
                         <AuthorNotesButton
                           chatId={chat?.id ?? null}
                           chatMeta={chatMeta}
-                          open={authorNotesOpen}
-                          onOpenChange={setAuthorNotesOpen}
+                          open={compactAuthorNotesOpen}
+                          onOpenChange={setCompactAuthorNotesOpen}
                           renderPanel={compactToolbarOwnsAuthorNotes}
                           mobilePanel
                         />
@@ -1549,8 +1608,8 @@ export function ChatRoleplaySurface({
                       <AuthorNotesButton
                         chatId={chat?.id ?? null}
                         chatMeta={chatMeta}
-                        open={authorNotesOpen}
-                        onOpenChange={setAuthorNotesOpen}
+                        open={compactAuthorNotesOpen}
+                        onOpenChange={setCompactAuthorNotesOpen}
                         renderPanel={compactToolbarOwnsAuthorNotes}
                         mobilePanel
                       />
@@ -1806,6 +1865,8 @@ export function ChatRoleplaySurface({
           onToggleSpriteArrange,
           onResetSpritePlacements,
           onSpriteSideChange,
+          spriteVisualSettings,
+          onSpriteVisualSettingsChange,
         }}
         onCloseSettings={onCloseSettings}
         onCloseFiles={onCloseFiles}

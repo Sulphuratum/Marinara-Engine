@@ -23,17 +23,52 @@ export const CHAT_TOOLBAR_ICON_GAP_CLASS = "gap-0.5";
 export const CHAT_TOOLBAR_DEFAULT_BUTTON_SIZE_CLASS = "h-8 w-8";
 export const CHAT_TOOLBAR_IDENTITY_PILL_SIZE_CLASS = "h-8 w-auto max-md:h-9";
 export const CHAT_TOOLBAR_MOBILE_OVERFLOW_HEIGHT_CLASS = "max-md:h-9";
-export const CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS = "h-9 w-10";
+export const CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS = "h-8 w-8 max-md:h-9 max-md:w-9";
 export const CHAT_TOOLBAR_OVERFLOW_MENU_CLASS = cn(
   ROLEPLAY_POPOVER_SHELL,
-  "marinara-chat-toolbar-overflow-menu flex w-10 flex-col items-center p-1",
+  "marinara-chat-toolbar-overflow-menu flex w-9 flex-col items-center p-1",
   CHAT_TOOLBAR_ICON_GAP_CLASS,
 );
 export const CHAT_TOOLBAR_ACTION_EVENT = "mari-chat-toolbar-action";
+export const CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR = "[data-chat-toolbar-overflow-menu]";
+export const CHAT_FLOATING_PANEL_SELECTOR = "[data-chat-floating-panel]";
+const CHAT_FLOATING_PANEL_PADDING = 8;
+
+export type ChatToolbarFloatingPanelAnchor = { right: number; top: number } | null;
 
 export function announceChatToolbarAction() {
   if (typeof window === "undefined") return;
   window.dispatchEvent(new Event(CHAT_TOOLBAR_ACTION_EVENT));
+}
+
+export function readChatToolbarFloatingPanelAnchor(trigger: HTMLElement | null): ChatToolbarFloatingPanelAnchor {
+  if (!trigger || typeof window === "undefined") return null;
+
+  const center = trigger.closest<HTMLElement>('[data-component="CenterContent"]');
+  const centerRect = center?.getBoundingClientRect();
+  const chatUiInsetRight = Number.parseFloat(
+    window.getComputedStyle(document.documentElement).getPropertyValue("--mari-chat-ui-inset-right"),
+  );
+  const rightBoundary =
+    centerRect?.right ?? window.innerWidth - (Number.isFinite(chatUiInsetRight) ? chatUiInsetRight : 0);
+  const overflowMenu = trigger.closest<HTMLElement>(CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR);
+
+  if (window.innerWidth < 768) {
+    if (!overflowMenu) return null;
+    const menuRect = overflowMenu.getBoundingClientRect();
+    const minimumPanelWidth = Math.min(160, Math.max(96, window.innerWidth - CHAT_FLOATING_PANEL_PADDING * 2));
+    const rightEdge = Math.max(CHAT_FLOATING_PANEL_PADDING + minimumPanelWidth, menuRect.left - CHAT_FLOATING_PANEL_PADDING);
+    return {
+      right: Math.max(CHAT_FLOATING_PANEL_PADDING, Math.round(rightBoundary - rightEdge)),
+      top: Math.max(CHAT_FLOATING_PANEL_PADDING, Math.round(menuRect.top)),
+    };
+  }
+
+  const rect = trigger.getBoundingClientRect();
+  return {
+    right: Math.max(12, Math.round(rightBoundary - rect.right)),
+    top: Math.max(56, Math.round(rect.bottom + 8)),
+  };
 }
 
 export function getChatToolbarButtonClass({
@@ -166,7 +201,9 @@ export function ChatToolbarMenu({
     if (!open) return;
     const handle = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (target instanceof Element && target.closest("[data-chat-branch-popover]")) return;
+      if (target instanceof Element && target.closest(`[data-chat-branch-popover],${CHAT_FLOATING_PANEL_SELECTOR}`)) {
+        return;
+      }
       if (btnRef.current?.contains(target) || popRef.current?.contains(target)) return;
       setOpen(false);
     };
@@ -201,10 +238,10 @@ export function ChatToolbarMenu({
           createPortal(
             <div
               ref={popRef}
+              data-chat-toolbar-overflow-menu
               className={cn(CHAT_TOOLBAR_OVERFLOW_MENU_CLASS, "fixed z-[9999]")}
               style={{ top: pos.top, right: `calc(var(--mari-chat-ui-inset-right, 0px) + ${pos.right}px)` }}
               onPointerDownCapture={announceChatToolbarAction}
-              onClick={() => setOpen(false)}
             >
               {resolvedMobileChildren}
             </div>,

@@ -60,6 +60,7 @@ import { spriteKeys, type SpriteInfo } from "../../hooks/use-characters";
 import { lorebookKeys } from "../../hooks/use-lorebooks";
 import { api, getJsonRepairRequest, type JsonRepairRequest } from "../../lib/api-client";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import { cn, type AvatarCrop, type LegacyAvatarCrop, type AvatarCropValue } from "../../lib/utils";
 import { filterLanguageGenerationConnections } from "../../lib/connection-filters";
 import { gameAssetFileUrl } from "../../lib/game-asset-urls";
@@ -83,7 +84,7 @@ import { useSidecarStore } from "../../stores/sidecar.store";
 import { parsePartyDialogue } from "../../lib/party-dialogue-parser";
 import { dispatchSpotifySceneTrackChange } from "../../lib/spotify-playback-events";
 import { ttsService } from "../../lib/tts-service";
-import { ActiveLorebookEntriesButton, ActiveLorebookEntriesModal } from "../chat/ActiveLorebookEntriesButton";
+import { ActiveLorebookEntriesButton } from "../chat/ActiveLorebookEntriesButton";
 import type {
   PartyDialogueLine,
   CombatSummary,
@@ -141,10 +142,13 @@ import { PinnedImageOverlay } from "../chat/PinnedImageOverlay";
 import { ChatBranchSelector } from "../chat/ChatBranchSelector";
 import { GameAssetsBrowserView } from "../game-assets/GameAssetsBrowserView";
 import {
+  CHAT_FLOATING_PANEL_SELECTOR,
   CHAT_TOOLBAR_ICON_GAP_CLASS,
+  CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
   CHAT_TOOLBAR_OVERFLOW_MENU_CLASS,
   announceChatToolbarAction,
   getChatToolbarButtonClass,
+  readChatToolbarFloatingPanelAnchor,
 } from "../chat/ChatToolbarControls";
 import {
   ROLEPLAY_POPOVER_HEADER,
@@ -187,11 +191,18 @@ type GameAssetGenerationResult = {
 };
 
 const GAME_TOP_ICON_BUTTON = getChatToolbarButtonClass();
-const GAME_MOBILE_ROOT_BUTTON = getChatToolbarButtonClass({ sizeClassName: "h-8 w-10" });
+const GAME_MOBILE_ROOT_BUTTON = getChatToolbarButtonClass({
+  compact: true,
+  sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+});
 const GAME_MOBILE_ICON_BUTTON = getChatToolbarButtonClass({ compact: true });
 const GAME_ACTION_MENU = cn(ROLEPLAY_POPOVER_SHELL, "flex w-72 max-w-[calc(100vw-2rem)] flex-col gap-1 p-1.5");
 const GAME_MOBILE_ACTIONS_MENU = cn(CHAT_TOOLBAR_OVERFLOW_MENU_CLASS, "absolute right-0 top-9");
 const GAME_MOBILE_ACTION_MENU = cn(ROLEPLAY_POPOVER_SHELL, "flex w-72 max-w-[calc(100vw-4rem)] flex-col gap-1 p-1.5");
+const GAME_MOBILE_FLOATING_PANEL =
+  "absolute right-9 top-0 z-[9999] h-[min(42rem,calc(100dvh-4.75rem))] w-[min(42rem,calc(100vw-4.75rem))]";
+const GAME_MOBILE_FLOATING_MENU =
+  "absolute right-9 top-0 z-[9999] max-h-[min(32rem,calc(100dvh-4.75rem))] overflow-y-auto";
 const GAME_ACTION_MENU_ITEM =
   "marinara-chat-popover__item flex items-center gap-2 rounded-lg px-3 py-2 text-left text-xs text-[var(--marinara-chat-chrome-panel-text)] transition-colors hover:bg-[var(--marinara-chat-chrome-highlight-bg-hover)] hover:text-[var(--marinara-chat-chrome-highlight-text)] disabled:cursor-not-allowed disabled:opacity-35 disabled:hover:bg-transparent";
 
@@ -1617,7 +1628,7 @@ function GameVolumeMixer({
   ];
 
   return (
-    <div className={cn(ROLEPLAY_POPOVER_SHELL, "w-64 max-w-[calc(100vw-1.5rem)] p-3", className)}>
+    <div data-chat-floating-panel className={cn(ROLEPLAY_POPOVER_SHELL, "w-64 max-w-[calc(100vw-1.5rem)] p-3", className)}>
       <div className="mb-2 flex items-center justify-between gap-3 border-b border-[var(--marinara-chat-chrome-panel-divider)] pb-2">
         <span className="text-[0.6875rem] font-semibold uppercase text-[var(--marinara-chat-chrome-panel-muted)]">
           Volume
@@ -2073,19 +2084,7 @@ export function GameSurface({
   const [savingSessionSummary, setSavingSessionSummary] = useState<number | null>(null);
   const [savingCurrentSessionSecrets, setSavingCurrentSessionSecrets] = useState(false);
   const readFloatingPanelAnchor = useCallback((event?: ReactMouseEvent<HTMLElement>) => {
-    if (!event || typeof window === "undefined" || window.innerWidth < 768) return null;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const center = event.currentTarget.closest<HTMLElement>('[data-component="CenterContent"]');
-    const centerRect = center?.getBoundingClientRect();
-    const chatUiInsetRight = Number.parseFloat(
-      window.getComputedStyle(document.documentElement).getPropertyValue("--mari-chat-ui-inset-right"),
-    );
-    const rightBoundary =
-      centerRect?.right ?? window.innerWidth - (Number.isFinite(chatUiInsetRight) ? chatUiInsetRight : 0);
-    return {
-      right: Math.max(12, Math.round(rightBoundary - rect.right)),
-      top: Math.max(56, Math.round(rect.bottom + 8)),
-    };
+    return readChatToolbarFloatingPanelAnchor(event?.currentTarget ?? null);
   }, []);
   const handleToolbarKeyboardAction = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key === "Enter" || event.key === " ") announceChatToolbarAction();
@@ -2327,7 +2326,6 @@ export function GameSurface({
   const [volumePopoverOpen, setVolumePopoverOpen] = useState(false);
   const [gameAssetsPanelOpen, setGameAssetsPanelOpen] = useState(false);
   const [retryMenuOpen, setRetryMenuOpen] = useState(false);
-  const [mobileActiveContextOpen, setMobileActiveContextOpen] = useState(false);
   const [persistedGameAudioSettings] = useState(readPersistedGameAudioSettings);
   const [masterVolume, setMasterVolume] = useState(persistedGameAudioSettings.masterVolume);
   const [musicVolume, setMusicVolume] = useState(persistedGameAudioSettings.musicVolume);
@@ -2354,6 +2352,25 @@ export function GameSurface({
   const weatherMsgRef = useRef<string | null>(null);
   const sceneAnalysisTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoAssetGenerationKeyRef = useRef<string | null>(null);
+
+  const closeGameFloatingPanels = useCallback(() => {
+    setSessionPanelOpen(false);
+    setGameAssetsPanelOpen(false);
+    setGalleryOpen(false);
+    setGalleryAnchor(null);
+    setCombatLogsOpen(false);
+    setMobileActionsOpen(false);
+    setMobileRetryMenuOpen(false);
+    setVolumePopoverOpen(false);
+    setRetryMenuOpen(false);
+    setInventoryOpen(false);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeGameFloatingPanels);
+    return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeGameFloatingPanels);
+  }, [closeGameFloatingPanels]);
+
   const introPresentationStorageKey = `game-intro-presented:${activeChatId}`;
   const assistantTurnCount = useMemo(
     () => messages.filter((m) => (m.role === "assistant" || m.role === "narrator") && !!m.content.trim()).length,
@@ -7698,6 +7715,7 @@ export function GameSurface({
     if (!volumePopoverOpen) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
+      if (target instanceof Element && target.closest(CHAT_FLOATING_PANEL_SELECTOR)) return;
       const inDesktopPopover = volumePopoverRef.current?.contains(target) ?? false;
       const inMobilePopover = mobileVolumePopoverRef.current?.contains(target) ?? false;
       if (!inDesktopPopover && !inMobilePopover) {
@@ -7711,7 +7729,9 @@ export function GameSurface({
   useEffect(() => {
     if (!retryMenuOpen) return;
     const handler = (e: MouseEvent) => {
-      if (retryMenuRef.current && !retryMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (target instanceof Element && target.closest(CHAT_FLOATING_PANEL_SELECTOR)) return;
+      if (retryMenuRef.current && !retryMenuRef.current.contains(target)) {
         setRetryMenuOpen(false);
       }
     };
@@ -7723,6 +7743,7 @@ export function GameSurface({
     if (!sessionPanelOpen && !gameAssetsPanelOpen) return;
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
+      if (target instanceof Element && target.closest(CHAT_FLOATING_PANEL_SELECTOR)) return;
       const inSessionPanel =
         (sessionPanelRef.current?.contains(target) ?? false) ||
         (mobileSessionPanelRef.current?.contains(target) ?? false);
@@ -7746,6 +7767,8 @@ export function GameSurface({
       setSessionPanelOpen((open) => (tab === sessionPanelTab ? !open : true));
       setGameAssetsPanelOpen(false);
       setRetryMenuOpen(false);
+      setMobileRetryMenuOpen(false);
+      setVolumePopoverOpen(false);
     },
     [sessionPanelTab],
   );
@@ -7754,6 +7777,8 @@ export function GameSurface({
     setGameAssetsPanelOpen((open) => !open);
     setSessionPanelOpen(false);
     setRetryMenuOpen(false);
+    setMobileRetryMenuOpen(false);
+    setVolumePopoverOpen(false);
   }, []);
 
   const handleBranchMessage = useCallback(
@@ -8331,16 +8356,14 @@ export function GameSurface({
     handleStartNewSession();
   };
 
-  const gameMobilePanelClass =
-    "fixed inset-x-2 bottom-[calc(0.75rem+env(safe-area-inset-bottom))] top-[calc(3.5rem+env(safe-area-inset-top))] z-[70] min-h-0 w-auto";
-
   const renderSessionPanel = (mobile = false) => (
     <div
+      data-chat-floating-panel
       className={cn(
         ROLEPLAY_POPOVER_SHELL,
         "flex min-h-0 flex-col overflow-hidden",
         mobile
-          ? gameMobilePanelClass
+          ? GAME_MOBILE_FLOATING_PANEL
           : "absolute right-0 top-9 z-50 max-h-[min(42rem,calc(100vh-6rem))] w-[min(42rem,calc(100vw-1.5rem))]",
       )}
     >
@@ -8462,11 +8485,12 @@ export function GameSurface({
 
   const renderGameAssetsPanel = (mobile = false) => (
     <div
+      data-chat-floating-panel
       className={cn(
         ROLEPLAY_POPOVER_SHELL,
         "flex min-h-0 flex-col overflow-hidden",
         mobile
-          ? gameMobilePanelClass
+          ? GAME_MOBILE_FLOATING_PANEL
           : "absolute right-0 top-9 z-50 h-[min(42rem,calc(100vh-6rem))] w-[min(54rem,calc(100vw-1.5rem))]",
       )}
     >
@@ -8616,7 +8640,13 @@ export function GameSurface({
                   </div>
                   <div className="relative" ref={volumePopoverRef}>
                     <button
-                      onClick={() => setVolumePopoverOpen((v) => !v)}
+                      onClick={() => {
+                        setVolumePopoverOpen((v) => !v);
+                        setSessionPanelOpen(false);
+                        setGameAssetsPanelOpen(false);
+                        setRetryMenuOpen(false);
+                        setMobileRetryMenuOpen(false);
+                      }}
                       className={GAME_TOP_ICON_BUTTON}
                       title="Volume"
                     >
@@ -8692,7 +8722,7 @@ export function GameSurface({
                     </button>
 
                     {mobileActionsOpen && (
-                      <div className={GAME_MOBILE_ACTIONS_MENU}>
+                      <div data-chat-toolbar-overflow-menu className={GAME_MOBILE_ACTIONS_MENU}>
                         <ChatBranchSelector
                           activeChatId={activeChatId}
                           activeChatName={chat.name}
@@ -8700,9 +8730,14 @@ export function GameSurface({
                           variant="roleplay"
                           compact
                         />
-                        <div className="relative">
+                        <div>
                           <button
-                            onClick={() => setMobileRetryMenuOpen((v) => !v)}
+                            onClick={() => {
+                              setMobileRetryMenuOpen((v) => !v);
+                              setSessionPanelOpen(false);
+                              setGameAssetsPanelOpen(false);
+                              setVolumePopoverOpen(false);
+                            }}
                             className={GAME_MOBILE_ICON_BUTTON}
                             title="Retry"
                             aria-label="Retry"
@@ -8713,7 +8748,10 @@ export function GameSurface({
                             />
                           </button>
                           {mobileRetryMenuOpen && (
-                            <div className={cn(GAME_MOBILE_ACTION_MENU, "absolute right-9 top-0 z-50")}>
+                            <div
+                              data-chat-floating-panel
+                              className={cn(GAME_MOBILE_ACTION_MENU, GAME_MOBILE_FLOATING_MENU)}
+                            >
                               <button
                                 onClick={() => {
                                   setMobileRetryMenuOpen(false);
@@ -8781,7 +8819,7 @@ export function GameSurface({
                             </div>
                           )}
                         </div>
-                        <div className="relative" ref={mobileSessionPanelRef}>
+                        <div ref={mobileSessionPanelRef}>
                           <button
                             onClick={() => {
                               handleOpenSessionPanel("history");
@@ -8798,11 +8836,13 @@ export function GameSurface({
                           </button>
                           {sessionPanelOpen && renderSessionPanel(true)}
                         </div>
-                        <div className="relative" ref={mobileVolumePopoverRef}>
+                        <div ref={mobileVolumePopoverRef}>
                           <button
                             onClick={() => {
                               setVolumePopoverOpen((open) => !open);
                               setMobileRetryMenuOpen(false);
+                              setSessionPanelOpen(false);
+                              setGameAssetsPanelOpen(false);
                             }}
                             className={GAME_MOBILE_ICON_BUTTON}
                             title="Volume"
@@ -8811,7 +8851,7 @@ export function GameSurface({
                           </button>
                           {volumePopoverOpen && (
                             <GameVolumeMixer
-                              className="absolute right-9 top-0 z-50 max-w-[calc(100vw-4rem)]"
+                              className="absolute right-9 top-0 z-[9999] max-w-[calc(100vw-4rem)]"
                               audioMuted={audioMuted || masterVolume === 0}
                               masterVolume={masterVolume}
                               musicVolume={musicVolume}
@@ -8832,7 +8872,7 @@ export function GameSurface({
                             />
                           )}
                         </div>
-                        <div className="relative" ref={mobileGameAssetsPanelRef}>
+                        <div ref={mobileGameAssetsPanelRef}>
                           <button
                             onClick={() => {
                               handleOpenGameAssetsPanel();
@@ -8849,21 +8889,20 @@ export function GameSurface({
                           </button>
                           {gameAssetsPanelOpen && renderGameAssetsPanel(true)}
                         </div>
-                        <button
-                          onClick={() => {
-                            setMobileActiveContextOpen(true);
-                            setMobileActionsOpen(false);
-                          }}
-                          className={GAME_MOBILE_ICON_BUTTON}
+                        <ActiveLorebookEntriesButton
+                          chatId={activeChatId}
+                          iconSize={14}
+                          buttonClassName={({ open }) =>
+                            getChatToolbarButtonClass({
+                              compact: true,
+                              open,
+                            })
+                          }
                           title="Active Context"
-                          aria-label="Active Context"
-                        >
-                          <BookOpen size={14} />
-                        </button>
+                        />
                         <button
                           onClick={(event) => {
                             handleOpenGalleryPanel(event);
-                            setMobileActionsOpen(false);
                           }}
                           className={GAME_MOBILE_ICON_BUTTON}
                           title="Gallery"
@@ -8873,7 +8912,6 @@ export function GameSurface({
                         <button
                           onClick={(event) => {
                             handleOpenSettingsPanel(event);
-                            setMobileActionsOpen(false);
                           }}
                           className={GAME_MOBILE_ICON_BUTTON}
                           title="Chat Settings"
@@ -8885,12 +8923,6 @@ export function GameSurface({
                   </div>
                 </div>
               </div>
-
-              <ActiveLorebookEntriesModal
-                chatId={activeChatId}
-                open={mobileActiveContextOpen}
-                onClose={() => setMobileActiveContextOpen(false)}
-              />
 
               {pendingReaction && (
                 <GameElementReaction reaction={pendingReaction} onDismiss={() => setPendingReaction(null)} />

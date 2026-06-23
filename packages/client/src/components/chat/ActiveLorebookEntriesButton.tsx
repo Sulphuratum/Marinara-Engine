@@ -1,11 +1,17 @@
 import { createPortal } from "react-dom";
-import { Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { BookOpen, Loader2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useActiveLorebookEntries } from "../../hooks/use-lorebooks";
 import { useUIStore } from "../../stores/ui.store";
+import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
 import { ROLEPLAY_POPOVER_SCROLL_AREA, ROLEPLAY_POPOVER_SHELL } from "./roleplay-popover-styles";
-import { getChatToolbarButtonClass } from "./ChatToolbarControls";
+import {
+  CHAT_FLOATING_PANEL_SELECTOR,
+  getChatToolbarButtonClass,
+  readChatToolbarFloatingPanelAnchor,
+  type ChatToolbarFloatingPanelAnchor,
+} from "./ChatToolbarControls";
 
 const ActiveLorebookEntriesPanel = lazy(async () => {
   const module = await import("./ChatRoleplayPanels");
@@ -35,6 +41,15 @@ type ActiveLorebookEntriesButtonProps = {
   title?: string;
 };
 
+function getMobileActiveContextPanelStyle(anchor: NonNullable<ChatToolbarFloatingPanelAnchor>) {
+  return {
+    top: anchor.top,
+    right: `calc(var(--mari-chat-ui-inset-right, 0px) + ${anchor.right}px)`,
+    width: "min(20rem, calc(100vw - 4.75rem))",
+    maxHeight: `min(32rem, calc(100dvh - ${anchor.top + 8}px))`,
+  };
+}
+
 function ActiveLorebookEntriesLoadingFallback() {
   return (
     <div className="flex items-center gap-2 py-4 text-xs text-[var(--muted-foreground)]">
@@ -48,15 +63,39 @@ export function ActiveLorebookEntriesModal({
   chatId,
   open,
   onClose,
+  anchor = null,
 }: {
   chatId: string | null;
   open: boolean;
   onClose: () => void;
+  anchor?: ChatToolbarFloatingPanelAnchor;
 }) {
   if (!open || !chatId) return null;
 
+  if (anchor) {
+    return createPortal(
+      <div
+        data-chat-floating-panel
+        className={cn(ROLEPLAY_POPOVER_SHELL, ROLEPLAY_POPOVER_SCROLL_AREA, "fixed z-[9999] overflow-y-auto p-3")}
+        style={getMobileActiveContextPanelStyle(anchor)}
+        onMouseDown={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+      >
+        <Suspense fallback={<ActiveLorebookEntriesLoadingFallback />}>
+          <ActiveLorebookEntriesPanel chatId={chatId} isMobile onClose={onClose} />
+        </Suspense>
+      </div>,
+      document.body,
+    );
+  }
+
   return createPortal(
-    <div className={PANEL_BACKDROP} onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+    <div
+      data-chat-floating-panel
+      className={PANEL_BACKDROP}
+      onMouseDown={(e) => e.stopPropagation()}
+      onTouchStart={(e) => e.stopPropagation()}
+    >
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div className={PANEL_CONTAINER} onClick={(e) => e.stopPropagation()}>
         <Suspense fallback={<ActiveLorebookEntriesLoadingFallback />}>
@@ -75,19 +114,39 @@ export function ActiveLorebookEntriesButton({
   title = "Active Context",
 }: ActiveLorebookEntriesButtonProps) {
   const [open, setOpen] = useState(false);
+  const [mobileAnchor, setMobileAnchor] = useState<ChatToolbarFloatingPanelAnchor>(null);
   const { data, isLoading } = useActiveLorebookEntries(chatId, true);
   const ref = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
   const compact = useUIStore((s) => s.centerCompact);
 
   useEffect(() => {
     if (!open) return;
     const handle = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      const targetElement = target instanceof Element ? target : target.parentElement;
+      if (targetElement?.closest(CHAT_FLOATING_PANEL_SELECTOR)) return;
+      if (ref.current && !ref.current.contains(target)) setOpen(false);
     };
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open || !isMobile) {
+      setMobileAnchor(null);
+      return;
+    }
+    const update = () => setMobileAnchor(readChatToolbarFloatingPanelAnchor(buttonRef.current));
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [isMobile, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -96,6 +155,13 @@ export function ActiveLorebookEntriesButton({
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleDismiss = () => setOpen(false);
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
+    return () => window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, handleDismiss);
   }, [open]);
 
   if (!chatId) return null;
@@ -116,14 +182,30 @@ export function ActiveLorebookEntriesButton({
 
   return (
     <div className="relative" ref={ref} onClick={(e) => e.stopPropagation()}>
-      <button onClick={() => setOpen(!open)} className={resolvedButtonClassName} title={title} aria-label={title}>
+      <button
+        ref={buttonRef}
+        onClick={() => {
+          const nextOpen = !open;
+          setMobileAnchor(nextOpen && isMobile ? readChatToolbarFloatingPanelAnchor(buttonRef.current) : null);
+          setOpen(nextOpen);
+        }}
+        className={resolvedButtonClassName}
+        title={title}
+        aria-label={title}
+      >
         <BookOpen size={iconSize} />
       </button>
       {open &&
         (isMobile ? (
-          <ActiveLorebookEntriesModal chatId={chatId} open={open} onClose={() => setOpen(false)} />
+          <ActiveLorebookEntriesModal
+            chatId={chatId}
+            open={open}
+            onClose={() => setOpen(false)}
+            anchor={mobileAnchor}
+          />
         ) : (
           <div
+            data-chat-floating-panel
             className={cn(
               ROLEPLAY_POPOVER_SHELL,
               ROLEPLAY_POPOVER_SCROLL_AREA,

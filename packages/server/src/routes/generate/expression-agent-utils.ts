@@ -1,3 +1,7 @@
+import {
+  normalizeSpriteExpressionKey as normalizeUnicodeSpriteExpressionKey,
+  normalizeSpriteLookupToken,
+} from "@marinara-engine/shared";
 import { buildSpriteExpressionChoices } from "../../services/game/sprite.service.js";
 
 export type SpriteDisplayMode = "expressions" | "full-body";
@@ -100,11 +104,7 @@ export function normalizeRequiredSpriteExpressionIds(value: unknown): string[] {
 
 function normalizeLookupToken(value: unknown): string {
   if (typeof value !== "string") return "";
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "");
+  return normalizeSpriteLookupToken(value);
 }
 
 function normalizeNameAliases(name: string): string[] {
@@ -120,11 +120,7 @@ function normalizeNameAliases(name: string): string[] {
 }
 
 function normalizeExpressionToken(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, "");
+  return normalizeUnicodeSpriteExpressionKey(value).replace(/[._-]+/gu, "");
 }
 
 function hasUsefulContainmentMatch(candidate: string, option: string): boolean {

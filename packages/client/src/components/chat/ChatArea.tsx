@@ -68,8 +68,14 @@ import { useTTSConfig } from "../../hooks/use-tts";
 import { achievementKeys, trackAchievementEvent } from "../../hooks/use-achievements";
 import { buildTTSVoiceRequests, normalizeTTSCharacterName, withTTSVoiceRequestCacheKeys } from "../../lib/tts-dialogue";
 import { CHAT_SCROLL_TO_BOTTOM_EVENT, type ChatScrollToBottomDetail } from "../../lib/chat-scroll-events";
-import { CHAT_TOOLBAR_ACTION_EVENT } from "./ChatToolbarControls";
+import { CHAT_FLOATING_UI_DISMISS_EVENT } from "../../lib/chat-floating-ui-events";
+import { CHAT_TOOLBAR_ACTION_EVENT, readChatToolbarFloatingPanelAnchor } from "./ChatToolbarControls";
 import { mirrorSpritePlacements, normalizeSpritePlacements } from "./sprite-placement";
+import {
+  loadLocalSpriteVisualSettings,
+  saveLocalSpriteVisualSettings,
+  type LocalSpriteVisualSettings,
+} from "./local-sprite-visual-settings";
 import {
   SPRITE_DISPLAY_OPACITY_MAX,
   SPRITE_DISPLAY_OPACITY_MIN,
@@ -418,19 +424,7 @@ export function ChatArea() {
   );
   const readFloatingPanelAnchor = useCallback(
     (event?: ReactMouseEvent<HTMLElement>): FloatingPanelAnchor => {
-      if (!event || typeof window === "undefined" || window.innerWidth < 768) return null;
-      const rect = event.currentTarget.getBoundingClientRect();
-      const center = event.currentTarget.closest<HTMLElement>('[data-component="CenterContent"]');
-      const centerRect = center?.getBoundingClientRect();
-      const chatUiInsetRight = Number.parseFloat(
-        window.getComputedStyle(document.documentElement).getPropertyValue("--mari-chat-ui-inset-right"),
-      );
-      const rightBoundary =
-        centerRect?.right ?? window.innerWidth - (Number.isFinite(chatUiInsetRight) ? chatUiInsetRight : 0);
-      return {
-        right: Math.max(12, Math.round(rightBoundary - rect.right)),
-        top: Math.max(56, Math.round(rect.bottom + 8)),
-      };
+      return readChatToolbarFloatingPanelAnchor(event?.currentTarget ?? null);
     },
     [],
   );
@@ -467,12 +461,19 @@ export function ChatArea() {
     setSettingsOpen(false);
     setSettingsAnchor(null);
     setSettingsInitialSection(null);
+    setFilesOpen(false);
     setGalleryOpen(false);
     setGalleryAnchor(null);
+    setPeekPromptData(null);
+    setDeleteDialogMessageId(null);
   }, []);
   useEffect(() => {
     window.addEventListener(CHAT_TOOLBAR_ACTION_EVENT, closeFloatingChatDrawers);
-    return () => window.removeEventListener(CHAT_TOOLBAR_ACTION_EVENT, closeFloatingChatDrawers);
+    window.addEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeFloatingChatDrawers);
+    return () => {
+      window.removeEventListener(CHAT_TOOLBAR_ACTION_EVENT, closeFloatingChatDrawers);
+      window.removeEventListener(CHAT_FLOATING_UI_DISMISS_EVENT, closeFloatingChatDrawers);
+    };
   }, [closeFloatingChatDrawers]);
   const chat = chatDetail ?? null;
   // Game mode loads ALL messages (no pagination) so the in-game log
@@ -709,6 +710,9 @@ export function ChatArea() {
   const { concludeScene, abandonScene, forkScene, isForking } = useScene();
   const encounterActive = useEncounterStore((s) => s.active || s.showConfigModal);
   const roleplaySpriteScale = useUIStore((s) => s.roleplaySpriteScale);
+  const [localSpriteVisualSettings, setLocalSpriteVisualSettings] = useState<LocalSpriteVisualSettings>(() =>
+    loadLocalSpriteVisualSettings(chat?.id),
+  );
 
   // Sprite sidebar settings from chat metadata
   const chatMeta = useMemo(() => {
@@ -716,6 +720,18 @@ export function ChatArea() {
     const raw = (chat as unknown as { metadata?: string | Record<string, unknown> }).metadata;
     return parseChatMetadata(raw);
   }, [chat]);
+
+  useEffect(() => {
+    setLocalSpriteVisualSettings(loadLocalSpriteVisualSettings(chat?.id));
+  }, [chat?.id]);
+
+  const patchLocalSpriteVisualSettings = useCallback(
+    (patch: Partial<LocalSpriteVisualSettings>) => {
+      if (!chat?.id) return;
+      setLocalSpriteVisualSettings((previous) => saveLocalSpriteVisualSettings(chat.id, patch, previous));
+    },
+    [chat?.id],
+  );
   const spriteCharacterIds = useMemo<string[]>(
     () =>
       Array.isArray(chatMeta.spriteCharacterIds)
@@ -727,7 +743,8 @@ export function ChatArea() {
     () => normalizeSpriteDisplayModes(chatMeta.spriteDisplayModes),
     [chatMeta.spriteDisplayModes],
   );
-  const spritePosition: SpriteSide = chatMeta.spritePosition === "right" ? "right" : "left";
+  const metadataSpritePosition: SpriteSide = chatMeta.spritePosition === "right" ? "right" : "left";
+  const spritePosition: SpriteSide = localSpriteVisualSettings.spritePosition ?? metadataSpritePosition;
   const spriteScale = normalizeSpriteDisplayValue(
     chatMeta.spriteScale,
     roleplaySpriteScale,
@@ -735,13 +752,13 @@ export function ChatArea() {
     SPRITE_DISPLAY_SCALE_MAX,
   );
   const expressionSpriteScale = normalizeSpriteDisplayValue(
-    chatMeta.expressionSpriteScale,
+    localSpriteVisualSettings.expressionSpriteScale ?? chatMeta.expressionSpriteScale,
     spriteScale,
     SPRITE_DISPLAY_SCALE_MIN,
     SPRITE_DISPLAY_SCALE_MAX,
   );
   const fullBodySpriteScale = normalizeSpriteDisplayValue(
-    chatMeta.fullBodySpriteScale,
+    localSpriteVisualSettings.fullBodySpriteScale ?? chatMeta.fullBodySpriteScale,
     spriteScale,
     SPRITE_DISPLAY_SCALE_MIN,
     SPRITE_DISPLAY_SCALE_MAX,
@@ -753,20 +770,24 @@ export function ChatArea() {
     SPRITE_DISPLAY_OPACITY_MAX,
   );
   const expressionSpriteOpacity = normalizeSpriteDisplayValue(
-    chatMeta.expressionSpriteOpacity,
+    localSpriteVisualSettings.expressionSpriteOpacity ?? chatMeta.expressionSpriteOpacity,
     spriteOpacity,
     SPRITE_DISPLAY_OPACITY_MIN,
     SPRITE_DISPLAY_OPACITY_MAX,
   );
   const fullBodySpriteOpacity = normalizeSpriteDisplayValue(
-    chatMeta.fullBodySpriteOpacity,
+    localSpriteVisualSettings.fullBodySpriteOpacity ?? chatMeta.fullBodySpriteOpacity,
     spriteOpacity,
     SPRITE_DISPLAY_OPACITY_MIN,
     SPRITE_DISPLAY_OPACITY_MAX,
   );
+  const hasLocalSpritePlacements = Object.prototype.hasOwnProperty.call(localSpriteVisualSettings, "spritePlacements");
+  const spritePlacementsSource = hasLocalSpritePlacements
+    ? localSpriteVisualSettings.spritePlacements
+    : chatMeta.spritePlacements;
   const spritePlacements = useMemo(
-    () => normalizeSpritePlacements(chatMeta.spritePlacements),
-    [chatMeta.spritePlacements],
+    () => normalizeSpritePlacements(spritePlacementsSource),
+    [spritePlacementsSource],
   );
   const hasCustomSpritePlacements = Object.keys(spritePlacements).length > 0;
   // Prefer per-swipe expressions from the last assistant message's extra (survives swipe switching),
@@ -981,18 +1002,18 @@ export function ChatArea() {
       pendingSpritePlacements.current = { ...pendingSpritePlacements.current, [placementKey]: placement };
       if (spritePlacementSaveTimer.current) clearTimeout(spritePlacementSaveTimer.current);
       spritePlacementSaveTimer.current = setTimeout(() => {
-        updateMeta.mutate({ id: chat.id, spritePlacements: pendingSpritePlacements.current });
+        patchLocalSpriteVisualSettings({ spritePlacements: pendingSpritePlacements.current });
       }, 250);
     },
-    [chat?.id, updateMeta],
+    [chat?.id, patchLocalSpriteVisualSettings],
   );
 
   const handleResetSpritePlacements = useCallback(() => {
     if (!chat?.id) return;
     pendingSpritePlacements.current = {};
     if (spritePlacementSaveTimer.current) clearTimeout(spritePlacementSaveTimer.current);
-    updateMeta.mutate({ id: chat.id, spritePlacements: {} });
-  }, [chat?.id, updateMeta]);
+    patchLocalSpriteVisualSettings({ spritePlacements: {} });
+  }, [chat?.id, patchLocalSpriteVisualSettings]);
 
   const handleSetSpritePosition = useCallback(
     (nextSide: SpriteSide) => {
@@ -1000,13 +1021,12 @@ export function ChatArea() {
       const nextPlacements = hasCustomSpritePlacements ? mirrorSpritePlacements(spritePlacements) : spritePlacements;
       pendingSpritePlacements.current = nextPlacements;
       if (spritePlacementSaveTimer.current) clearTimeout(spritePlacementSaveTimer.current);
-      updateMeta.mutate({
-        id: chat.id,
+      patchLocalSpriteVisualSettings({
         spritePosition: nextSide,
         spritePlacements: nextPlacements,
       });
     },
-    [chat?.id, hasCustomSpritePlacements, spritePlacements, spritePosition, updateMeta],
+    [chat?.id, hasCustomSpritePlacements, patchLocalSpriteVisualSettings, spritePlacements, spritePosition],
   );
 
   // Set of enabled agent type IDs (respects both global enableAgents toggle and per-chat agent list)
@@ -1021,11 +1041,33 @@ export function ChatArea() {
 
   const combatAgentEnabled = enabledAgentTypes.has("combat");
   const expressionAgentEnabled = enabledAgentTypes.has("expression");
+  const expressionAvatarsPreferenceEnabled =
+    (localSpriteVisualSettings.expressionAvatarsEnabled ?? chatMeta.expressionAvatarsEnabled) === true;
   const expressionAvatarsEnabled =
     isRoleplay &&
-    chatMeta.expressionAvatarsEnabled === true &&
+    expressionAvatarsPreferenceEnabled &&
     expressionAgentEnabled &&
     (chatCharIds.length > 0 || !!personaInfo?.id);
+  const effectiveSpriteVisualSettings = useMemo<LocalSpriteVisualSettings>(
+    () => ({
+      spritePosition,
+      spritePlacements,
+      expressionSpriteScale,
+      fullBodySpriteScale,
+      expressionSpriteOpacity,
+      fullBodySpriteOpacity,
+      expressionAvatarsEnabled: expressionAvatarsPreferenceEnabled,
+    }),
+    [
+      expressionAvatarsPreferenceEnabled,
+      expressionSpriteOpacity,
+      expressionSpriteScale,
+      fullBodySpriteOpacity,
+      fullBodySpriteScale,
+      spritePlacements,
+      spritePosition,
+    ],
+  );
   // Expression Avatars reuse expression sprites as message portraits, so suppress the duplicate overlay layer.
   const visibleSpriteDisplayModes = useMemo(
     () => (expressionAvatarsEnabled ? spriteDisplayModes.filter((mode) => mode !== "expressions") : spriteDisplayModes),
@@ -2275,6 +2317,8 @@ export function ChatArea() {
               onToggleSpriteArrange: () => setSpriteArrangeMode((prev) => !prev),
               onResetSpritePlacements: handleResetSpritePlacements,
               onSpriteSideChange: handleSetSpritePosition,
+              spriteVisualSettings: effectiveSpriteVisualSettings,
+              onSpriteVisualSettingsChange: patchLocalSpriteVisualSettings,
             }}
             onCloseSettings={handleCloseSettingsPanel}
             onCloseFiles={() => setFilesOpen(false)}
@@ -2487,6 +2531,8 @@ export function ChatArea() {
           onResetSpritePlacements={handleResetSpritePlacements}
           onSpriteSideChange={handleSetSpritePosition}
           onToggleSpriteArrange={() => setSpriteArrangeMode((prev) => !prev)}
+          spriteVisualSettings={effectiveSpriteVisualSettings}
+          onSpriteVisualSettingsChange={patchLocalSpriteVisualSettings}
           onExpressionChange={handleExpressionChange}
           onSpritePlacementChange={handleSpritePlacementChange}
           onFinishSpritePlacement={() => setSpriteArrangeMode(false)}

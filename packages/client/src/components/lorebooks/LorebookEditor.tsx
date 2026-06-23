@@ -2347,50 +2347,47 @@ export function LorebookEditor() {
                       </div>
                     )}
 
-                    {/* Root entries (entries with no folder).
-                        Always rendered when grouping is active so it acts as
-                        a permanent drop target — otherwise a user with all
-                        entries inside folders has no place to drop a folder
-                        entry to bring it back to root. */}
+                    {(draggingFolderIdx !== null || (draggingEntryIdx !== null && dragSourceContainer !== null)) && (
+                      <div
+                        data-lorebook-entry-root
+                        className="rounded-xl border border-dashed border-[var(--marinara-editor-border-strong)] bg-[var(--marinara-editor-control-bg-hover)] px-3 py-2 text-center text-[0.625rem] italic text-[var(--marinara-editor-accent)]"
+                        onDragOver={(e) => {
+                          if (draggingFolderIdx !== null) handleFolderRootDragOver(e);
+                          else handleRootListDragOver(e);
+                        }}
+                        onDrop={(e) => {
+                          if (draggingFolderIdx !== null) commitFolderDrop(e);
+                          else commitEntryDrop(e);
+                        }}
+                      >
+                        {draggingFolderIdx !== null
+                          ? "Drop here to move the folder to the top level"
+                          : "Drop here to move out of the folder"}
+                      </div>
+                    )}
+
+                    {/* Root entries (entries with no folder). The root drop strip above
+                        handles cross-folder moves; this list only handles root-level
+                        entry reordering so it does not swallow the rows below. */}
                     <div
                       ref={entryListRef}
-                      data-lorebook-entry-root
                       className={cn(
                         "space-y-1.5",
-                        // Highlight while an entry from another container, or a nested
-                        // folder being un-nested, is dragged toward this root zone.
-                        ((draggingEntryIdx !== null && dragSourceContainer !== null && dropTargetContainer === null) ||
-                          (draggingFolderIdx !== null && folderRootDropActive)) &&
+                        draggingEntryIdx !== null &&
+                          dragSourceContainer === null &&
+                          dropTargetContainer === null &&
                           "rounded-xl bg-[var(--marinara-editor-control-bg-hover)] ring-1 ring-[var(--marinara-editor-border-strong)] transition-colors",
                       )}
                       onDragOver={(e) => {
-                        // Dragging a folder down into the root-entries area un-nests it to
-                        // the top level (the root entries already live there).
-                        if (draggingFolderIdx !== null) handleFolderRootDragOver(e);
-                        else handleRootListDragOver(e);
+                        if (draggingEntryIdx !== null && dragSourceContainer === null) handleRootListDragOver(e);
                       }}
                       onDrop={(e) => {
-                        if (draggingFolderIdx !== null) commitFolderDrop(e);
-                        else commitEntryDrop(e);
+                        if (draggingEntryIdx !== null && dragSourceContainer === null) commitEntryDrop(e);
                       }}
                     >
                       {(entriesByContainer.get(null) ?? []).length === 0 && (
-                        <p
-                          className={cn(
-                            "py-3 text-center text-[0.625rem] italic text-[var(--muted-foreground)] transition-opacity",
-                            // Only call out the empty-root zone while the user
-                            // is actively dragging an entry from a folder; in
-                            // the steady state it would just be visual noise.
-                            draggingFolderIdx !== null || (draggingEntryIdx !== null && dragSourceContainer !== null)
-                              ? "opacity-100"
-                              : "opacity-50",
-                          )}
-                        >
-                          {draggingFolderIdx !== null
-                            ? "Drop here to move the folder to the top level"
-                            : draggingEntryIdx !== null && dragSourceContainer !== null
-                              ? "Drop here to move out of the folder"
-                              : "No entries at the root level"}
+                        <p className="py-3 text-center text-[0.625rem] italic text-[var(--muted-foreground)] opacity-50">
+                          No entries at the root level
                         </p>
                       )}
                       {(entriesByContainer.get(null) ?? []).map((entry, idx) => {

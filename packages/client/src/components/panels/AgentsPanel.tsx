@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: Agents
 // ──────────────────────────────────────────────
-import { useCallback, useMemo, useRef, useState, type ChangeEvent, type ReactNode, type TouchEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import {
   Sparkles,
   Copy,
@@ -70,9 +70,7 @@ import {
   useUpdateLibraryFolder,
 } from "../../hooks/use-library-folders";
 import { handleFolderRenameKeyDown, useFolderRenameGesture } from "../../hooks/use-folder-rename-gesture";
-import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { SmoothFolderContent } from "../ui/SmoothFolderContent";
-import { TouchDragHandle } from "../ui/TouchDragHandle";
 
 type JsonRecord = Record<string, unknown>;
 const BUILT_IN_AGENT_TYPE_SET = new Set(BUILT_IN_AGENTS.map((agent) => agent.id));
@@ -119,6 +117,31 @@ function serializeAgentConfig(agent: AgentConfigRow): AgentTransferConfig {
     settings,
     ...(resultType ? { resultType } : {}),
   };
+}
+
+function useTouchSafeAgentDragMode() {
+  const readTouchSafeMode = useCallback(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 767px)").matches;
+  }, []);
+  const [touchSafeMode, setTouchSafeMode] = useState(readTouchSafeMode);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
+    const mobileViewportQuery = window.matchMedia("(max-width: 767px)");
+    const update = () => setTouchSafeMode(readTouchSafeMode());
+
+    update();
+    coarsePointerQuery.addEventListener("change", update);
+    mobileViewportQuery.addEventListener("change", update);
+    return () => {
+      coarsePointerQuery.removeEventListener("change", update);
+      mobileViewportQuery.removeEventListener("change", update);
+    };
+  }, [readTouchSafeMode]);
+
+  return touchSafeMode;
 }
 
 function createBuiltInAgentConfigRow(
@@ -250,6 +273,8 @@ export function AgentsPanel() {
   const [draggedAgentId, setDraggedAgentId] = useState<string | null>(null);
   const suppressAgentClickRef = useRef(false);
   const handleFolderRenameGesture = useFolderRenameGesture();
+  const touchSafeAgentDragMode = useTouchSafeAgentDragMode();
+  const nativeAgentDragEnabled = !touchSafeAgentDragMode;
 
   const agentConfigRows = useMemo(() => (agentConfigs ?? []) as AgentConfigRow[], [agentConfigs]);
   const customToolRows = useMemo(() => (customTools ?? []) as CustomToolRow[], [customTools]);
@@ -411,53 +436,6 @@ export function AgentsPanel() {
       setDraggedAgentId(null);
     },
     [draggedAgentId, moveAgentItem],
-  );
-
-  const finishAgentTouchDrag = useCallback(
-    (agentId: string, x: number, y: number) => {
-      const target = document.elementFromPoint(x, y);
-      const folderElement = target?.closest("[data-agent-folder-id]") as HTMLElement | null;
-      const rootElement = target?.closest("[data-agent-folder-root]") as HTMLElement | null;
-      if (folderElement?.dataset.agentFolderId) {
-        moveAgentItem.mutate({ itemIds: getDraggedAgentIds(agentId), folderId: folderElement.dataset.agentFolderId });
-      } else if (rootElement) {
-        moveAgentItem.mutate({ itemIds: getDraggedAgentIds(agentId), folderId: null });
-      }
-      setDraggedAgentId(null);
-      window.setTimeout(() => {
-        suppressAgentClickRef.current = false;
-      }, 0);
-    },
-    [getDraggedAgentIds, moveAgentItem],
-  );
-
-  const cancelAgentTouchDrag = useCallback((_agentId: string, wasActive: boolean) => {
-    setDraggedAgentId(null);
-    if (wasActive) {
-      window.setTimeout(() => {
-        suppressAgentClickRef.current = false;
-      }, 0);
-    } else {
-      suppressAgentClickRef.current = false;
-    }
-  }, []);
-
-  const { startTouchDrag: startAgentTouchDrag } = useTouchFolderDrag({
-    onActivate: (agentId) => {
-      suppressAgentClickRef.current = true;
-      setDraggedAgentId(agentId);
-    },
-    onDrop: finishAgentTouchDrag,
-    onCancel: cancelAgentTouchDrag,
-  });
-  const startAgentCardTouchDrag = useCallback(
-    (event: TouchEvent<HTMLButtonElement>, agentId: string) => {
-      startAgentTouchDrag(event, agentId, {
-        allowInteractiveTarget: true,
-        sourceElement: event.currentTarget.closest<HTMLElement>("[data-agent-card]"),
-      });
-    },
-    [startAgentTouchDrag],
   );
 
   const handleExportSelectedAgents = useCallback(async () => {
@@ -685,7 +663,8 @@ export function AgentsPanel() {
           event.dataTransfer.setData("text/plain", agent.id);
         },
         onDragEnd: () => setDraggedAgentId(null),
-        onTouchStart: (event) => startAgentCardTouchDrag(event, agent.id),
+        nativeDragEnabled: nativeAgentDragEnabled,
+        touchSafeDragMode: touchSafeAgentDragMode,
         suppressClickRef: suppressAgentClickRef,
         onDelete: async () => {
           const deleteMessage = custom
@@ -710,10 +689,11 @@ export function AgentsPanel() {
       getDraggedAgentIds,
       handlePickAgentImage,
       handleDuplicateAgent,
+      nativeAgentDragEnabled,
       openAgentDetail,
       selectedAgentIds,
       selectionMode,
-      startAgentCardTouchDrag,
+      touchSafeAgentDragMode,
       toggleAgentSelection,
     ],
   );
@@ -757,24 +737,7 @@ export function AgentsPanel() {
   );
 
   return (
-    <div
-      onDragOver={(event) => {
-        if (draggedAgentId) {
-          event.preventDefault();
-          event.dataTransfer.dropEffect = "move";
-        }
-      }}
-      onDrop={(event) => {
-        if (!draggedAgentId) return;
-        event.preventDefault();
-        const target = event.target as Element | null;
-        if (target?.closest("[data-agent-folder-id]")) return;
-        const payload = event.dataTransfer.getData("application/x-marinara-agent-ids");
-        handleAgentDrop(null, payload ? (JSON.parse(payload) as string[]) : undefined);
-      }}
-      data-agent-folder-root
-      className="flex min-h-full flex-col gap-2 p-3"
-    >
+    <div className="flex min-h-full flex-col gap-2 p-3">
       <input
         ref={agentImageInputRef}
         type="file"
@@ -870,6 +833,23 @@ export function AgentsPanel() {
           </button>
         </div>
         {agentFolders.length > 0 && <p className="mari-folder-helper">Drag and drop agents to folders</p>}
+        {draggedAgentId && (
+          <div
+            data-agent-folder-root
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              const payload = event.dataTransfer.getData("application/x-marinara-agent-ids");
+              handleAgentDrop(null, payload ? (JSON.parse(payload) as string[]) : undefined);
+            }}
+            className="rounded-xl border border-dashed border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-[0.625rem] text-[var(--marinara-chat-chrome-button-text-active)]"
+          >
+            Drop here to move out of folder
+          </div>
+        )}
         {agentFolders.map((folder) => {
           const isEditing = editingFolderId === folder.id;
           const folderAgents = folder.itemIds
@@ -1034,7 +1014,8 @@ export function AgentsPanel() {
                     event.dataTransfer.setData("text/plain", agent.id);
                   },
                   onDragEnd: () => setDraggedAgentId(null),
-                  onTouchStart: (event) => startAgentCardTouchDrag(event, agent.id),
+                  nativeDragEnabled: nativeAgentDragEnabled,
+                  touchSafeDragMode: touchSafeAgentDragMode,
                   suppressClickRef: suppressAgentClickRef,
                   onDelete: async () => {
                     const deleteMessage =
@@ -1086,7 +1067,8 @@ export function AgentsPanel() {
                   event.dataTransfer.setData("text/plain", agent.id);
                 },
                 onDragEnd: () => setDraggedAgentId(null),
-                onTouchStart: (event) => startAgentCardTouchDrag(event, agent.id),
+                nativeDragEnabled: nativeAgentDragEnabled,
+                touchSafeDragMode: touchSafeAgentDragMode,
                 suppressClickRef: suppressAgentClickRef,
                 onDelete: async () => {
                   if (
@@ -1137,7 +1119,8 @@ function renderAgentCard({
   isDragging = false,
   onDragStart,
   onDragEnd,
-  onTouchStart,
+  nativeDragEnabled = true,
+  touchSafeDragMode = false,
   suppressClickRef,
 }: {
   id: string;
@@ -1157,7 +1140,8 @@ function renderAgentCard({
   isDragging?: boolean;
   onDragStart?: (event: React.DragEvent<HTMLDivElement>) => void;
   onDragEnd?: () => void;
-  onTouchStart?: (event: TouchEvent<HTMLButtonElement>) => void;
+  nativeDragEnabled?: boolean;
+  touchSafeDragMode?: boolean;
   suppressClickRef?: { current: boolean };
 }) {
   const iconContent = imagePath ? (
@@ -1175,8 +1159,18 @@ function renderAgentCard({
       key={id}
       data-agent-card
       data-agent-name={name}
-      draggable
-      onDragStart={onDragStart}
+      draggable={nativeDragEnabled}
+      onContextMenu={(event) => {
+        if (!touchSafeDragMode) return;
+        event.preventDefault();
+      }}
+      onDragStart={(event) => {
+        if (!nativeDragEnabled) {
+          event.preventDefault();
+          return;
+        }
+        onDragStart?.(event);
+      }}
       onDragEnd={onDragEnd}
       onClick={() => {
         if (suppressClickRef?.current) return;
@@ -1188,6 +1182,7 @@ function renderAgentCard({
           selected &&
           "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
         isDragging && "opacity-50",
+        touchSafeDragMode && "select-none",
       )}
     >
       {selectionMode && (
@@ -1201,14 +1196,6 @@ function renderAgentCard({
         >
           <Check size="0.75rem" />
         </div>
-      )}
-      {onTouchStart && (
-        <TouchDragHandle
-          label="Drag agent"
-          onTouchStart={(event) => {
-            onTouchStart(event);
-          }}
-        />
       )}
       <button
         type="button"

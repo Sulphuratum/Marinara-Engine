@@ -352,18 +352,34 @@ export function useTouchFolderDrag({
   );
 
   const handleTouchCancel = useCallback(() => cancelTouchDrag(false), [cancelTouchDrag]);
+  const handleContextMenu = useCallback(
+    (event: Event) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      event.preventDefault();
+      cancelTouchDrag(false);
+    },
+    [cancelTouchDrag],
+  );
+  const handleInterruptedTouchDrag = useCallback(() => cancelTouchDrag(false), [cancelTouchDrag]);
 
   const attachListeners = useCallback(() => {
     removeListeners();
     window.addEventListener("touchmove", handleTouchMove, { passive: false });
     window.addEventListener("touchend", handleTouchEnd, { passive: false });
-    window.addEventListener("touchcancel", handleTouchCancel, { passive: true });
+    window.addEventListener("touchcancel", handleTouchCancel, { passive: false });
+    window.addEventListener("contextmenu", handleContextMenu, { capture: true });
+    window.addEventListener("blur", handleInterruptedTouchDrag);
+    window.addEventListener("pagehide", handleInterruptedTouchDrag);
     removeListenersRef.current = () => {
       window.removeEventListener("touchmove", handleTouchMove);
       window.removeEventListener("touchend", handleTouchEnd);
       window.removeEventListener("touchcancel", handleTouchCancel);
+      window.removeEventListener("contextmenu", handleContextMenu, { capture: true });
+      window.removeEventListener("blur", handleInterruptedTouchDrag);
+      window.removeEventListener("pagehide", handleInterruptedTouchDrag);
     };
-  }, [handleTouchCancel, handleTouchEnd, handleTouchMove, removeListeners]);
+  }, [handleContextMenu, handleInterruptedTouchDrag, handleTouchCancel, handleTouchEnd, handleTouchMove, removeListeners]);
 
   const startTouchDrag = useCallback(
     (event: ReactTouchEvent<HTMLElement>, id: string, options?: StartTouchDragOptions) => {

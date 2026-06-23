@@ -12,6 +12,7 @@ import { useSpriteCapabilities } from "../../hooks/use-characters";
 import { useUIStore } from "../../stores/ui.store";
 import { api } from "../../lib/api-client";
 import { ImagePromptReviewModal, type ImagePromptOverride, type ImagePromptReviewItem } from "./ImagePromptReviewModal";
+import { normalizeSpriteExpressionLabel } from "@marinara-engine/shared";
 
 // ── Types ──
 
@@ -521,11 +522,7 @@ function buildSliceBoundaries(
 }
 
 function normalizeSpriteLabel(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_")
-    .replace(/^full_/, "");
+  return normalizeSpriteExpressionLabel(raw);
 }
 
 function getMatchedFullBodyGrid(count: number): { cols: number; rows: number } {

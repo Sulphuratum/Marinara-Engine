@@ -2195,6 +2195,12 @@ async function generateAutomatic1111(
     body.batch_size = 1;
     body.n_iter = 1;
     body.restore_faces = defaults.restoreFaces;
+    if (request.model) {
+      // llama-swap-compatible SDAPI routers need a top-level model id before
+      // A1111/Forge receive the request. Keep override_settings for native
+      // checkpoint switching below.
+      body.model = request.model;
+    }
     if (defaults.scheduler) {
       body.scheduler = defaults.scheduler;
     }

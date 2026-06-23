@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { PanelLockButton, useDraggablePanel } from "./DraggablePanel";
-import { getChatToolbarButtonClass } from "../chat/ChatToolbarControls";
+import { CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS, getChatToolbarButtonClass } from "../chat/ChatToolbarControls";
 import { NEUTRAL_SURFACE_VARIABLES } from "../ui/neutral-surface-styles";
 
 const STATE_CONFIG: Record<GameActiveState, { icon: typeof Compass; label: string; color: string }> = {
@@ -778,7 +778,11 @@ export function MobileMapButton({
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
-          className={getChatToolbarButtonClass({ open, className: "shadow-lg shadow-black/25" })}
+          className={getChatToolbarButtonClass({
+            open,
+            className: "shadow-lg shadow-black/25",
+            sizeClassName: CHAT_TOOLBAR_OVERFLOW_BUTTON_SIZE_CLASS,
+          })}
           aria-expanded={open}
           aria-label={open ? "Close map" : "Open map"}
           title={open ? "Close map" : "Open map"}

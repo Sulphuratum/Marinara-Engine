@@ -72,7 +72,11 @@ import {
   SPRITES_SINGLE_FULL_BODY,
   SPRITES_FULL_BODY_SHEET,
 } from "../services/prompt-overrides/index.js";
-import type { ImageGenerationDefaultsProfile, ImageStyleProfileSettings } from "@marinara-engine/shared";
+import {
+  normalizeSpriteExpressionLabel,
+  type ImageGenerationDefaultsProfile,
+  type ImageStyleProfileSettings,
+} from "@marinara-engine/shared";
 
 const SPRITES_ROOT = join(DATA_DIR, "sprites");
 const ROUTE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -317,10 +321,7 @@ function formatSpriteLabelForPrompt(label: string): string {
 }
 
 function normalizeSpriteExpression(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "_");
+  return normalizeSpriteExpressionLabel(raw, { fullBody: /^\s*full[_\s-]+/iu.test(raw) });
 }
 
 function sanitizeSpriteExportName(raw: unknown, fallback: string): string {
@@ -1269,6 +1270,9 @@ export async function spritesRoutes(app: FastifyInstance) {
     }
 
     const expression = normalizeSpriteExpression(body.expression);
+    if (!expression) {
+      return reply.status(400).send({ error: "Expression label must include at least one letter or number" });
+    }
 
     // Parse base64
     let base64 = body.image;

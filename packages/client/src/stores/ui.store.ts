@@ -11,6 +11,7 @@ import {
   type QuoteFormat,
 } from "@marinara-engine/shared";
 import { isCssGradient, RAINBOW_GRADIENT_PRESET } from "../lib/css-colors";
+import { announceChatFloatingUiDismiss } from "../lib/chat-floating-ui-events";
 
 type Panel =
   | "chat"
@@ -162,6 +163,14 @@ export function normalizeCharacterLibrarySort(value: unknown): CharacterLibraryS
 
 function normalizeScrollTop(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+}
+
+function isMobileShellViewport() {
+  return typeof window !== "undefined" && window.innerWidth < 768;
+}
+
+function dismissChatFloatingUiForMobilePanel(open: boolean) {
+  if (open && isMobileShellViewport()) announceChatFloatingUiDismiss();
 }
 
 function normalizeAppAccentColor(value: unknown) {
@@ -1145,13 +1154,17 @@ export const useUIStore = create<UIState>()(
       toggleSidebar: () =>
         set((s) => {
           const sidebarOpen = !s.sidebarOpen;
-          const mobile = typeof window !== "undefined" && window.innerWidth < 768;
+          const mobile = isMobileShellViewport();
+          dismissChatFloatingUiForMobilePanel(sidebarOpen);
           return {
             sidebarOpen,
             ...(mobile && sidebarOpen ? { rightPanelOpen: false } : {}),
           };
         }),
-      setSidebarOpen: (open) => set({ sidebarOpen: open }),
+      setSidebarOpen: (open) => {
+        dismissChatFloatingUiForMobilePanel(open);
+        set({ sidebarOpen: open });
+      },
       setSidebarWidth: (width) =>
         set({ sidebarWidth: Math.max(SIDEBAR_WIDTH_MIN, Math.min(SIDEBAR_WIDTH_MAX, width)) }),
       setRightPanelWidth: (width) =>
@@ -1205,19 +1218,25 @@ export const useUIStore = create<UIState>()(
         }),
 
       openRightPanel: (panel) =>
-        set({
-          rightPanelOpen: true,
-          rightPanel: panel,
-          ...(typeof window !== "undefined" && window.innerWidth < 768 ? { sidebarOpen: false } : {}),
+        set(() => {
+          const mobile = isMobileShellViewport();
+          dismissChatFloatingUiForMobilePanel(true);
+          return {
+            rightPanelOpen: true,
+            rightPanel: panel,
+            ...(mobile ? { sidebarOpen: false } : {}),
+          };
         }),
       closeRightPanel: () => set({ rightPanelOpen: false }),
       toggleRightPanel: (panel) =>
         set((s) => {
           if (s.rightPanelOpen && s.rightPanel === panel) return { rightPanelOpen: false };
+          const mobile = isMobileShellViewport();
+          dismissChatFloatingUiForMobilePanel(true);
           return {
             rightPanelOpen: true,
             rightPanel: panel,
-            ...(typeof window !== "undefined" && window.innerWidth < 768 ? { sidebarOpen: false } : {}),
+            ...(mobile ? { sidebarOpen: false } : {}),
           };
         }),
 

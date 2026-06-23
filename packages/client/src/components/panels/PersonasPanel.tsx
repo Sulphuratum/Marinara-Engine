@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Panel: User Personas
 // ──────────────────────────────────────────────
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import {
   usePersonas,
@@ -100,6 +100,31 @@ function getPersonaPreviewMetadata(p: PersonaRow): string | null {
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
+function useTouchSafePersonaDragMode() {
+  const readTouchSafeMode = useCallback(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 767px)").matches;
+  }, []);
+  const [touchSafeMode, setTouchSafeMode] = useState(readTouchSafeMode);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
+    const mobileViewportQuery = window.matchMedia("(max-width: 767px)");
+    const update = () => setTouchSafeMode(readTouchSafeMode());
+
+    update();
+    coarsePointerQuery.addEventListener("change", update);
+    mobileViewportQuery.addEventListener("change", update);
+    return () => {
+      coarsePointerQuery.removeEventListener("change", update);
+      mobileViewportQuery.removeEventListener("change", update);
+    };
+  }, [readTouchSafeMode]);
+
+  return touchSafeMode;
+}
+
 export function PersonasPanel() {
   const { data: personas, isLoading } = usePersonas();
   const deletePersona = useDeletePersona();
@@ -131,6 +156,8 @@ export function PersonasPanel() {
   const [draggedPersonaId, setDraggedPersonaId] = useState<string | null>(null);
   const suppressPersonaClickRef = useRef(false);
   const handleFolderRenameGesture = useFolderRenameGesture();
+  const touchSafePersonaDragMode = useTouchSafePersonaDragMode();
+  const nativePersonaDragEnabled = !touchSafePersonaDragMode;
 
   const isActive = (p: PersonaRow) => p.isActive === true || p.isActive === "true";
 
@@ -770,8 +797,15 @@ export function PersonasPanel() {
                                 openPersonaDetail(pid);
                               }
                             }}
-                            draggable
+                            draggable={nativePersonaDragEnabled}
+                            onContextMenu={(event) => {
+                              if (touchSafePersonaDragMode) event.preventDefault();
+                            }}
                             onDragStart={(event) => {
+                              if (!nativePersonaDragEnabled) {
+                                event.preventDefault();
+                                return;
+                              }
                               const ids = getDraggedPersonaIds(pid);
                               setDraggedPersonaId(pid);
                               event.dataTransfer.effectAllowed = "move";
@@ -783,6 +817,7 @@ export function PersonasPanel() {
                             tabIndex={0}
                             className={cn(
                               "group group/member flex touch-pan-y cursor-pointer items-center gap-2 rounded-lg p-1.5 text-xs transition-all hover:bg-[var(--sidebar-accent)]",
+                              touchSafePersonaDragMode && "select-none",
                               selectionMode &&
                                 isBulkSelected &&
                                 "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
@@ -887,29 +922,25 @@ export function PersonasPanel() {
         </div>
       )}
 
-      <div
-        data-persona-folder-root
-        onDragOver={(event) => {
-          if (draggedPersonaId) {
+      {draggedPersonaId && (
+        <div
+          data-persona-folder-root
+          onDragOver={(event) => {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
-          }
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const payload = event.dataTransfer.getData("application/x-marinara-persona-ids");
-          handlePersonaDrop(null, parseDroppedPersonaIds(payload));
-        }}
-        className={cn(
-          "stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors",
-          draggedPersonaId && "ring-1 ring-emerald-400/20",
-        )}
-      >
-        {draggedPersonaId && (
-          <div className="rounded-xl border border-dashed border-emerald-400/35 bg-emerald-400/5 px-3 py-2 text-[0.625rem] text-emerald-300">
-            Drop here to move out of folder
-          </div>
-        )}
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const payload = event.dataTransfer.getData("application/x-marinara-persona-ids");
+            handlePersonaDrop(null, parseDroppedPersonaIds(payload));
+          }}
+          className="rounded-xl border border-dashed border-emerald-400/35 bg-emerald-400/5 px-3 py-2 text-[0.625rem] text-emerald-300"
+        >
+          Drop here to move out of folder
+        </div>
+      )}
+
+      <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
         {visibleRootPersonas.map((persona) => {
           const active = isActive(persona);
           const isBulkSelected = selectedPersonaIds.has(persona.id);
@@ -927,6 +958,7 @@ export function PersonasPanel() {
                 active &&
                   "bg-[var(--marinara-chat-chrome-highlight-bg)] ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
                 draggedPersonaId === persona.id && "opacity-50",
+                touchSafePersonaDragMode && "select-none",
               )}
               onClick={() => {
                 if (suppressPersonaClickRef.current) return;
@@ -936,8 +968,15 @@ export function PersonasPanel() {
                   openPersonaDetail(persona.id);
                 }
               }}
-              draggable
+              draggable={nativePersonaDragEnabled}
+              onContextMenu={(event) => {
+                if (touchSafePersonaDragMode) event.preventDefault();
+              }}
               onDragStart={(event) => {
+                if (!nativePersonaDragEnabled) {
+                  event.preventDefault();
+                  return;
+                }
                 const ids = getDraggedPersonaIds(persona.id);
                 setDraggedPersonaId(persona.id);
                 event.dataTransfer.effectAllowed = "move";

@@ -2,7 +2,7 @@
 // Full-Page Preset Editor
 // Tabs: Overview · Sections · Prompts
 // ──────────────────────────────────────────────
-import { useState, useCallback, useEffect, useMemo, useRef, type FC, type ReactNode } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type FC, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useUIStore } from "../../stores/ui.store";
 import { toast } from "sonner";
@@ -89,8 +89,55 @@ function handleTextareaTab(
   });
 }
 
-// ── Tab definitions ──
+// ── Input caret helpers ──
+type TextSelection = { start: number; end: number };
 
+function shouldSelectTextOnFocus() {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return !window.matchMedia("(pointer: coarse)").matches;
+}
+
+function useRestoreTextSelection<T extends HTMLInputElement | HTMLTextAreaElement>(
+  inputRef: { current: T | null },
+  selectionRef: { current: TextSelection | null },
+  value: string,
+) {
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    const selection = selectionRef.current;
+    if (!input || !selection || typeof document === "undefined" || document.activeElement !== input) return;
+
+    selectionRef.current = null;
+    const start = Math.min(selection.start, input.value.length);
+    const end = Math.min(selection.end, input.value.length);
+    input.setSelectionRange(start, end);
+  }, [inputRef, selectionRef, value]);
+}
+
+function getFormattedTextSelection(
+  rawValue: string,
+  selectionStart: number,
+  selectionEnd: number,
+  formatValue: (value: string) => string,
+): TextSelection {
+  const formattedBeforeSelection = formatValue(rawValue.slice(0, selectionStart));
+  const formattedSelection = formatValue(rawValue.slice(selectionStart, selectionEnd));
+  return {
+    start: formattedBeforeSelection.length,
+    end: formattedBeforeSelection.length + formattedSelection.length,
+  };
+}
+
+const sanitizeVariableName = (value: string) => value.replace(/[^\w]/g, "");
+
+function getSanitizedVariableSelection(rawValue: string, selectionStart: number, selectionEnd: number): TextSelection {
+  return {
+    start: sanitizeVariableName(rawValue.slice(0, selectionStart)).length,
+    end: sanitizeVariableName(rawValue.slice(0, selectionEnd)).length,
+  };
+}
+
+// ── Tab definitions ──
 const TABS = [
   { id: "overview", label: "Overview", icon: FileText },
   { id: "sections", label: "Sections", icon: Layers },
@@ -2214,7 +2261,7 @@ function VariableCard({
                       setDragReadyOptIdx(null);
                     }}
                     className={cn(
-                      "flex items-center gap-2 rounded-lg px-2.5 py-1.5 ring-1",
+                      "flex min-w-0 flex-wrap items-center gap-2 rounded-lg px-2.5 py-1.5 ring-1 sm:flex-nowrap",
                       valueBlank
                         ? "bg-[var(--destructive)]/5 ring-[var(--destructive)]/30"
                         : "mari-editor-panel mari-editor-panel--soft",
@@ -2280,14 +2327,14 @@ function VariableCard({
                         next[oi] = { ...next[oi], label: v };
                         updateOpts(next);
                       }}
-                      className="mari-editor-field flex-1 px-1.5 py-0.5 text-xs"
+                      className="mari-editor-field min-w-[7rem] flex-[1_1_7rem] px-1.5 py-0.5 text-xs sm:min-w-0 sm:flex-1"
                       placeholder="Label…"
                     />
                     <OptionFieldInput
                       value={opt.value}
                       onCommit={(v) => updateOptionField(opt.id, "value", v)}
                       className={cn(
-                        "flex-1 rounded px-1.5 py-0.5 font-mono text-xs focus:outline-none focus:ring-1",
+                        "min-w-[7rem] flex-[1_1_7rem] rounded px-1.5 py-0.5 font-mono text-xs focus:outline-none focus:ring-1 sm:min-w-0 sm:flex-1",
                         valueBlank
                           ? "bg-[var(--destructive)]/10 ring-1 ring-[var(--destructive)]/30 placeholder:text-[var(--destructive)]/40"
                           : "mari-editor-field",
@@ -2354,15 +2401,30 @@ function VariableCard({
 // ── Variable Name Input (local state, commits on blur/Enter) ──
 function VariableNameInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [local, setLocal] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectionRef = useRef<TextSelection | null>(null);
+  const focusedRef = useRef(false);
+  useRestoreTextSelection(inputRef, selectionRef, local);
   useEffect(() => {
-    setLocal(value);
+    if (!focusedRef.current) setLocal(value);
   }, [value]);
   return (
     <input
+      ref={inputRef}
       value={local}
-      onFocus={(e) => e.target.select()}
-      onChange={(e) => setLocal(e.target.value.replace(/[^\w]/g, ""))}
+      onFocus={(e) => {
+        focusedRef.current = true;
+        if (shouldSelectTextOnFocus()) e.target.select();
+      }}
+      onChange={(e) => {
+        const rawValue = e.target.value;
+        const selectionStart = e.target.selectionStart ?? rawValue.length;
+        const selectionEnd = e.target.selectionEnd ?? selectionStart;
+        selectionRef.current = getSanitizedVariableSelection(rawValue, selectionStart, selectionEnd);
+        setLocal(sanitizeVariableName(rawValue));
+      }}
       onBlur={() => {
+        focusedRef.current = false;
         if (local !== value) onCommit(local);
       }}
       onKeyDown={(e) => {
@@ -2389,9 +2451,12 @@ function OptionFieldInput({
   placeholder?: string;
 }) {
   const [local, setLocal] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectionRef = useRef<TextSelection | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
   const formatQuotes = useQuoteFormatter();
+  useRestoreTextSelection(inputRef, selectionRef, local);
   useEffect(() => {
     if (!focusedRef.current) setLocal(value);
   }, [value]);
@@ -2403,13 +2468,18 @@ function OptionFieldInput({
   );
   return (
     <input
+      ref={inputRef}
       value={local}
       onFocus={(e) => {
         focusedRef.current = true;
-        e.target.select();
+        if (shouldSelectTextOnFocus()) e.target.select();
       }}
       onChange={(e) => {
-        const nextValue = formatQuotes(e.target.value);
+        const rawValue = e.target.value;
+        const selectionStart = e.target.selectionStart ?? rawValue.length;
+        const selectionEnd = e.target.selectionEnd ?? selectionStart;
+        selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
+        const nextValue = formatQuotes(rawValue);
         setLocal(nextValue);
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
         timeoutRef.current = setTimeout(() => {
@@ -2438,16 +2508,31 @@ function OptionFieldInput({
 // ── Variable Question Input (local state, commits on blur/Enter) ──
 function VariableQuestionInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
   const [local, setLocal] = useState(value);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const selectionRef = useRef<TextSelection | null>(null);
+  const focusedRef = useRef(false);
   const formatQuotes = useQuoteFormatter();
+  useRestoreTextSelection(inputRef, selectionRef, local);
   useEffect(() => {
-    setLocal(value);
+    if (!focusedRef.current) setLocal(value);
   }, [value]);
   return (
     <input
+      ref={inputRef}
       value={local}
-      onFocus={(e) => e.target.select()}
-      onChange={(e) => setLocal(formatQuotes(e.target.value))}
+      onFocus={(e) => {
+        focusedRef.current = true;
+        if (shouldSelectTextOnFocus()) e.target.select();
+      }}
+      onChange={(e) => {
+        const rawValue = e.target.value;
+        const selectionStart = e.target.selectionStart ?? rawValue.length;
+        const selectionEnd = e.target.selectionEnd ?? selectionStart;
+        selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
+        setLocal(formatQuotes(rawValue));
+      }}
       onBlur={() => {
+        focusedRef.current = false;
         if (local !== value) onCommit(local);
       }}
       onKeyDown={(e) => {
@@ -2551,9 +2636,11 @@ function ExpandedEditorModal({
   onClose: () => void;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const selectionRef = useRef<TextSelection | null>(null);
   const [local, setLocal] = useState(value);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const formatQuotes = useQuoteFormatter();
+  useRestoreTextSelection(textareaRef, selectionRef, local);
 
   // Sync from parent only on initial mount (not on every re-render)
   useEffect(() => {
@@ -2586,7 +2673,11 @@ function ExpandedEditorModal({
   );
 
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const v = formatQuotes(e.target.value);
+    const rawValue = e.target.value;
+    const selectionStart = e.target.selectionStart ?? rawValue.length;
+    const selectionEnd = e.target.selectionEnd ?? selectionStart;
+    selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
+    const v = formatQuotes(rawValue);
     setLocal(v);
     // Debounced commit so the parent stays in sync without cursor jumps
     if (timeoutRef.current) clearTimeout(timeoutRef.current);

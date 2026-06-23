@@ -192,6 +192,7 @@ import {
   useHapticStartScan,
 } from "../../hooks/use-haptic";
 import { normalizeSpritePlacements } from "./sprite-placement";
+import type { LocalSpriteVisualSettings } from "./local-sprite-visual-settings";
 import {
   DEFAULT_SPRITE_DISPLAY_MODES,
   SPRITE_DISPLAY_OPACITY_MAX,
@@ -226,6 +227,8 @@ interface ChatSettingsDrawerProps {
   onToggleSpriteArrange?: () => void;
   onResetSpritePlacements?: () => void;
   onSpriteSideChange?: (side: "left" | "right") => void;
+  spriteVisualSettings?: LocalSpriteVisualSettings;
+  onSpriteVisualSettingsChange?: (patch: Partial<LocalSpriteVisualSettings>) => void;
 }
 
 type SpotifySourceType = "liked" | "playlist" | "artist" | "any";
@@ -586,6 +589,8 @@ export function ChatSettingsDrawer({
   onToggleSpriteArrange,
   onResetSpritePlacements,
   onSpriteSideChange,
+  spriteVisualSettings,
+  onSpriteVisualSettingsChange,
 }: ChatSettingsDrawerProps) {
   const qc = useQueryClient();
   const scheduleControlsRef = useRef<HTMLDivElement | null>(null);
@@ -908,7 +913,8 @@ export function ChatSettingsDrawer({
     metadata.gameUseMusicDj === true || gameUseSpotifyMusic || activeAgentIds.includes("youtube");
   const spriteCharacterIds: string[] = Array.isArray(metadata.spriteCharacterIds) ? metadata.spriteCharacterIds : [];
   const spriteDisplayModes = normalizeSpriteDisplayModes(metadata.spriteDisplayModes);
-  const spritePosition: "left" | "right" = metadata.spritePosition === "right" ? "right" : "left";
+  const spritePosition: "left" | "right" =
+    spriteVisualSettings?.spritePosition ?? (metadata.spritePosition === "right" ? "right" : "left");
   const spriteScale = normalizeSpriteDisplayValue(
     metadata.spriteScale,
     roleplaySpriteScale,
@@ -916,13 +922,13 @@ export function ChatSettingsDrawer({
     SPRITE_DISPLAY_SCALE_MAX,
   );
   const expressionSpriteScale = normalizeSpriteDisplayValue(
-    metadata.expressionSpriteScale,
+    spriteVisualSettings?.expressionSpriteScale ?? metadata.expressionSpriteScale,
     spriteScale,
     SPRITE_DISPLAY_SCALE_MIN,
     SPRITE_DISPLAY_SCALE_MAX,
   );
   const fullBodySpriteScale = normalizeSpriteDisplayValue(
-    metadata.fullBodySpriteScale,
+    spriteVisualSettings?.fullBodySpriteScale ?? metadata.fullBodySpriteScale,
     spriteScale,
     SPRITE_DISPLAY_SCALE_MIN,
     SPRITE_DISPLAY_SCALE_MAX,
@@ -934,18 +940,19 @@ export function ChatSettingsDrawer({
     SPRITE_DISPLAY_OPACITY_MAX,
   );
   const expressionSpriteOpacity = normalizeSpriteDisplayValue(
-    metadata.expressionSpriteOpacity,
+    spriteVisualSettings?.expressionSpriteOpacity ?? metadata.expressionSpriteOpacity,
     spriteOpacity,
     SPRITE_DISPLAY_OPACITY_MIN,
     SPRITE_DISPLAY_OPACITY_MAX,
   );
   const fullBodySpriteOpacity = normalizeSpriteDisplayValue(
-    metadata.fullBodySpriteOpacity,
+    spriteVisualSettings?.fullBodySpriteOpacity ?? metadata.fullBodySpriteOpacity,
     spriteOpacity,
     SPRITE_DISPLAY_OPACITY_MIN,
     SPRITE_DISPLAY_OPACITY_MAX,
   );
-  const expressionAvatarsEnabled = metadata.expressionAvatarsEnabled === true;
+  const expressionAvatarsEnabled =
+    (spriteVisualSettings?.expressionAvatarsEnabled ?? metadata.expressionAvatarsEnabled) === true;
   const [expressionSpriteScalePercent, setExpressionSpriteScalePercent] = useState(() =>
     Math.round(expressionSpriteScale * 100),
   );
@@ -958,7 +965,12 @@ export function ChatSettingsDrawer({
   const [fullBodySpriteOpacityPercent, setFullBodySpriteOpacityPercent] = useState(() =>
     Math.round(fullBodySpriteOpacity * 100),
   );
-  const hasCustomSpritePlacements = Object.keys(normalizeSpritePlacements(metadata.spritePlacements)).length > 0;
+  const hasLocalSpritePlacements =
+    !!spriteVisualSettings && Object.prototype.hasOwnProperty.call(spriteVisualSettings, "spritePlacements");
+  const spritePlacementSource = hasLocalSpritePlacements
+    ? spriteVisualSettings?.spritePlacements
+    : metadata.spritePlacements;
+  const hasCustomSpritePlacements = Object.keys(normalizeSpritePlacements(spritePlacementSource)).length > 0;
   const spotifyPlaylistsQuery = useQuery({
     queryKey: ["spotify", "playlists", 50],
     queryFn: () =>
@@ -1737,13 +1749,17 @@ export function ChatSettingsDrawer({
         Math.min(SPRITE_DISPLAY_SCALE_PERCENT_MAX, nextPercent),
       );
       setExpressionSpriteScalePercent(clampedPercent);
+      if (onSpriteVisualSettingsChange) {
+        onSpriteVisualSettingsChange({ expressionSpriteScale: clampedPercent / 100 });
+        return;
+      }
       updateMeta.mutate({
         id: chat.id,
         expressionSpriteScale: clampedPercent / 100,
         spriteScale: clampedPercent / 100,
       });
     },
-    [chat.id, updateMeta],
+    [chat.id, onSpriteVisualSettingsChange, updateMeta],
   );
 
   const setFullBodySpriteScale = useCallback(
@@ -1753,12 +1769,16 @@ export function ChatSettingsDrawer({
         Math.min(SPRITE_DISPLAY_SCALE_PERCENT_MAX, nextPercent),
       );
       setFullBodySpriteScalePercent(clampedPercent);
+      if (onSpriteVisualSettingsChange) {
+        onSpriteVisualSettingsChange({ fullBodySpriteScale: clampedPercent / 100 });
+        return;
+      }
       updateMeta.mutate({
         id: chat.id,
         fullBodySpriteScale: clampedPercent / 100,
       });
     },
-    [chat.id, updateMeta],
+    [chat.id, onSpriteVisualSettingsChange, updateMeta],
   );
 
   const setExpressionSpriteOpacity = useCallback(
@@ -1768,13 +1788,17 @@ export function ChatSettingsDrawer({
         Math.min(SPRITE_DISPLAY_OPACITY_PERCENT_MAX, nextPercent),
       );
       setExpressionSpriteOpacityPercent(clampedPercent);
+      if (onSpriteVisualSettingsChange) {
+        onSpriteVisualSettingsChange({ expressionSpriteOpacity: clampedPercent / 100 });
+        return;
+      }
       updateMeta.mutate({
         id: chat.id,
         expressionSpriteOpacity: clampedPercent / 100,
         spriteOpacity: clampedPercent / 100,
       });
     },
-    [chat.id, updateMeta],
+    [chat.id, onSpriteVisualSettingsChange, updateMeta],
   );
 
   const setFullBodySpriteOpacity = useCallback(
@@ -1784,12 +1808,16 @@ export function ChatSettingsDrawer({
         Math.min(SPRITE_DISPLAY_OPACITY_PERCENT_MAX, nextPercent),
       );
       setFullBodySpriteOpacityPercent(clampedPercent);
+      if (onSpriteVisualSettingsChange) {
+        onSpriteVisualSettingsChange({ fullBodySpriteOpacity: clampedPercent / 100 });
+        return;
+      }
       updateMeta.mutate({
         id: chat.id,
         fullBodySpriteOpacity: clampedPercent / 100,
       });
     },
-    [chat.id, updateMeta],
+    [chat.id, onSpriteVisualSettingsChange, updateMeta],
   );
 
   // ── Character drag-and-drop reordering ──
@@ -2838,10 +2866,11 @@ export function ChatSettingsDrawer({
 
   return (
     <>
-      <div className="fixed z-[65] bg-transparent" style={backdropStyle} onClick={onClose} />
+      <div data-chat-floating-panel className="fixed z-[65] bg-transparent" style={backdropStyle} onClick={onClose} />
 
       {/* Floating panel */}
       <div
+        data-chat-floating-panel
         className={cn(
           ROLEPLAY_POPOVER_SHELL,
           "mari-chat-settings-popover",
@@ -5661,9 +5690,14 @@ export function ChatSettingsDrawer({
 
                         <button
                           type="button"
-                          onClick={() =>
-                            updateMeta.mutate({ id: chat.id, expressionAvatarsEnabled: !expressionAvatarsEnabled })
-                          }
+                          onClick={() => {
+                            const nextEnabled = !expressionAvatarsEnabled;
+                            if (onSpriteVisualSettingsChange) {
+                              onSpriteVisualSettingsChange({ expressionAvatarsEnabled: nextEnabled });
+                              return;
+                            }
+                            updateMeta.mutate({ id: chat.id, expressionAvatarsEnabled: nextEnabled });
+                          }}
                           className={cn(
                             "flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-all",
                             expressionAvatarsEnabled

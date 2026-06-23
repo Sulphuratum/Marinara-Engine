@@ -1082,41 +1082,44 @@ export function LorebooksPanel() {
 
       {/* Lorebook list */}
       {!isLoading && sorted.length > 0 && (
-        <div
-          data-lorebook-folder-root
-          onDragOver={(event) => {
-            if (draggedLorebookId) {
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-            }
-          }}
-          onDrop={(event) => {
-            event.preventDefault();
-            const payload = event.dataTransfer.getData("application/x-marinara-lorebook-ids");
-            handleLorebookDrop(null, payload ? (JSON.parse(payload) as string[]) : undefined);
-          }}
-          className={cn(
-            "stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors",
-            draggedLorebookId && "ring-1 ring-amber-400/20",
+        <>
+          {draggedLorebookId && (
+            <div
+              data-lorebook-folder-root
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const payload = event.dataTransfer.getData("application/x-marinara-lorebook-ids");
+                handleLorebookDrop(null, payload ? (JSON.parse(payload) as string[]) : undefined);
+              }}
+              className="rounded-xl border border-dashed border-amber-400/35 bg-amber-400/5 px-3 py-2 text-[0.625rem] text-amber-300"
+            >
+              Drop here to move out of folder
+            </div>
           )}
-        >
-          {activeCategory === "all" && grouped
-            ? // Grouped view
-              Array.from(grouped.entries()).map(([category, books]) => {
-                const catMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[6];
-                return (
-                  <div key={category} className="mb-2">
-                    <div className="mb-1 flex items-center gap-1.5 px-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                      {catMeta.label}
-                      <span className="ml-auto text-[0.625rem] font-normal">{books.length}</span>
+
+          <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
+            {activeCategory === "all" && grouped
+              ? // Grouped view
+                Array.from(grouped.entries()).map(([category, books]) => {
+                  const catMeta = CATEGORIES.find((c) => c.id === category) ?? CATEGORIES[6];
+                  return (
+                    <div key={category} className="mb-2">
+                      <div className="mb-1 flex items-center gap-1.5 px-1 text-[0.6875rem] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+                        {catMeta.label}
+                        <span className="ml-auto text-[0.625rem] font-normal">{books.length}</span>
+                      </div>
+                      {books.map((lb) => renderLorebookRow(lb))}
                     </div>
-                    {books.map((lb) => renderLorebookRow(lb))}
-                  </div>
-                );
-              })
-            : // Flat view
-              rootLorebooks.map((lb: Lorebook) => renderLorebookRow(lb))}
-        </div>
+                  );
+                })
+              : // Flat view
+                rootLorebooks.map((lb: Lorebook) => renderLorebookRow(lb))}
+          </div>
+        </>
       )}
 
       {selectionMode && (

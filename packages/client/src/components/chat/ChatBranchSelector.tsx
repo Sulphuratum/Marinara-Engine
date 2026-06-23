@@ -25,7 +25,11 @@ import { showConfirmDialog, showPromptDialog } from "../../lib/app-dialogs";
 import { getChatDisplayName } from "../../lib/chat-display";
 import { useChatStore } from "../../stores/chat.store";
 import { cn } from "../../lib/utils";
-import { announceChatToolbarAction, getChatToolbarButtonClass } from "./ChatToolbarControls";
+import {
+  CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR,
+  announceChatToolbarAction,
+  getChatToolbarButtonClass,
+} from "./ChatToolbarControls";
 import {
   ROLEPLAY_POPOVER_SCROLL_AREA,
   ROLEPLAY_POPOVER_SHELL,
@@ -164,17 +168,21 @@ export function ChatBranchSelector({
   };
 
   useLayoutEffect(() => {
-    if (!open || !buttonRef.current) return;
-    const rect = buttonRef.current.getBoundingClientRect();
+    const button = buttonRef.current;
+    if (!open || !button) return;
+    const rect = button.getBoundingClientRect();
     const viewportPadding = 12;
     const isMobile = window.innerWidth < 768;
+    const overflowMenu = button.closest<HTMLElement>(CHAT_TOOLBAR_OVERFLOW_MENU_SELECTOR);
+    const menuRect = overflowMenu?.getBoundingClientRect();
+    const rightEdge = isMobile && menuRect ? menuRect.left - viewportPadding : rect.right;
     const width = isMobile
-      ? Math.min(360, window.innerWidth - viewportPadding * 2)
+      ? Math.min(360, window.innerWidth - viewportPadding * 2, Math.max(160, rightEdge - viewportPadding))
       : Math.max(rect.width, 360);
     const maxLeft = Math.max(viewportPadding, window.innerWidth - width - viewportPadding);
     setPosition({
-      top: rect.bottom + (isMobile ? 0 : 8),
-      left: Math.max(viewportPadding, Math.min(rect.right - width, maxLeft)),
+      top: isMobile && menuRect ? menuRect.top : rect.bottom + (isMobile ? 0 : 8),
+      left: Math.max(viewportPadding, Math.min(rightEdge - width, maxLeft)),
       width,
     });
   }, [displayBranches.length, open]);

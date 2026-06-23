@@ -1,12 +1,15 @@
-import { Suspense, lazy, type ComponentProps } from "react";
+import { Suspense, lazy, useEffect, type ComponentProps } from "react";
 import type { SpriteSide } from "@marinara-engine/shared";
 import { ChevronUp, ChevronDown, Trash2 } from "lucide-react";
 import type { PeekPromptData } from "./chat-area.types";
+import type { LocalSpriteVisualSettings } from "./local-sprite-visual-settings";
 
-const ChatSettingsDrawer = lazy(async () => {
+const loadChatSettingsDrawer = async () => {
   const module = await import("./ChatSettingsDrawer");
   return { default: module.ChatSettingsDrawer };
-});
+};
+
+const ChatSettingsDrawer = lazy(loadChatSettingsDrawer);
 
 const ChatFilesDrawer = lazy(async () => {
   const module = await import("./ChatFilesDrawer");
@@ -37,6 +40,8 @@ type SharedSceneSettingsProps = {
   onToggleSpriteArrange: () => void;
   onResetSpritePlacements: () => void;
   onSpriteSideChange: (side: SpriteSide) => void;
+  spriteVisualSettings?: LocalSpriteVisualSettings;
+  onSpriteVisualSettingsChange?: (patch: Partial<LocalSpriteVisualSettings>) => void;
 };
 
 type DeleteDialogProps = {
@@ -244,6 +249,21 @@ export function ChatCommonOverlays({
   onSelectAllAboveSelection,
   onSelectAllBelowSelection,
 }: ChatCommonOverlaysProps) {
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const warmSettingsDrawer = () => {
+      void loadChatSettingsDrawer();
+    };
+
+    if ("requestIdleCallback" in window) {
+      const idleId = window.requestIdleCallback(warmSettingsDrawer, { timeout: 1500 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+
+    const timeoutId = setTimeout(warmSettingsDrawer, 600);
+    return () => clearTimeout(timeoutId);
+  }, []);
+
   return (
     <>
       {chat && (
@@ -259,6 +279,8 @@ export function ChatCommonOverlays({
               onToggleSpriteArrange={sceneSettings.onToggleSpriteArrange}
               onResetSpritePlacements={sceneSettings.onResetSpritePlacements}
               onSpriteSideChange={sceneSettings.onSpriteSideChange}
+              spriteVisualSettings={sceneSettings.spriteVisualSettings}
+              onSpriteVisualSettingsChange={sceneSettings.onSpriteVisualSettingsChange}
             />
           )}
         </Suspense>

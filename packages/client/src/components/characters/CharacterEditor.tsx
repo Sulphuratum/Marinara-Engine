@@ -87,7 +87,12 @@ import { ExportFormatDialog, type ExportFormatChoice } from "../ui/ExportFormatD
 import { EditorTabRail } from "../ui/EditorTabRail";
 import { EditorSectionAnchor, EditorSectionJumps } from "../ui/EditorSectionJumps";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
-import type { CharacterCardVersion, CharacterData, RPGStatsConfig } from "@marinara-engine/shared";
+import {
+  normalizeSpriteExpressionLabel,
+  type CharacterCardVersion,
+  type CharacterData,
+  type RPGStatsConfig,
+} from "@marinara-engine/shared";
 import { parseTrackerCardColorConfig, serializeTrackerCardColorConfig } from "../../lib/tracker-card-colors";
 import { useQuoteFormatter } from "../../hooks/use-quote-formatter";
 import { LorebookAssignmentSection } from "../lorebooks/LorebookAssignmentSection";
@@ -2035,15 +2040,7 @@ function SpritesTab({
     spriteCapabilities?.backgroundRemover?.reason ?? "Local backgroundremover is not installed.";
 
   const normalizeExpressionForCategory = (raw: string) => {
-    const cleaned = raw
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9_-]/g, "_");
-    if (!cleaned) return "";
-    if (category === "full-body") {
-      return cleaned.startsWith("full_") ? cleaned : `full_${cleaned}`;
-    }
-    return cleaned.replace(/^full_/, "");
+    return normalizeSpriteExpressionLabel(raw, { fullBody: category === "full-body" });
   };
 
   const displayExpression = useCallback(

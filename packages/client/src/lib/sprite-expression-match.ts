@@ -1,3 +1,5 @@
+import { normalizeSpriteExpressionKey as normalizeUnicodeSpriteExpressionKey } from "@marinara-engine/shared";
+
 export type SpriteExpressionLike = {
   expression: string;
 };
@@ -50,14 +52,7 @@ const EXPRESSION_FALLBACKS: Record<string, string[]> = {
 const NEUTRAL_FALLBACKS = ["neutral", "default", "normal", "calm", "idle"];
 
 export function normalizeSpriteExpressionKey(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/^full[_\s-]+/, "")
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
+  return normalizeUnicodeSpriteExpressionKey(value);
 }
 
 function hasUsefulContainmentMatch(requested: string, candidate: string): boolean {

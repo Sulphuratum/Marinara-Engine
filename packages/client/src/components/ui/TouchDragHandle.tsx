@@ -26,7 +26,12 @@ export function TouchDragHandle({
         className,
       )}
       onClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onTouchStart={(event) => {
+        if (event.cancelable) event.preventDefault();
         event.stopPropagation();
         onTouchStart(event);
       }}

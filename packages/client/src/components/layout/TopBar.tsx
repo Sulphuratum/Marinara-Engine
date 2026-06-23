@@ -130,7 +130,8 @@ export function TopBar() {
   const isTopbarHovered = (key: string) => hoveredTopbarKey === key;
 
   const prepareMobileTopbarNavigation = useCallback(() => {
-    if (isMobileTopbarNavigation()) closeAllDetails();
+    if (!isMobileTopbarNavigation()) return;
+    closeAllDetails();
   }, [closeAllDetails]);
 
   const handleSidebarClick = useCallback(() => {

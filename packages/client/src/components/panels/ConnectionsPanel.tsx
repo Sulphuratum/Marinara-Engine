@@ -1354,28 +1354,32 @@ export function ConnectionsPanel() {
       )}
 
       {/* Unfiled connections */}
-      <div
-        data-connection-folder-root
-        onDragOver={(event) => {
-          if (draggedConnectionId) {
+      {draggedConnectionId && (
+        <div
+          data-connection-folder-root
+          onDragOver={(event) => {
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
-          }
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const payload = event.dataTransfer.getData("application/x-marinara-connection-ids");
-          const fallbackId =
-            event.dataTransfer.getData("application/x-marinara-connection-id") ||
-            event.dataTransfer.getData("text/plain") ||
-            draggedConnectionId;
-          handleDropConnectionsToFolder(payload ? (JSON.parse(payload) as string[]) : fallbackId ? [fallbackId] : [], null);
-        }}
-        className={cn(
-          "stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors",
-          draggedConnectionId && "ring-1 ring-[var(--marinara-chat-chrome-button-border-active)]",
-        )}
-      >
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const payload = event.dataTransfer.getData("application/x-marinara-connection-ids");
+            const fallbackId =
+              event.dataTransfer.getData("application/x-marinara-connection-id") ||
+              event.dataTransfer.getData("text/plain") ||
+              draggedConnectionId;
+            handleDropConnectionsToFolder(
+              payload ? (JSON.parse(payload) as string[]) : fallbackId ? [fallbackId] : [],
+              null,
+            );
+          }}
+          className="rounded-xl border border-dashed border-[var(--marinara-chat-chrome-button-border-active)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-[0.625rem] text-[var(--marinara-chat-chrome-button-text-active)]"
+        >
+          Drop here to move out of folder
+        </div>
+      )}
+
+      <div className="stagger-children flex min-h-8 flex-col gap-1 rounded-xl transition-colors">
         {unfiledConnections.map(renderConnectionRow)}
       </div>
 
