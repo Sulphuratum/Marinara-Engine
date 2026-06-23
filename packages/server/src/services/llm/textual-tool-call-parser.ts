@@ -42,6 +42,10 @@ function normalizeGemma4Delimiters(content: string): string {
   return content.replace(/<\|"\|>(.*?)<\|"\|>/gs, (_, inner: string) => JSON.stringify(inner));
 }
 
+function parseJsonishObjectWithGemmaDelimiters(value: string): Record<string, unknown> | null {
+  return parseJsonishObject(value) ?? (value.includes('<|"|>') ? parseJsonishObject(normalizeGemma4Delimiters(value)) : null);
+}
+
 function rawToolCalls(payload: Record<string, unknown>): unknown[] {
   const plural = payload.tool_calls ?? payload.toolCalls ?? payload.calls;
   if (Array.isArray(plural)) return plural;
@@ -179,16 +183,12 @@ function toolCallFromRaw(
 export function parseTextualToolCalls(content: string | null | undefined, tools: LLMToolDefinition[] = []): LLMToolCall[] {
   if (!content || tools.length === 0) return [];
 
-  // Gemma 4 uses <|"|>string<|"|> instead of "string" in tool call arguments.
-  // Normalize these to standard JSON strings before any parsing attempt.
-  const normalized = content.includes('<|"|>') ? normalizeGemma4Delimiters(content) : content;
-
   const knownTools = new Set(tools.map((tool) => tool.function.name));
   const hasBashTool = knownTools.has("bash");
   const calls: LLMToolCall[] = [];
 
   // Try the whole content as a single JSON object
-  const wholePayload = parseJsonishObject(normalized);
+  const wholePayload = parseJsonishObjectWithGemmaDelimiters(content);
   if (wholePayload) {
     rawToolCalls(wholePayload).forEach((raw, index) => {
       const call = toolCallFromRaw(raw, index, knownTools, hasBashTool);
@@ -198,10 +198,10 @@ export function parseTextualToolCalls(content: string | null | undefined, tools:
   if (calls.length > 0) return calls;
 
   // Try the whole content as a top-level JSON array of tool calls
-  const trimmed = normalized.trim();
+  const trimmed = content.trim();
   if (trimmed.startsWith("[")) {
     try {
-      const arr = JSON.parse(trimmed);
+      const arr = JSON.parse(trimmed.includes('<|"|>') ? normalizeGemma4Delimiters(trimmed) : trimmed);
       if (Array.isArray(arr)) {
         arr.forEach((raw, index) => {
           const call = toolCallFromRaw(raw, index, knownTools, hasBashTool);
@@ -214,8 +214,9 @@ export function parseTextualToolCalls(content: string | null | undefined, tools:
     if (calls.length > 0) return calls;
   }
 
-  parseTaggedSnippets(normalized).forEach((snippet, index) => {
-    const payload = snippetToPayload(snippet.text, {
+  parseTaggedSnippets(content).forEach((snippet, index) => {
+    const snippetText = snippet.text.includes('<|"|>') ? normalizeGemma4Delimiters(snippet.text) : snippet.text;
+    const payload = snippetToPayload(snippetText, {
       allowCommandFallback: snippet.allowCommandFallback,
       allowAnonymousJsonPayload: snippet.allowAnonymousJsonPayload,
     });
