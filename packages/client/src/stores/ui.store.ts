@@ -8,6 +8,7 @@ import {
   normalizeImageStyleProfileSettings,
   normalizeQuoteFormat,
   type ImageStyleProfileSettings,
+  type LorebookCategory,
   type QuoteFormat,
 } from "@marinara-engine/shared";
 import { isCssGradient, RAINBOW_GRADIENT_PRESET } from "../lib/css-colors";
@@ -26,13 +27,27 @@ type Panel =
 export type ChatModeShortcut = "conversation" | "roleplay" | "game";
 export const CHARACTER_LIBRARY_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "favorites"] as const;
 export type CharacterLibrarySort = (typeof CHARACTER_LIBRARY_SORT_OPTIONS)[number];
+export const CHARACTER_PANEL_FAVORITE_FILTER_OPTIONS = ["all", "favorites", "non-favorites"] as const;
+export type CharacterPanelFavoriteFilter = (typeof CHARACTER_PANEL_FAVORITE_FILTER_OPTIONS)[number];
+export const LOREBOOK_PANEL_CATEGORY_OPTIONS = [
+  "all",
+  "active",
+  "world",
+  "character",
+  "npc",
+  "spellbook",
+  "uncategorized",
+] as const satisfies readonly (LorebookCategory | "all" | "active")[];
+export type LorebookPanelCategory = (typeof LOREBOOK_PANEL_CATEGORY_OPTIONS)[number];
+export const LOREBOOK_PANEL_SORT_OPTIONS = ["name-asc", "name-desc", "newest", "oldest", "tokens"] as const;
+export type LorebookPanelSort = (typeof LOREBOOK_PANEL_SORT_OPTIONS)[number];
 type FontSize = 12 | 14 | 16 | 17 | 19 | 22;
 export type VisualTheme = "default" | "sillytavern";
 export type ConversationMessageStyle = "classic" | "bubble";
 export type HudPosition = "top" | "left" | "right";
 export type TrackerPanelSide = "left" | "right";
 export type TrackerThoughtBubbleDisplay = "inline" | "floating";
-export type MusicPlayerSource = "spotify" | "youtube";
+export type MusicPlayerSource = "spotify" | "youtube" | "custom";
 export const TRACKER_TEMPERATURE_UNITS = ["celsius", "fahrenheit"] as const;
 export type TrackerTemperatureUnit = (typeof TRACKER_TEMPERATURE_UNITS)[number];
 export const TRACKER_PANEL_SIZE_PROFILES = ["compact", "standard", "expanded"] as const;
@@ -159,6 +174,33 @@ export function normalizeCharacterLibrarySort(value: unknown): CharacterLibraryS
   return CHARACTER_LIBRARY_SORT_OPTIONS.includes(value as CharacterLibrarySort)
     ? (value as CharacterLibrarySort)
     : "name-asc";
+}
+
+function normalizeCharacterPanelFavoriteFilter(value: unknown): CharacterPanelFavoriteFilter {
+  return CHARACTER_PANEL_FAVORITE_FILTER_OPTIONS.includes(value as CharacterPanelFavoriteFilter)
+    ? (value as CharacterPanelFavoriteFilter)
+    : "all";
+}
+
+function normalizeLorebookPanelCategory(value: unknown): LorebookPanelCategory {
+  return LOREBOOK_PANEL_CATEGORY_OPTIONS.includes(value as LorebookPanelCategory)
+    ? (value as LorebookPanelCategory)
+    : "all";
+}
+
+function normalizeLorebookPanelSort(value: unknown): LorebookPanelSort {
+  return LOREBOOK_PANEL_SORT_OPTIONS.includes(value as LorebookPanelSort) ? (value as LorebookPanelSort) : "name-asc";
+}
+
+function normalizePanelText(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function normalizePanelStringArray(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)),
+  );
 }
 
 function normalizeScrollTop(value: unknown) {
@@ -406,10 +448,30 @@ interface UIState {
   characterLibrarySelectedId: string | null;
   /** Last selected sort order for character lists and the full-page character library */
   characterLibrarySort: CharacterLibrarySort;
+  /** Search text for the compact Characters panel */
+  characterPanelSearch: string;
+  /** Included tag filters for the compact Characters panel */
+  characterPanelIncludedTags: string[];
+  /** Excluded tag filters for the compact Characters panel */
+  characterPanelExcludedTags: string[];
+  /** Whether the compact Characters panel tag filter shelf is expanded */
+  characterPanelTagsExpanded: boolean;
+  /** Favorite filter for the compact Characters panel */
+  characterPanelFavoriteFilter: CharacterPanelFavoriteFilter;
   /** Last scroll offset for the compact Characters panel */
   characterPanelScrollTop: number;
   /** Last scroll offset for the full-page Character Library list */
   characterLibraryScrollTop: number;
+  /** Selected category for the compact Lorebooks panel */
+  lorebookPanelCategory: LorebookPanelCategory;
+  /** Search text for the compact Lorebooks panel */
+  lorebookPanelSearch: string;
+  /** Sort order for the compact Lorebooks panel */
+  lorebookPanelSort: LorebookPanelSort;
+  /** Selected tag filter for the compact Lorebooks panel */
+  lorebookPanelActiveTag: string | null;
+  /** Whether the compact Lorebooks panel tag/category shelf is expanded */
+  lorebookPanelTagsExpanded: boolean;
   /** True when any open detail editor has unsaved changes */
   editorDirty: boolean;
   /** Mobile-only return target for detail editors opened from a right panel */
@@ -441,6 +503,8 @@ interface UIState {
   gameTextSpeed: number;
   /** Delay in ms between auto-advancing narration segments when auto-play is enabled. */
   gameAutoPlayDelay: number;
+  /** When true, image generation requests are sent one at a time for providers that reject concurrent jobs. */
+  queueImageGenerationRequests: boolean;
   /** When true, generated game image prompts are shown for review before provider calls are sent. */
   reviewImagePromptsBeforeSend: boolean;
   imageBackgroundWidth: number;
@@ -491,6 +555,8 @@ interface UIState {
   youtubePlayerEnabled: boolean;
   /** User-set YouTube player volume (0–100). The DJ can also steer this. */
   youtubePlayerVolume: number;
+  /** User-set local Custom music player volume (0–100). The DJ can also steer this. */
+  localMusicPlayerVolume: number;
   /** Mobile Spotify widget collapsed state. */
   spotifyMobileWidgetCollapsed: boolean;
   /** Mobile Spotify widget position in viewport pixels. */
@@ -547,6 +613,7 @@ interface UIState {
   convoNotificationSound: boolean;
   rpNotificationSound: boolean;
   gameNotificationSound: boolean;
+  notificationSoundsOnlyWhenUnfocused: boolean;
   conversationBrowserNotifications: boolean;
 
   // ── Custom Conversation Prompt ──
@@ -661,8 +728,18 @@ interface UIState {
   setChatBackgroundBlur: (v: number) => void;
   setCharacterLibrarySelectedId: (id: string | null) => void;
   setCharacterLibrarySort: (sort: CharacterLibrarySort) => void;
+  setCharacterPanelSearch: (search: string) => void;
+  setCharacterPanelIncludedTags: (tags: string[]) => void;
+  setCharacterPanelExcludedTags: (tags: string[]) => void;
+  setCharacterPanelTagsExpanded: (expanded: boolean) => void;
+  setCharacterPanelFavoriteFilter: (filter: CharacterPanelFavoriteFilter) => void;
   setCharacterPanelScrollTop: (scrollTop: number) => void;
   setCharacterLibraryScrollTop: (scrollTop: number) => void;
+  setLorebookPanelCategory: (category: LorebookPanelCategory) => void;
+  setLorebookPanelSearch: (search: string) => void;
+  setLorebookPanelSort: (sort: LorebookPanelSort) => void;
+  setLorebookPanelActiveTag: (tag: string | null) => void;
+  setLorebookPanelTagsExpanded: (expanded: boolean) => void;
   openCharacterDetail: (id: string, options?: { preserveCharacterLibrary?: boolean }) => void;
   closeCharacterDetail: () => void;
   openLorebookDetail: (id: string) => void;
@@ -709,6 +786,7 @@ interface UIState {
   setGameDialogueDisplayMode: (v: GameDialogueDisplayMode) => void;
   setGameTextSpeed: (v: number) => void;
   setGameAutoPlayDelay: (v: number) => void;
+  setQueueImageGenerationRequests: (v: boolean) => void;
   setReviewImagePromptsBeforeSend: (v: boolean) => void;
   setImageBackgroundDimensions: (width: number, height: number) => void;
   setImageIllustrationDimensions: (width: number, height: number) => void;
@@ -741,6 +819,7 @@ interface UIState {
   setSpotifyPlayerEnabled: (v: boolean) => void;
   setYoutubePlayerEnabled: (v: boolean) => void;
   setYoutubePlayerVolume: (v: number) => void;
+  setLocalMusicPlayerVolume: (v: number) => void;
   setSpotifyMobileWidgetCollapsed: (v: boolean) => void;
   setSpotifyMobileWidgetPosition: (position: FloatingWidgetPosition) => void;
   setIntuitiveSwipeNavigation: (v: boolean) => void;
@@ -769,6 +848,7 @@ interface UIState {
   setConvoNotificationSound: (v: boolean) => void;
   setRpNotificationSound: (v: boolean) => void;
   setGameNotificationSound: (v: boolean) => void;
+  setNotificationSoundsOnlyWhenUnfocused: (v: boolean) => void;
   setConversationBrowserNotifications: (v: boolean) => void;
   setCustomConversationPrompt: (v: string | null) => void;
   setScheduleGenerationPreferences: (v: string) => void;
@@ -898,6 +978,7 @@ export function pickSyncedSettings(state: UIState) {
     gameDialogueDisplayMode: state.gameDialogueDisplayMode,
     gameTextSpeed: state.gameTextSpeed,
     gameAutoPlayDelay: state.gameAutoPlayDelay,
+    queueImageGenerationRequests: state.queueImageGenerationRequests,
     reviewImagePromptsBeforeSend: state.reviewImagePromptsBeforeSend,
     imageBackgroundWidth: state.imageBackgroundWidth,
     imageBackgroundHeight: state.imageBackgroundHeight,
@@ -934,6 +1015,7 @@ export function pickSyncedSettings(state: UIState) {
     spotifyPlayerEnabled: state.spotifyPlayerEnabled,
     youtubePlayerEnabled: state.youtubePlayerEnabled,
     youtubePlayerVolume: state.youtubePlayerVolume,
+    localMusicPlayerVolume: state.localMusicPlayerVolume,
     spotifyMobileWidgetCollapsed: state.spotifyMobileWidgetCollapsed,
     spotifyMobileWidgetPosition: state.spotifyMobileWidgetPosition,
     intuitiveSwipeNavigation: state.intuitiveSwipeNavigation,
@@ -971,6 +1053,7 @@ export function pickSyncedSettings(state: UIState) {
     convoNotificationSound: state.convoNotificationSound,
     rpNotificationSound: state.rpNotificationSound,
     gameNotificationSound: state.gameNotificationSound,
+    notificationSoundsOnlyWhenUnfocused: state.notificationSoundsOnlyWhenUnfocused,
     conversationBrowserNotifications: state.conversationBrowserNotifications,
     customConversationPrompt: state.customConversationPrompt,
     scheduleGenerationPreferences: state.scheduleGenerationPreferences,
@@ -1034,8 +1117,18 @@ export const useUIStore = create<UIState>()(
       characterLibraryOpen: false,
       characterLibrarySelectedId: null,
       characterLibrarySort: "name-asc" as CharacterLibrarySort,
+      characterPanelSearch: "",
+      characterPanelIncludedTags: [],
+      characterPanelExcludedTags: [],
+      characterPanelTagsExpanded: false,
+      characterPanelFavoriteFilter: "all" as CharacterPanelFavoriteFilter,
       characterPanelScrollTop: 0,
       characterLibraryScrollTop: 0,
+      lorebookPanelCategory: "all" as LorebookPanelCategory,
+      lorebookPanelSearch: "",
+      lorebookPanelSort: "name-asc" as LorebookPanelSort,
+      lorebookPanelActiveTag: null,
+      lorebookPanelTagsExpanded: false,
       editorDirty: false,
       detailReturnRightPanel: null,
 
@@ -1052,6 +1145,7 @@ export const useUIStore = create<UIState>()(
       gameDialogueDisplayMode: "classic" as GameDialogueDisplayMode,
       gameTextSpeed: 50,
       gameAutoPlayDelay: 3000,
+      queueImageGenerationRequests: true,
       reviewImagePromptsBeforeSend: false,
       imageBackgroundWidth: 1280,
       imageBackgroundHeight: 720,
@@ -1088,6 +1182,7 @@ export const useUIStore = create<UIState>()(
       spotifyPlayerEnabled: false,
       youtubePlayerEnabled: true,
       youtubePlayerVolume: 70,
+      localMusicPlayerVolume: 70,
       spotifyMobileWidgetCollapsed: true,
       spotifyMobileWidgetPosition: { x: 16, y: 96 },
       intuitiveSwipeNavigation: false,
@@ -1116,6 +1211,7 @@ export const useUIStore = create<UIState>()(
       convoNotificationSound: true,
       rpNotificationSound: true,
       gameNotificationSound: true,
+      notificationSoundsOnlyWhenUnfocused: false,
       conversationBrowserNotifications: false,
       customConversationPrompt: null,
       scheduleGenerationPreferences: "",
@@ -1255,8 +1351,19 @@ export const useUIStore = create<UIState>()(
       setChatBackgroundBlur: (v) => set({ chatBackgroundBlur: Math.max(0, Math.min(24, Math.round(v))) }),
       setCharacterLibrarySelectedId: (id) => set({ characterLibrarySelectedId: id }),
       setCharacterLibrarySort: (sort) => set({ characterLibrarySort: normalizeCharacterLibrarySort(sort) }),
+      setCharacterPanelSearch: (search) => set({ characterPanelSearch: normalizePanelText(search) }),
+      setCharacterPanelIncludedTags: (tags) => set({ characterPanelIncludedTags: normalizePanelStringArray(tags) }),
+      setCharacterPanelExcludedTags: (tags) => set({ characterPanelExcludedTags: normalizePanelStringArray(tags) }),
+      setCharacterPanelTagsExpanded: (expanded) => set({ characterPanelTagsExpanded: expanded }),
+      setCharacterPanelFavoriteFilter: (filter) =>
+        set({ characterPanelFavoriteFilter: normalizeCharacterPanelFavoriteFilter(filter) }),
       setCharacterPanelScrollTop: (scrollTop) => set({ characterPanelScrollTop: normalizeScrollTop(scrollTop) }),
       setCharacterLibraryScrollTop: (scrollTop) => set({ characterLibraryScrollTop: normalizeScrollTop(scrollTop) }),
+      setLorebookPanelCategory: (category) => set({ lorebookPanelCategory: normalizeLorebookPanelCategory(category) }),
+      setLorebookPanelSearch: (search) => set({ lorebookPanelSearch: normalizePanelText(search) }),
+      setLorebookPanelSort: (sort) => set({ lorebookPanelSort: normalizeLorebookPanelSort(sort) }),
+      setLorebookPanelActiveTag: (tag) => set({ lorebookPanelActiveTag: tag ? tag.trim() || null : null }),
+      setLorebookPanelTagsExpanded: (expanded) => set({ lorebookPanelTagsExpanded: expanded }),
       openCharacterDetail: (id, options) =>
         set((s) => {
           const preserveCharacterLibrary = options?.preserveCharacterLibrary ?? s.characterLibraryOpen;
@@ -1568,6 +1675,7 @@ export const useUIStore = create<UIState>()(
       setGameDialogueDisplayMode: (v) => set({ gameDialogueDisplayMode: v }),
       setGameTextSpeed: (v) => set({ gameTextSpeed: Math.max(1, Math.min(100, v)) }),
       setGameAutoPlayDelay: (v) => set({ gameAutoPlayDelay: Math.max(200, Math.min(10000, Math.round(v))) }),
+      setQueueImageGenerationRequests: (v) => set({ queueImageGenerationRequests: v }),
       setReviewImagePromptsBeforeSend: (v) => set({ reviewImagePromptsBeforeSend: v }),
       setImageBackgroundDimensions: (width, height) =>
         set({
@@ -1618,14 +1726,16 @@ export const useUIStore = create<UIState>()(
           youtubePlayerEnabled: v && state.musicPlayerSource === "youtube",
         })),
       setMusicPlayerSource: (v) =>
-        set((state) => ({
+        set({
+          musicPlayerEnabled: true,
           musicPlayerSource: v,
-          spotifyPlayerEnabled: state.musicPlayerEnabled && v === "spotify",
-          youtubePlayerEnabled: state.musicPlayerEnabled && v === "youtube",
-        })),
+          spotifyPlayerEnabled: v === "spotify",
+          youtubePlayerEnabled: v === "youtube",
+        }),
       setSpotifyPlayerEnabled: (v) => set({ spotifyPlayerEnabled: v }),
       setYoutubePlayerEnabled: (v) => set({ youtubePlayerEnabled: v }),
       setYoutubePlayerVolume: (v) => set({ youtubePlayerVolume: Math.max(0, Math.min(100, Math.round(v))) }),
+      setLocalMusicPlayerVolume: (v) => set({ localMusicPlayerVolume: Math.max(0, Math.min(100, Math.round(v))) }),
       setSpotifyMobileWidgetCollapsed: (v) => set({ spotifyMobileWidgetCollapsed: v }),
       setSpotifyMobileWidgetPosition: (position) =>
         set({
@@ -1719,6 +1829,7 @@ export const useUIStore = create<UIState>()(
       setConvoNotificationSound: (v) => set({ convoNotificationSound: v }),
       setRpNotificationSound: (v) => set({ rpNotificationSound: v }),
       setGameNotificationSound: (v) => set({ gameNotificationSound: v }),
+      setNotificationSoundsOnlyWhenUnfocused: (v) => set({ notificationSoundsOnlyWhenUnfocused: v }),
       setConversationBrowserNotifications: (v) => set({ conversationBrowserNotifications: v }),
       setCustomConversationPrompt: (v) => set({ customConversationPrompt: v }),
       setScheduleGenerationPreferences: (v) => set({ scheduleGenerationPreferences: v }),
@@ -1807,7 +1918,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: "marinara-engine-ui",
-      version: 62,
+      version: 65,
       // Debounce localStorage writes to avoid sync I/O on every state change
       storage: createJSONStorage(() => {
         let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2157,6 +2268,18 @@ export const useUIStore = create<UIState>()(
         if (version <= 41 && persisted.gameNotificationSound === undefined) {
           persisted.gameNotificationSound = true;
         }
+        // v62 -> v63: optional focus-aware notification sounds.
+        if (version <= 62 && persisted.notificationSoundsOnlyWhenUnfocused === undefined) {
+          persisted.notificationSoundsOnlyWhenUnfocused = false;
+        }
+        // v63 -> v64: add the offline Custom music player volume.
+        if (version <= 63 && typeof persisted.localMusicPlayerVolume !== "number") {
+          persisted.localMusicPlayerVolume = 70;
+        }
+        // v64 -> v65: queue image generation requests by default for provider compatibility.
+        if (version <= 64 && persisted.queueImageGenerationRequests === undefined) {
+          persisted.queueImageGenerationRequests = true;
+        }
         // v42 -> v44: reconcile parallel v43 UI preference additions.
         if (version <= 43 && persisted.youtubePlayerEnabled === undefined) {
           persisted.youtubePlayerEnabled = true;
@@ -2172,7 +2295,11 @@ export const useUIStore = create<UIState>()(
         if (version <= 44) {
           const spotifyEnabled = persisted.spotifyPlayerEnabled === true;
           const youtubeEnabled = persisted.youtubePlayerEnabled !== false;
-          if (persisted.musicPlayerSource !== "spotify" && persisted.musicPlayerSource !== "youtube") {
+          if (
+            persisted.musicPlayerSource !== "spotify" &&
+            persisted.musicPlayerSource !== "youtube" &&
+            persisted.musicPlayerSource !== "custom"
+          ) {
             persisted.musicPlayerSource = spotifyEnabled ? "spotify" : "youtube";
           }
           if (persisted.musicPlayerEnabled === undefined) {
@@ -2228,8 +2355,21 @@ export const useUIStore = create<UIState>()(
           persisted.appAccentColorBeforeRgbMode = null;
         }
         persisted.characterLibrarySort = normalizeCharacterLibrarySort(persisted.characterLibrarySort);
+        persisted.characterPanelSearch = normalizePanelText(persisted.characterPanelSearch);
+        persisted.characterPanelIncludedTags = normalizePanelStringArray(persisted.characterPanelIncludedTags);
+        persisted.characterPanelExcludedTags = normalizePanelStringArray(persisted.characterPanelExcludedTags);
+        persisted.characterPanelTagsExpanded = persisted.characterPanelTagsExpanded === true;
+        persisted.characterPanelFavoriteFilter = normalizeCharacterPanelFavoriteFilter(persisted.characterPanelFavoriteFilter);
         persisted.characterPanelScrollTop = normalizeScrollTop(persisted.characterPanelScrollTop);
         persisted.characterLibraryScrollTop = normalizeScrollTop(persisted.characterLibraryScrollTop);
+        persisted.lorebookPanelCategory = normalizeLorebookPanelCategory(persisted.lorebookPanelCategory);
+        persisted.lorebookPanelSearch = normalizePanelText(persisted.lorebookPanelSearch);
+        persisted.lorebookPanelSort = normalizeLorebookPanelSort(persisted.lorebookPanelSort);
+        persisted.lorebookPanelActiveTag =
+          typeof persisted.lorebookPanelActiveTag === "string" && persisted.lorebookPanelActiveTag.trim()
+            ? persisted.lorebookPanelActiveTag.trim()
+            : null;
+        persisted.lorebookPanelTagsExpanded = persisted.lorebookPanelTagsExpanded === true;
         normalizePersistedMainSurface(persisted);
         if (Array.isArray(persisted.recentUserActivities)) {
           persisted.recentUserActivities = persisted.recentUserActivities
@@ -2281,8 +2421,18 @@ export const useUIStore = create<UIState>()(
         characterLibraryOpen: state.characterLibraryOpen,
         characterLibrarySelectedId: state.characterLibrarySelectedId,
         characterLibrarySort: state.characterLibrarySort,
+        characterPanelSearch: state.characterPanelSearch,
+        characterPanelIncludedTags: state.characterPanelIncludedTags,
+        characterPanelExcludedTags: state.characterPanelExcludedTags,
+        characterPanelTagsExpanded: state.characterPanelTagsExpanded,
+        characterPanelFavoriteFilter: state.characterPanelFavoriteFilter,
         characterPanelScrollTop: state.characterPanelScrollTop,
         characterLibraryScrollTop: state.characterLibraryScrollTop,
+        lorebookPanelCategory: state.lorebookPanelCategory,
+        lorebookPanelSearch: state.lorebookPanelSearch,
+        lorebookPanelSort: state.lorebookPanelSort,
+        lorebookPanelActiveTag: state.lorebookPanelActiveTag,
+        lorebookPanelTagsExpanded: state.lorebookPanelTagsExpanded,
         trackerPanelEnabled: state.trackerPanelEnabled,
         trackerPanelOpen: state.trackerPanelOpen,
         trackerPanelSide: state.trackerPanelSide,
@@ -2316,6 +2466,7 @@ export const useUIStore = create<UIState>()(
         gameDialogueDisplayMode: state.gameDialogueDisplayMode,
         gameTextSpeed: state.gameTextSpeed,
         gameAutoPlayDelay: state.gameAutoPlayDelay,
+        queueImageGenerationRequests: state.queueImageGenerationRequests,
         reviewImagePromptsBeforeSend: state.reviewImagePromptsBeforeSend,
         imageBackgroundWidth: state.imageBackgroundWidth,
         imageBackgroundHeight: state.imageBackgroundHeight,
@@ -2352,6 +2503,7 @@ export const useUIStore = create<UIState>()(
         spotifyPlayerEnabled: state.spotifyPlayerEnabled,
         youtubePlayerEnabled: state.youtubePlayerEnabled,
         youtubePlayerVolume: state.youtubePlayerVolume,
+        localMusicPlayerVolume: state.localMusicPlayerVolume,
         spotifyMobileWidgetCollapsed: state.spotifyMobileWidgetCollapsed,
         spotifyMobileWidgetPosition: state.spotifyMobileWidgetPosition,
         intuitiveSwipeNavigation: state.intuitiveSwipeNavigation,
@@ -2395,6 +2547,7 @@ export const useUIStore = create<UIState>()(
         convoNotificationSound: state.convoNotificationSound,
         rpNotificationSound: state.rpNotificationSound,
         gameNotificationSound: state.gameNotificationSound,
+        notificationSoundsOnlyWhenUnfocused: state.notificationSoundsOnlyWhenUnfocused,
         conversationBrowserNotifications: state.conversationBrowserNotifications,
         customConversationPrompt: state.customConversationPrompt,
         scheduleGenerationPreferences: state.scheduleGenerationPreferences,
