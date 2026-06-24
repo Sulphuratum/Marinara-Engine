@@ -1594,7 +1594,7 @@ export class MariDbService {
         const name = flagString(flags, "name")?.trim();
         if (!name) {
           throw new Error(
-            "Usage: mari personas create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--apply]",
+            "Usage: mari personas create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
           );
         }
         const timestamp = now();
@@ -1638,7 +1638,7 @@ export class MariDbService {
         const id = parsed.positionals[0];
         if (!id)
           throw new Error(
-            "Usage: mari personas update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--apply]",
+            "Usage: mari personas update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
           );
         const patch: Row = { updatedAt: now() };
         const fieldMap: Array<[string, string]> = [
@@ -1664,7 +1664,7 @@ export class MariDbService {
         }
         if (Object.keys(patch).length <= 1) {
           throw new Error(
-            "Provide at least one field to update (--name, --description, --personality, --scenario, --backstory, --appearance, --tags)",
+            "Provide at least one field to update (--name, --description, --personality, --scenario, --backstory, --appearance, --tags, --comment, --creator, --creator-notes)",
           );
         }
         const request: ParsedMutationRequest = {
@@ -1843,7 +1843,7 @@ export class MariDbService {
         const lorebookId = parsed.positionals[0];
         if (!lorebookId) {
           throw new Error(
-            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--apply]",
+            "Usage: mari lorebooks add-entry <lorebook-id> --name <name> [--content <text>] [--keys <k1,k2,...>] [--description <text>] [--apply] [--reason <text>]",
           );
         }
         const entryName = flagString(flags, "name")?.trim();
@@ -1888,7 +1888,7 @@ export class MariDbService {
           relationships: {},
           dynamicState: {},
           activationConditions: [],
-          preventRecursion: "false",
+          preventRecursion: "true",
           excludeRecursion: "false",
           delayUntilRecursion: "false",
           excludeFromVectorization: "false",
@@ -1935,7 +1935,11 @@ export class MariDbService {
             : [];
         }
         const orderVal = flagString(flags, "order");
-        if (orderVal !== undefined) entryPatch.order = Number(orderVal);
+        if (orderVal !== undefined) {
+          const order = Number(orderVal);
+          if (!Number.isFinite(order)) throw new Error("--order must be a finite number");
+          entryPatch.order = order;
+        }
         if (hasFlag(flags, "enable")) entryPatch.enabled = "true";
         if (hasFlag(flags, "disable")) entryPatch.enabled = "false";
         if (hasFlag(flags, "constant")) entryPatch.constant = "true";
@@ -2945,7 +2949,7 @@ export class MariDbService {
       "Images/media:        mari images connections|preview|generate|edit|assign|delete|list",
       "Creative data:       mari characters list|get|search|create|update|delete",
       "Creative data:       mari personas list|active|get|search|create|update|delete",
-      "Creative data:       mari lorebooks list|get|entries|search|create|update|add-entry|link-character|unlink-character|delete",
+      "Creative data:       mari lorebooks list|get|entries|search|create|update|add-entry|update-entry|delete-entry|link-character|unlink-character|delete",
       "Chats (read-only):   mari chats list|get|messages|search",
       "Fandom/wiki reads:   mari wiki find-wikis|search-all|search|get-page|sections|category|site-info",
       "Discovery:           mari <group> --help or mari <group> <command> --help",
@@ -2974,8 +2978,8 @@ export class MariDbService {
       "Read:  active",
       "Read:  get <id>",
       "Read:  search <query> [--limit <n>]",
-      "Write: create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--apply] [--reason <text>]",
-      "Write: update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--apply] [--reason <text>]",
+      "Write: create --name <name> [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
+      "Write: update <id> [--name <name>] [--description <text>] [--personality <text>] [--scenario <text>] [--backstory <text>] [--appearance <text>] [--tags <t1,t2,...>] [--comment <text>] [--creator <text>] [--creator-notes <text>] [--apply] [--reason <text>]",
       "Write: delete <id> [--apply] [--reason <text>]",
       "Writes dry-run by default; --apply requests browser approval.",
     ].join("\n");

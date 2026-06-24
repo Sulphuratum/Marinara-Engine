@@ -50,6 +50,8 @@ import {
   Loader2,
 } from "lucide-react";
 import {
+  ROLEPLAY_POPOVER_CLOSE_BUTTON,
+  ROLEPLAY_POPOVER_CLOSE_ICON_SIZE,
   ROLEPLAY_POPOVER_HEADER,
   ROLEPLAY_POPOVER_SCROLL_AREA,
   ROLEPLAY_POPOVER_SHELL,
@@ -214,8 +216,9 @@ import {
   buildInitialAgentAddSetupState,
   type AgentAddSetupState,
   type AgentAddSpriteSubject,
+  type MusicProvider,
 } from "./AgentAddSetupFields";
-import { GameWidgetSetupEditor, normalizeGameHudWidgets } from "../game/GameWidgetSetupEditor";
+import { GameWidgetFileControls, GameWidgetSetupEditor, normalizeGameHudWidgets } from "../game/GameWidgetSetupEditor";
 
 interface ChatSettingsDrawerProps {
   chat: Chat;
@@ -239,6 +242,17 @@ const SPOTIFY_SOURCE_OPTIONS: Array<{ id: SpotifySourceType; label: string; desc
   { id: "artist", label: "Artist", description: "Search only around a named artist, like HOYO-MiX." },
   { id: "any", label: "Any Spotify", description: "Let the DJ use Spotify search when it fits." },
 ];
+
+function getMusicProviderLabel(provider: MusicProvider): string {
+  return provider === "spotify" ? "Spotify" : provider === "youtube" ? "YouTube" : "Custom";
+}
+
+function normalizeCustomMusicFolder(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim().replace(/\\/g, "/") : "";
+  const normalized = raw.replace(/^\/+/, "").replace(/\/+$/g, "");
+  if (!normalized || normalized.includes("..")) return "music";
+  return normalized.startsWith("music") ? normalized : `music/${normalized}`;
+}
 
 const AUTONOMOUS_DAILY_CAP_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 
@@ -593,6 +607,7 @@ export function ChatSettingsDrawer({
   onSpriteVisualSettingsChange,
 }: ChatSettingsDrawerProps) {
   const qc = useQueryClient();
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const scheduleControlsRef = useRef<HTMLDivElement | null>(null);
   const modePromptDefaultAppliedRef = useRef<string | null>(null);
   const updateChat = useUpdateChat();
@@ -614,6 +629,7 @@ export function ChatSettingsDrawer({
   const imageSelfieHeight = useUIStore((s) => s.imageSelfieHeight);
   const imageStyleProfiles = useUIStore((s) => s.imageStyleProfiles);
   const musicPlayerSource = useUIStore((s) => s.musicPlayerSource);
+  const setMusicPlayerSource = useUIStore((s) => s.setMusicPlayerSource);
   const openToolDetail = useUIStore((s) => s.openToolDetail);
   const openPresetDetail = useUIStore((s) => s.openPresetDetail);
 
@@ -909,6 +925,8 @@ export function ChatSettingsDrawer({
   const gameSpotifyPlaylistId =
     typeof metadata.gameSpotifyPlaylistId === "string" ? metadata.gameSpotifyPlaylistId : "";
   const gameSpotifyArtist = typeof metadata.gameSpotifyArtist === "string" ? metadata.gameSpotifyArtist : "";
+  const musicDjSettings = mergeBuiltInAgentSettings("spotify", agentConfigsByType.get("spotify")?.settings);
+  const customMusicFolder = normalizeCustomMusicFolder(metadata.customMusicFolder ?? musicDjSettings.customMusicFolder);
   const gameMusicDjEnabled =
     metadata.gameUseMusicDj === true || gameUseSpotifyMusic || activeAgentIds.includes("youtube");
   const spriteCharacterIds: string[] = Array.isArray(metadata.spriteCharacterIds) ? metadata.spriteCharacterIds : [];
@@ -2402,7 +2420,8 @@ export function ChatSettingsDrawer({
     const nextEnabledTools = nextSettings.enabledTools;
     if (
       builtInMeta &&
-      (!Array.isArray(nextEnabledTools) || (agent.id === "spotify" && nextEnabledTools.length === 0))
+      (!Array.isArray(nextEnabledTools) ||
+        (agent.id === "spotify" && nextSettings.musicProvider === "spotify" && nextEnabledTools.length === 0))
     ) {
       nextSettings.enabledTools = DEFAULT_AGENT_TOOLS[agent.id] ?? [];
     }
@@ -2410,14 +2429,13 @@ export function ChatSettingsDrawer({
     setAddingAgentToChat(true);
     try {
       if (config) {
-        await updateAgentConfig.mutateAsync({ id: config.id, enabled: true, settings: nextSettings });
+        await updateAgentConfig.mutateAsync({ id: config.id, settings: nextSettings });
       } else if (builtInMeta) {
         await createAgent.mutateAsync({
           type: builtInMeta.id,
           name: agent.name,
           description: agent.description,
           phase: normalizeAgentPhaseForType(agent.id, agent.phase),
-          enabled: true,
           connectionId: null,
           promptTemplate: "",
           settings: nextSettings,
@@ -2432,6 +2450,7 @@ export function ChatSettingsDrawer({
           allowSecretPlot: supportsNarrativeDirectorSecretPlot,
         }),
       });
+      toast.success(`Added ${agent.name}! You can access its settings in Agents section in Chat Settings!`);
       setAgentAddPreview(null);
     } catch (error) {
       await showAlertDialog({
@@ -2444,7 +2463,7 @@ export function ChatSettingsDrawer({
   };
 
   const ensureMusicDjAgent = useCallback(
-    async (provider: "spotify" | "youtube") => {
+    async (provider: MusicProvider) => {
       const builtInMeta = BUILT_IN_AGENTS.find((entry) => entry.id === "spotify");
       if (!builtInMeta) throw new Error("Music DJ agent metadata is missing.");
       const config = agentConfigsByType.get("spotify") ?? null;
@@ -2452,11 +2471,12 @@ export function ChatSettingsDrawer({
         ...mergeBuiltInAgentSettings("spotify", config?.settings),
         musicProvider: provider,
         musicPlayerSource: provider,
-        enabledTools: provider === "youtube" ? [] : (DEFAULT_AGENT_TOOLS.spotify ?? []),
+        customMusicFolder,
+        enabledTools: provider === "spotify" ? (DEFAULT_AGENT_TOOLS.spotify ?? []) : [],
       };
 
       if (config) {
-        await updateAgentConfig.mutateAsync({ id: config.id, enabled: true, settings: nextSettings });
+        await updateAgentConfig.mutateAsync({ id: config.id, settings: nextSettings });
         return;
       }
 
@@ -2465,22 +2485,60 @@ export function ChatSettingsDrawer({
         name: builtInMeta.name,
         description: builtInMeta.description,
         phase: normalizeAgentPhaseForType(builtInMeta.id, builtInMeta.phase),
-        enabled: true,
         connectionId: null,
         promptTemplate: "",
         settings: nextSettings,
       });
     },
-    [agentConfigsByType, createAgent, updateAgentConfig],
+    [agentConfigsByType, createAgent, customMusicFolder, updateAgentConfig],
+  );
+
+  const changeMusicDjProvider = useCallback(
+    async (provider: MusicProvider) => {
+      setMusicPlayerSource(provider);
+      const musicDjActive = gameMusicDjEnabled || activeAgentIds.includes("spotify");
+      if (!musicDjActive) return;
+      try {
+        await ensureMusicDjAgent(provider);
+        if (isGame && gameMusicDjEnabled) {
+          updateMeta.mutate({
+            id: chat.id,
+            gameUseSpotifyMusic: provider === "spotify",
+          });
+        }
+      } catch (error) {
+        await showAlertDialog({
+          title: "Couldn't Update Music DJ",
+          message: error instanceof Error ? error.message : "Music DJ provider could not be updated.",
+        });
+      }
+    },
+    [activeAgentIds, chat.id, ensureMusicDjAgent, gameMusicDjEnabled, isGame, setMusicPlayerSource, updateMeta],
+  );
+
+  const saveCustomMusicFolder = useCallback(
+    async (value: string) => {
+      const folder = normalizeCustomMusicFolder(value);
+      updateMeta.mutate({ id: chat.id, customMusicFolder: folder });
+      const config = agentConfigsByType.get("spotify") ?? null;
+      if (!config) return;
+      const nextSettings = {
+        ...mergeBuiltInAgentSettings("spotify", config.settings),
+        customMusicFolder: folder,
+      };
+      await updateAgentConfig.mutateAsync({ id: config.id, settings: nextSettings });
+    },
+    [agentConfigsByType, chat.id, updateAgentConfig, updateMeta],
   );
 
   const toggleGameMusicDj = useCallback(async () => {
+    const latestActiveAgentIds = readLatestActiveAgentIds();
     if (gameMusicDjEnabled) {
       await updateMeta.mutateAsync({
         id: chat.id,
         gameUseMusicDj: false,
         gameUseSpotifyMusic: false,
-        activeAgentIds: activeAgentIds.filter((id) => id !== "spotify" && id !== "youtube"),
+        activeAgentIds: latestActiveAgentIds.filter((id) => id !== "spotify" && id !== "youtube"),
       });
       return;
     }
@@ -2493,7 +2551,7 @@ export function ChatSettingsDrawer({
         gameUseMusicDj: true,
         gameUseSpotifyMusic: musicPlayerSource === "spotify",
         gameSpotifySourceType,
-        activeAgentIds: Array.from(new Set([...activeAgentIds.filter((id) => id !== "youtube"), "spotify"])),
+        activeAgentIds: Array.from(new Set([...latestActiveAgentIds.filter((id) => id !== "youtube"), "spotify"])),
       });
     } catch (error) {
       await showAlertDialog({
@@ -2505,12 +2563,12 @@ export function ChatSettingsDrawer({
       });
     }
   }, [
-    activeAgentIds,
     chat.id,
     ensureMusicDjAgent,
     gameMusicDjEnabled,
     gameSpotifySourceType,
     musicPlayerSource,
+    readLatestActiveAgentIds,
     updateMeta,
   ]);
 
@@ -2525,7 +2583,8 @@ export function ChatSettingsDrawer({
   }, [chat.id, gameWidgetDrafts, updateGameWidgets]);
 
   const toggleGameLorebookKeeper = useCallback(() => {
-    const nextActiveAgentIds = activeAgentIds.filter((id) => id !== "lorebook-keeper");
+    const latestActiveAgentIds = readLatestActiveAgentIds();
+    const nextActiveAgentIds = latestActiveAgentIds.filter((id) => id !== "lorebook-keeper");
     if (gameLorebookKeeperEnabled) {
       const keeperLorebookIds = new Set(
         ((lorebooks ?? []) as Lorebook[])
@@ -2548,12 +2607,12 @@ export function ChatSettingsDrawer({
       activeAgentIds: nextActiveAgentIds,
     });
   }, [
-    activeAgentIds,
     activeLorebookIds,
     chat.id,
     gameLorebookKeeperEnabled,
     gameLorebookKeeperLorebookId,
     lorebooks,
+    readLatestActiveAgentIds,
     updateMeta,
   ]);
 
@@ -2853,23 +2912,41 @@ export function ChatSettingsDrawer({
     );
   };
 
+  useEffect(() => {
+    if (!open || typeof document === "undefined") return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (panelRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-chat-floating-panel]")) return;
+      onClose();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [onClose, open]);
+
   if (!open) return null;
-  const backdropStyle: CSSProperties = {
-    left: "var(--mari-chat-ui-inset-left, 0px)",
-    right: "var(--mari-chat-ui-inset-right, 0px)",
-    top: anchor ? `${anchor.top}px` : "3.5rem",
-    bottom: 0,
-  };
+  const anchoredOnMobile = !!anchor && typeof window !== "undefined" && window.innerWidth < 768;
   const panelStyle: CSSProperties | undefined = anchor
-    ? { right: `calc(var(--mari-chat-ui-inset-right, 0px) + ${anchor.right}px)`, top: `${anchor.top}px` }
+    ? anchoredOnMobile
+      ? {
+          bottom: "auto",
+          left: "auto",
+          maxHeight: `min(42rem, calc(100dvh - ${anchor.top}px - 0.75rem - env(safe-area-inset-bottom)))`,
+          right: `${anchor.right}px`,
+          top: `${anchor.top}px`,
+          width: `min(34rem, calc(100vw - ${anchor.right}px - 0.75rem))`,
+        }
+      : { right: `${anchor.right}px`, top: `${anchor.top}px` }
     : undefined;
 
   return (
     <>
-      <div data-chat-floating-panel className="fixed z-[65] bg-transparent" style={backdropStyle} onClick={onClose} />
-
       {/* Floating panel */}
       <div
+        ref={panelRef}
         data-chat-floating-panel
         className={cn(
           ROLEPLAY_POPOVER_SHELL,
@@ -2887,10 +2964,12 @@ export function ChatSettingsDrawer({
             Chat Settings
           </h3>
           <button
+            type="button"
             onClick={onClose}
-            className="rounded-lg p-1.5 text-[var(--muted-foreground)] transition-all hover:bg-[var(--accent)]"
+            aria-label="Close chat settings"
+            className={ROLEPLAY_POPOVER_CLOSE_BUTTON}
           >
-            <X size="1rem" />
+            <X size={ROLEPLAY_POPOVER_CLOSE_ICON_SIZE} />
           </button>
         </div>
 
@@ -5225,10 +5304,31 @@ export function ChatSettingsDrawer({
                   >
                     <AgentSettingsToggle
                       label="Music DJ"
-                      description={`Active player: ${musicPlayerSource === "spotify" ? "Spotify" : "YouTube"}.`}
+                      description={`Active player: ${getMusicProviderLabel(musicPlayerSource)}.`}
                       enabled={gameMusicDjEnabled}
                       onToggle={() => void toggleGameMusicDj()}
                     />
+
+                    <div className="grid grid-cols-3 gap-1 rounded-xl border border-[var(--border)] bg-[var(--background)]/65 p-1">
+                      {(["spotify", "youtube", "custom"] as const).map((provider) => {
+                        const active = musicPlayerSource === provider;
+                        return (
+                          <button
+                            key={provider}
+                            type="button"
+                            onClick={() => void changeMusicDjProvider(provider)}
+                            className={cn(
+                              "rounded-lg px-2 py-1.5 text-[0.625rem] font-semibold transition-colors",
+                              active
+                                ? "bg-[var(--primary)]/18 text-[var(--foreground)] shadow-sm"
+                                : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                            )}
+                          >
+                            {getMusicProviderLabel(provider)}
+                          </button>
+                        );
+                      })}
+                    </div>
 
                     {gameMusicDjEnabled && musicPlayerSource === "spotify" && (
                       <div className="space-y-2">
@@ -5340,6 +5440,25 @@ export function ChatSettingsDrawer({
                           </label>
                         )}
                       </div>
+                    )}
+
+                    {gameMusicDjEnabled && musicPlayerSource === "custom" && (
+                      <label className="flex flex-col gap-1">
+                        <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                          Custom music folder
+                        </span>
+                        <input
+                          key={`${chat.id}-game-custom-music-${customMusicFolder}`}
+                          defaultValue={customMusicFolder}
+                          onBlur={(event) => void saveCustomMusicFolder(event.target.value)}
+                          placeholder="music"
+                          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 font-mono text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]/50"
+                        />
+                        <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                          Reads local audio from Game Assets, for example <code>music</code> or{" "}
+                          <code>music/combat</code>.
+                        </span>
+                      </label>
                     )}
                   </AgentSettingsCard>
                 )}
@@ -6023,8 +6142,29 @@ export function ChatSettingsDrawer({
                         onRemove={getRoleplayAgentMenuRemoveHandler("spotify", musicDjAgentMeta.name)}
                       >
                         <p className="text-[0.55rem] text-[var(--muted-foreground)]/80">
-                          Active player: {musicPlayerSource === "spotify" ? "Spotify" : "YouTube"}.
+                          Active player: {getMusicProviderLabel(musicPlayerSource)}.
                         </p>
+
+                        <div className="grid grid-cols-3 gap-1 rounded-xl border border-[var(--border)] bg-[var(--background)]/65 p-1">
+                          {(["spotify", "youtube", "custom"] as const).map((provider) => {
+                            const active = musicPlayerSource === provider;
+                            return (
+                              <button
+                                key={provider}
+                                type="button"
+                                onClick={() => void changeMusicDjProvider(provider)}
+                                className={cn(
+                                  "rounded-lg px-2 py-1.5 text-[0.625rem] font-semibold transition-colors",
+                                  active
+                                    ? "bg-[var(--primary)]/18 text-[var(--foreground)] shadow-sm"
+                                    : "text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]",
+                                )}
+                              >
+                                {getMusicProviderLabel(provider)}
+                              </button>
+                            );
+                          })}
+                        </div>
 
                         {musicPlayerSource === "spotify" && (
                           <>
@@ -6142,10 +6282,31 @@ export function ChatSettingsDrawer({
                           </>
                         )}
 
+                        {musicPlayerSource === "custom" && (
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
+                              Custom music folder
+                            </span>
+                            <input
+                              key={`${chat.id}-roleplay-custom-music-${customMusicFolder}`}
+                              defaultValue={customMusicFolder}
+                              onBlur={(event) => void saveCustomMusicFolder(event.target.value)}
+                              placeholder="music"
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2.5 py-2 font-mono text-xs text-[var(--foreground)] placeholder:text-[var(--muted-foreground)]/50"
+                            />
+                            <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
+                              Reads local audio from Game Assets, for example <code>music</code> or{" "}
+                              <code>music/combat</code>.
+                            </span>
+                          </label>
+                        )}
+
                         <p className="text-[0.625rem] text-[var(--muted-foreground)]">
                           {musicPlayerSource === "spotify"
                             ? "Roleplay DJ queues several fitting tracks when it changes music."
-                            : "YouTube mode uses the Music DJ agent's YouTube connection and embedded player."}
+                            : musicPlayerSource === "youtube"
+                              ? "YouTube mode uses the Music DJ agent's YouTube connection and embedded player."
+                              : "Custom mode picks from local Game Assets music and plays it in Marinara Engine."}
                         </p>
                       </AgentSettingsCard>
                     )}
@@ -6376,15 +6537,17 @@ export function ChatSettingsDrawer({
                                 <div key={agent.id} className="space-y-1.5">
                                   <button
                                     onClick={() => {
+                                      const latestActiveAgentIds = readLatestActiveAgentIds();
                                       if (active) {
                                         updateMeta.mutate({
                                           id: chat.id,
-                                          activeAgentIds: activeAgentIds.filter((id) => id !== agent.id),
+                                          activeAgentIds: latestActiveAgentIds.filter((id) => id !== agent.id),
                                         });
                                       } else {
                                         updateMeta.mutate({
                                           id: chat.id,
-                                          activeAgentIds: [...activeAgentIds, agent.id],
+                                          enableAgents: true,
+                                          activeAgentIds: Array.from(new Set([...latestActiveAgentIds, agent.id])),
                                         });
                                       }
                                     }}
@@ -6492,7 +6655,7 @@ export function ChatSettingsDrawer({
 
                         {visibleActiveAgentIds.length === 0 && (
                           <p className="text-[0.6875rem] text-[var(--muted-foreground)] px-1">
-                            No per-chat agent overrides. Workspace default agents will be used for this chat.
+                            No agents are active for this chat yet. Add one below to let it run here.
                           </p>
                         )}
 
@@ -6649,6 +6812,15 @@ export function ChatSettingsDrawer({
                     <span>{updateGameWidgets.isPending ? "Saving..." : "Save Widgets"}</span>
                   </button>
                 </div>
+                <GameWidgetFileControls
+                  widgets={gameWidgetDrafts}
+                  onImport={(widgets) => setGameWidgetDrafts(normalizeGameHudWidgets(widgets))}
+                  disabled={updateGameWidgets.isPending}
+                  exportFilename={`${chat.name || "game"}-widgets`}
+                  importSuccessMessage={(count) =>
+                    `Imported ${count === 1 ? "1 widget" : `${count} widgets`}. Save Widgets to apply them.`
+                  }
+                />
               </div>
             </Section>
           )}
@@ -6833,6 +7005,7 @@ export function ChatSettingsDrawer({
         presetId={choiceModalPresetId}
         chatId={chat.id}
         existingChoices={metadata.presetChoices ?? {}}
+        chatFloatingPanel
       />
 
       {/* Automatic summarization editor */}
@@ -6852,6 +7025,7 @@ export function ChatSettingsDrawer({
         }}
         title={agentAddPreview ? `Add ${agentAddPreview.agent.name}` : "Add Agent"}
         width="max-w-lg"
+        chatFloatingPanel
       >
         {agentAddPreview && (
           <div className="space-y-4">
