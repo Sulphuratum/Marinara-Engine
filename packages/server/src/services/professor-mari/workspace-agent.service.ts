@@ -28,11 +28,13 @@ import { decryptApiKey } from "../../utils/crypto.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { logger } from "../../lib/logger.js";
 import {
+  GENERATION_PARAMETER_SEND_KEYS,
   findKnownModel,
   LOCAL_SIDECAR_CONNECTION_ID,
   MODEL_LISTS,
   PROFESSOR_MARI_ID,
   type APIProvider,
+  type GenerationParameterSendMap,
 } from "@marinara-engine/shared";
 import type {
   MariDbCommandResult,
@@ -366,6 +368,31 @@ function parseJsonObject(value: unknown): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+function normalizeGenerationParameterSendMap(value: unknown): GenerationParameterSendMap | undefined {
+  if (!isRecord(value)) return undefined;
+  const enabledParameters: GenerationParameterSendMap = {};
+  for (const key of GENERATION_PARAMETER_SEND_KEYS) {
+    if (typeof value[key] === "boolean") enabledParameters[key] = value[key];
+  }
+  return Object.keys(enabledParameters).length > 0 ? enabledParameters : undefined;
+}
+
+function normalizeMariReasoningEffort(value: unknown): ChatOptions["reasoningEffort"] | undefined {
+  if (value === "maximum") return "xhigh";
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max") {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeMariVerbosity(value: unknown): ChatOptions["verbosity"] | undefined {
+  return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
+function normalizeMariMaxTokens(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function parseExtra(value: unknown): Record<string, unknown> {
@@ -1210,7 +1237,8 @@ export class ProfessorMariWorkspaceService {
 
       for (let round = 0; round < MAX_COMMAND_ROUNDS; round += 1) {
         if (controller.signal.aborted) throw new Error("aborted");
-        const result = await this.chatCompleteWorkspace(provider, messages, baseOptions);
+        const onToken = (chunk: string) => args.onEvent({ type: "token", data: chunk });
+      const result = await this.chatCompleteWorkspace(provider, messages, baseOptions, onToken);
         const usage = mapUsage(result.usage);
         totalUsage = {
           promptTokens: totalUsage.promptTokens + usage.promptTokens,
@@ -1273,7 +1301,6 @@ export class ProfessorMariWorkspaceService {
         if (action.visibleText) {
           assistantText = appendVisibleText(assistantText, action.visibleText);
           appendTraceText(workspaceTrace, `${action.visibleText}\n`);
-          for (const chunk of chunkText(`${action.visibleText}\n`)) args.onEvent({ type: "token", data: chunk });
         }
 
         messages.push({ role: "assistant", content: action.assistantHistoryContent });
@@ -1305,7 +1332,7 @@ export class ProfessorMariWorkspaceService {
             content:
               "You reached the workspace command round limit. Do not issue more commands. Summarize what you learned or what remains blocked.",
           });
-          const finalResult = await this.chatCompleteWorkspace(provider, messages, baseOptions);
+          const finalResult = await this.chatCompleteWorkspace(provider, messages, baseOptions, onToken);
           const finalUsage = mapUsage(finalResult.usage);
           totalUsage = {
             promptTokens: totalUsage.promptTokens + finalUsage.promptTokens,
@@ -1316,7 +1343,6 @@ export class ProfessorMariWorkspaceService {
           if (finalAction.visibleText) {
             assistantText = appendVisibleText(assistantText, finalAction.visibleText);
             appendTraceText(workspaceTrace, finalAction.visibleText);
-            for (const chunk of chunkText(finalAction.visibleText)) args.onEvent({ type: "token", data: chunk });
           } else if (finalAction.commands.length > 0) {
             const content =
               "Professor Mari tried to run more workspace commands after the command limit, so I stopped the loop. Ask her to continue if you want her to keep working from the saved trace.";
@@ -1434,16 +1460,22 @@ ${sections.join("\n\n")}
     onThinking: (delta: string) => void,
   ): ChatOptions {
     const defaultParameters = parseJsonObject(connection.defaultParameters);
+    const customParameters = isRecord(defaultParameters?.customParameters) ? defaultParameters.customParameters : {};
+    const reasoningEffort = normalizeMariReasoningEffort(defaultParameters?.reasoningEffort);
+    const verbosity = normalizeMariVerbosity(defaultParameters?.verbosity);
     return {
       model: connection.model,
       temperature: typeof defaultParameters?.temperature === "number" ? defaultParameters.temperature : 0.2,
-      maxTokens: resolveMariMaxOutputTokens(connection),
+      maxTokens: normalizeMariMaxTokens(defaultParameters?.maxTokens) ?? resolveMariMaxOutputTokens(connection),
       maxContext: connection.maxContext,
       enableCaching: bool(connection.enableCaching),
       cachingAtDepth: connection.cachingAtDepth ?? 5,
       serviceTier: normalizeServiceTier(defaultParameters?.serviceTier),
       openrouterProvider: connection.openrouterProvider,
-      customParameters: mergeCustomParameters(defaultParameters, null),
+      customParameters: mergeCustomParameters(customParameters, null),
+      enabledParameters: normalizeGenerationParameterSendMap(defaultParameters?.enabledParameters),
+      reasoningEffort,
+      verbosity,
       signal,
       onThinking,
     };
@@ -1453,8 +1485,26 @@ ${sections.join("\n\n")}
     provider: BaseLLMProvider,
     messages: ChatMessage[],
     baseOptions: ChatOptions,
+    onToken?: (chunk: string) => void,
   ): Promise<ChatCompletionResult> {
-    return provider.chatComplete(messages, { ...baseOptions, stream: false });
+    const options: ChatOptions = onToken
+      ? {
+          ...baseOptions,
+          onToken: createWorkspaceStreamExtractor(onToken, baseOptions.onThinking ?? (() => {})),
+        }
+      : { ...baseOptions };
+    logger.debug(
+      "\n[debug/professor-mari] Prompt sent to model (%d messages):\n  Model: %s  Temp: %s  MaxTokens: %s  MaxContext: %s  Effort: %s  Verbosity: %s  CustomParameterKeys: %s",
+      messages.length,
+      options.model,
+      options.enabledParameters?.temperature === false ? "disabled" : (options.temperature ?? "default"),
+      options.enabledParameters?.maxTokens === false ? "disabled" : (options.maxTokens ?? "default"),
+      options.maxContext ?? "default",
+      options.enabledParameters?.reasoningEffort === false ? "disabled" : (options.reasoningEffort ?? "none"),
+      options.enabledParameters?.verbosity === false ? "disabled" : (options.verbosity ?? "default"),
+      Object.keys(options.customParameters ?? {}).join(",") || "none",
+    );
+    return provider.chatComplete(messages, options);
   }
 
   private async executeWorkspaceCommandBatch(
@@ -1955,6 +2005,73 @@ function appendVisibleText(current: string, next: string): string {
   if (!current.trim()) return next.trimEnd();
   if (!next.trim()) return current;
   return `${current.trimEnd()}\n\n${next.trim()}`;
+}
+
+// Extracts and streams a single named string field from a JSON object as tokens arrive,
+// forwarding each character to the provided sink as it is encountered.
+function createJsonFieldStreamExtractor(
+  fieldName: string,
+  onChunk: (chunk: string) => void,
+): (chunk: string) => void {
+  const pattern = new RegExp(`"${fieldName}"\\s*:\\s*"`);
+  let buffer = "";
+  let state: "seeking" | "in_value" | "done" = "seeking";
+
+  return (chunk: string) => {
+    if (state === "done") return;
+    buffer += chunk;
+
+    if (state === "seeking") {
+      const match = buffer.match(pattern);
+      if (!match) {
+        if (buffer.length > fieldName.length + 10) buffer = buffer.slice(-(fieldName.length + 10));
+        return;
+      }
+      buffer = buffer.slice(match.index! + match[0].length);
+      state = "in_value";
+    }
+
+    if (state === "in_value") {
+      let text = "";
+      let index = 0;
+      while (index < buffer.length) {
+        const char = buffer[index]!;
+        if (char === "\\") {
+          const next = buffer[index + 1];
+          if (next === undefined) break;
+          if (next === "n") text += "\n";
+          else if (next === "r") text += "\r";
+          else if (next === "t") text += "\t";
+          else text += next;
+          index += 2;
+        } else if (char === '"') {
+          state = "done";
+          if (text) onChunk(text);
+          buffer = "";
+          return;
+        } else {
+          text += char;
+          index += 1;
+        }
+      }
+      if (text) onChunk(text);
+      buffer = buffer.slice(index);
+    }
+  };
+}
+
+// Fans incoming token chunks out to multiple per-field extractors simultaneously.
+function createWorkspaceStreamExtractor(
+  onToken: (chunk: string) => void,
+  onThinking: (chunk: string) => void,
+): (chunk: string) => void {
+  const sayExtractor = createJsonFieldStreamExtractor("say", onToken);
+  const reasoningExtractor = createJsonFieldStreamExtractor("reasoning_content", onThinking);
+
+  return (chunk: string) => {
+    sayExtractor(chunk);
+    reasoningExtractor(chunk);
+  };
 }
 
 let singleton: ProfessorMariWorkspaceService | null = null;
