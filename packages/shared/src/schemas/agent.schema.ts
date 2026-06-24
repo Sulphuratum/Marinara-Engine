@@ -24,6 +24,7 @@ export const agentResultTypeSchema = z.enum([
   "custom_tracker_update",
   "spotify_control",
   "youtube_control",
+  "local_music_control",
   "haptic_command",
   "cyoa_choices",
   "secret_plot",
@@ -45,7 +46,8 @@ export const createAgentConfigSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().default(""),
   phase: agentPhaseSchema,
-  enabled: z.boolean().default(true),
+  /** Legacy compatibility only. Agent activation is chat-scoped via chat metadata. */
+  enabled: z.boolean().optional(),
   connectionId: z.string().nullable().default(null),
   imagePath: z.string().nullable().default(null),
   resultType: agentResultTypeSchema.optional(),
