@@ -9,6 +9,7 @@ import {
   DEFAULT_GAME_SYSTEM_PROMPT,
   wrapConversationInstructions,
   unwrapConversationInstructions,
+  type GenerationParameterSendMap,
   type LorebookEntryTimingState,
 } from "@marinara-engine/shared";
 import { randomUUID } from "crypto";
@@ -20,7 +21,7 @@ import { createLorebooksStorage } from "../../services/storage/lorebooks.storage
 import { createRegexScriptsStorage } from "../../services/storage/regex-scripts.storage.js";
 import { buildImpersonateInstruction } from "../../services/conversation/impersonate-prompt.js";
 import { processLorebooks } from "../../services/lorebook/index.js";
-import { resolveGameLorebookScopeExclusions } from "../../services/lorebook/game-lorebook-scope.js";
+import { resolveLorebookScopeExclusions } from "../../services/lorebook/game-lorebook-scope.js";
 import { injectAtDepth } from "../../services/lorebook/prompt-injector.js";
 import { createLLMProvider } from "../../services/llm/provider-registry.js";
 import { getLocalSidecarProvider } from "../../services/llm/local-sidecar.js";
@@ -596,6 +597,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
     let serviceTier: "flex" | "priority" | null = null;
     let assistantPrefill = "";
     let customParameters: Record<string, unknown> = {};
+    let enabledParameters: GenerationParameterSendMap | undefined;
     let effectiveMaxContext = modelAccessPolicy.effectiveMaxContext;
 
     const connectionParams = parseStoredGenerationParameters(conn.defaultParameters);
@@ -615,6 +617,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       if (params.serviceTier !== undefined) serviceTier = normalizeServiceTier(params.serviceTier);
       if (typeof params.assistantPrefill === "string") assistantPrefill = params.assistantPrefill;
       customParameters = mergeCustomParameters(customParameters, params.customParameters);
+      if (params.enabledParameters) enabledParameters = { ...(enabledParameters ?? {}), ...params.enabledParameters };
 
       effectiveMaxContext = mergeModelContextLimit(
         modelAccessPolicy,
@@ -680,7 +683,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       userMessage,
       attachments: body.attachments,
     });
-    const lorebookScopeExclusions = resolveGameLorebookScopeExclusions(chatMode, chatMeta);
+    const lorebookScopeExclusions = resolveLorebookScopeExclusions(chatMode, chatMeta);
     const lorebookTokenBudget = resolveDryRunLorebookTokenBudget(chatMeta);
     if (!impersonate && userMessage.trim()) {
       chatMessages = [
@@ -1321,6 +1324,9 @@ export async function registerDryRunRoute(app: FastifyInstance) {
       serviceTier = assembled.parameters.serviceTier ?? null;
       assistantPrefill = assembled.parameters.assistantPrefill ?? "";
       customParameters = mergeCustomParameters(customParameters, assembled.parameters.customParameters);
+      if (assembled.parameters.enabledParameters) {
+        enabledParameters = { ...(enabledParameters ?? {}), ...assembled.parameters.enabledParameters };
+      }
 
       effectiveMaxContext = mergeModelContextLimit(
         modelAccessPolicy,
@@ -1721,6 +1727,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
           verbosity: verbosity ?? undefined,
           serviceTier,
           customParameters,
+          enabledParameters,
           suppressModelParameters,
           onToken,
           signal: abortController.signal,
@@ -1784,6 +1791,7 @@ export async function registerDryRunRoute(app: FastifyInstance) {
         verbosity: verbosity ?? undefined,
         serviceTier,
         customParameters,
+        enabledParameters,
         suppressModelParameters,
         signal: abortController.signal,
       });

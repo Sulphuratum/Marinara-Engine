@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import {
+  GENERATION_PARAMETER_SEND_KEYS,
   PROVIDERS,
   SUMMARY_TAIL_MESSAGES,
   applyTrackerFieldLocksToGameStatePatch,
@@ -9,6 +10,7 @@ import {
   parseTrackerFieldLocks,
   type CharacterStat,
   type GameState,
+  type GenerationParameterSendMap,
   type GenerationParameters,
   type InventoryItem,
   type PlayerStats,
@@ -948,7 +950,16 @@ export function shouldInjectIdentityFallback({
   chatMode: string;
   presetId: string | null | undefined;
 }): boolean {
-  return chatMode !== "game" && !presetId;
+  if (chatMode === "game") return false;
+  // Conversation mode never runs the preset assembler (it is excluded from the
+  // assemblePrompt path), so the preset only supplies the conversation prompt
+  // text — it never injects character/persona card info. Without the identity
+  // fallback, selecting a prompt preset leaves the model with only the
+  // character names and no description/personality. Always inject the fallback
+  // for conversation mode; the injector self-guards against duplicating a
+  // profile that a custom prompt already contains.
+  if (chatMode === "conversation") return true;
+  return !presetId;
 }
 
 /** Parse connection/chat stored generation parameters without injecting schema defaults. */
@@ -1022,6 +1033,13 @@ export function parseStoredGenerationParameters(raw: unknown): StoredGenerationP
   }
   if (isPlainRecord(source.customParameters)) {
     out.customParameters = mergeCustomParameters({}, source.customParameters);
+  }
+  if (isPlainRecord(source.enabledParameters)) {
+    const enabledParameters: GenerationParameterSendMap = {};
+    for (const key of GENERATION_PARAMETER_SEND_KEYS) {
+      if (typeof source.enabledParameters[key] === "boolean") enabledParameters[key] = source.enabledParameters[key];
+    }
+    if (Object.keys(enabledParameters).length > 0) out.enabledParameters = enabledParameters;
   }
   for (const key of [
     "squashSystemMessages",

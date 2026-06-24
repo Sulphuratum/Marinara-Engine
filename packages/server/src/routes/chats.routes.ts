@@ -75,7 +75,7 @@ import {
 } from "./generate/generate-route-utils.js";
 import {
   filterGameInternalAgentIds,
-  resolveGameLorebookScopeExclusions,
+  resolveLorebookScopeExclusions,
 } from "../services/lorebook/game-lorebook-scope.js";
 import {
   isMemoryRecallVectorizerAvailable,
@@ -442,20 +442,24 @@ export async function chatsRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { connectionId?: string; personaId?: string } }>("/internal/professor-mari", async (req) => {
     const chats = await storage.list();
     const existing = chats.find(isHomeProfessorMariChat);
+    const hasConnectionOverride = "connectionId" in req.query;
     const connectionId =
       typeof req.query.connectionId === "string" && req.query.connectionId ? req.query.connectionId : null;
     const personaId = typeof req.query.personaId === "string" && req.query.personaId ? req.query.personaId : null;
 
     if (existing) {
+      const nextConnectionId = hasConnectionOverride ? connectionId : (existing.connectionId ?? null);
       await storage.update(existing.id, {
         characterIds: [PROFESSOR_MARI_ID],
-        connectionId,
+        connectionId: nextConnectionId,
         personaId,
         promptPresetId: null,
       });
       const updated = await storage.patchMetadata(existing.id, {
         internalAssistant: PROFESSOR_MARI_INTERNAL_CHAT_MARKER,
         enableAgents: false,
+        autonomousMessages: false,
+        characterExchanges: false,
         tags: ["internal"],
       });
       return sanitizeChatGameNpcAvatars(updated ?? existing);
@@ -474,6 +478,8 @@ export async function chatsRoutes(app: FastifyInstance) {
     const updated = await storage.patchMetadata(created.id, {
       internalAssistant: PROFESSOR_MARI_INTERNAL_CHAT_MARKER,
       enableAgents: false,
+      autonomousMessages: false,
+      characterExchanges: false,
       tags: ["internal"],
     });
     return sanitizeChatGameNpcAvatars(updated ?? created);
@@ -564,6 +570,15 @@ export async function chatsRoutes(app: FastifyInstance) {
       incoming.inactiveCharacterIds = Array.from(
         new Set((incoming.inactiveCharacterIds as string[]).filter((id) => validIds.has(id))),
       );
+    }
+    if (incoming.excludedLorebookIds !== undefined) {
+      if (
+        !Array.isArray(incoming.excludedLorebookIds) ||
+        !incoming.excludedLorebookIds.every((id) => typeof id === "string")
+      ) {
+        return reply.status(400).send({ error: "excludedLorebookIds must be an array of strings" });
+      }
+      incoming.excludedLorebookIds = Array.from(new Set(incoming.excludedLorebookIds as string[]));
     }
     if (incoming.conversationSchedulesEnabled === false) {
       await clearConversationScheduleState(chat);
@@ -1416,7 +1431,8 @@ export async function chatsRoutes(app: FastifyInstance) {
       const chat = await storage.getById(req.params.id);
       const chatCharIds: string[] = (() => {
         try {
-          return JSON.parse((chat?.characterIds as string) ?? "[]");
+          const parsed = JSON.parse((chat?.characterIds as string) ?? "[]");
+          return Array.isArray(parsed) ? parsed.filter((id) => id !== PROFESSOR_MARI_ID) : [];
         } catch {
           return [];
         }
@@ -1869,7 +1885,7 @@ export async function chatsRoutes(app: FastifyInstance) {
             };
           }
           const entryStateOverrides = resolveEntryStateOverrides(chatMeta.entryStateOverrides);
-          const lorebookScopeExclusions = resolveGameLorebookScopeExclusions(chatMode, chatMeta);
+          const lorebookScopeExclusions = resolveLorebookScopeExclusions(chatMode, chatMeta);
           const promptActiveAgentIds = Array.isArray(chatMeta.activeAgentIds)
             ? (chatMeta.activeAgentIds as string[])
             : [];
@@ -2708,7 +2724,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const contextSize = Math.max(
       5,
-      Math.min(200, Number(body.contextSize) || (chatMeta.summaryContextSize as number) || 50),
+      Math.min(500, Number(body.contextSize) || (chatMeta.summaryContextSize as number) || 50),
     );
     const requestedRangeStartMessageId = typeof body.rangeStartMessageId === "string" ? body.rangeStartMessageId : null;
     const requestedRangeEndMessageId = typeof body.rangeEndMessageId === "string" ? body.rangeEndMessageId : null;
@@ -2773,8 +2789,8 @@ export async function chatsRoutes(app: FastifyInstance) {
           const from = Math.min(startIndex, endIndex);
           const to = Math.max(startIndex, endIndex);
           const count = to - from + 1;
-          if (count > 200) {
-            return { error: "Summary ranges cannot include more than 200 messages" as const };
+          if (count > 500) {
+            return { error: "Summary ranges cannot include more than 500 messages" as const };
           }
           selectedRangeStartIndex = from + 1;
           selectedRangeEndIndex = to + 1;
